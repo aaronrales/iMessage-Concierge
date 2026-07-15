@@ -10,6 +10,8 @@ import {
   recordMessage,
 } from "../../lib/agent/context";
 import { applyProfileUpdates, runAgentTurn } from "../../lib/agent/engine";
+import { scheduleAgentTurn } from "../../lib/agent/debounce";
+import { scrubPrivateProfileLeaks } from "../../lib/agent/privacy";
 import {
   closePollWithWinner,
   countDistinctVoters,
@@ -54,6 +56,66 @@ async function sendToThread(threadId: number, content: string): Promise<void> {
   }
 
   await recordMessage({ threadId, userId: null, direction: "outbound", role: "assistant", content });
+}
+
+/**
+ * Runs the main conversation engine for a thread and delivers the result.
+ * Invoked from a debounced timer (see `scheduleAgentTurn`) rather than
+ * inline in the webhook handler, so a burst of rapid-fire messages collapses
+ * into a single agent turn instead of one per message. Because messages are
+ * persisted before this runs, the batched turn sees the full burst via its
+ * normal transcript load.
+ */
+async function processAgentTurn(threadId: number, senderUserId: number): Promise<void> {
+  const context = await loadThreadContext(threadId);
+  const isGroup = context.thread.isGroup;
+  const result = await runAgentTurn(context, senderUserId);
+
+  if (result.profileUpdates) {
+    await applyProfileUpdates(senderUserId, result.profileUpdates);
+  }
+
+  if (result.displayName) {
+    await db.update(usersTable).set({ displayName: result.displayName }).where(eq(usersTable.id, senderUserId));
+  }
+
+  if (result.onboardingComplete !== null) {
+    await db
+      .update(usersTable)
+      .set({ onboardingStatus: result.onboardingComplete ? "completed" : "in_progress" })
+      .where(eq(usersTable.id, senderUserId));
+  }
+
+  if (result.poll && isGroup) {
+    await createPoll(threadId, result.poll.question, result.poll.options);
+  }
+
+  if (result.bookingDraft) {
+    const approverPhone = result.bookingDraft.approverPhoneNumber;
+    const approver = approverPhone ? await findOrCreateUser(approverPhone) : { id: senderUserId };
+    const booking = await draftBooking({
+      threadId,
+      createdByUserId: senderUserId,
+      approverUserId: approver.id,
+      title: result.bookingDraft.title,
+      details: result.bookingDraft.details,
+    });
+
+    if (approver.id !== senderUserId) {
+      const { thread: approverThread } = await findOrCreateDirectThread(approverPhone as string);
+      await sendToThread(
+        approverThread.id,
+        `Heads up -- can you approve this booking: "${booking.title}"? Reply YES to confirm or NO to skip it.`,
+      );
+    }
+  }
+
+  // Preference privacy enforcement: private profile fields may have silently
+  // shaped this reply, but they must never surface verbatim in group-visible
+  // text. 1:1 threads skip this -- there's nothing to leak the info to.
+  const outgoingReply = isGroup ? scrubPrivateProfileLeaks(result.reply, context.participants) : result.reply;
+
+  await sendToThread(threadId, outgoingReply);
 }
 
 router.post("/webhooks/sendblue/:secret", async (req, res): Promise<void> => {
@@ -190,50 +252,10 @@ router.post("/webhooks/sendblue/:secret", async (req, res): Promise<void> => {
       }
     }
 
-    // 3. Otherwise, run the main conversation engine.
-    const context = await loadThreadContext(threadId);
-    const result = await runAgentTurn(context, senderUserId);
-
-    if (result.profileUpdates) {
-      await applyProfileUpdates(senderUserId, result.profileUpdates);
-    }
-
-    if (result.displayName) {
-      await db.update(usersTable).set({ displayName: result.displayName }).where(eq(usersTable.id, senderUserId));
-    }
-
-    if (result.onboardingComplete !== null) {
-      await db
-        .update(usersTable)
-        .set({ onboardingStatus: result.onboardingComplete ? "completed" : "in_progress" })
-        .where(eq(usersTable.id, senderUserId));
-    }
-
-    if (result.poll && isGroup) {
-      await createPoll(threadId, result.poll.question, result.poll.options);
-    }
-
-    if (result.bookingDraft) {
-      const approverPhone = result.bookingDraft.approverPhoneNumber;
-      const approver = approverPhone ? await findOrCreateUser(approverPhone) : { id: senderUserId };
-      const booking = await draftBooking({
-        threadId,
-        createdByUserId: senderUserId,
-        approverUserId: approver.id,
-        title: result.bookingDraft.title,
-        details: result.bookingDraft.details,
-      });
-
-      if (approver.id !== senderUserId) {
-        const { thread: approverThread } = await findOrCreateDirectThread(approverPhone as string);
-        await sendToThread(
-          approverThread.id,
-          `Heads up -- can you approve this booking: "${booking.title}"? Reply YES to confirm or NO to skip it.`,
-        );
-      }
-    }
-
-    await sendToThread(threadId, result.reply);
+    // 3. Otherwise, hand off to the (debounced) main conversation engine and
+    // ack immediately -- the reply is delivered asynchronously once the
+    // debounce window closes, so a burst of messages only triggers one turn.
+    scheduleAgentTurn(threadId, senderUserId, event.content, processAgentTurn);
 
     res.status(200).json({ received: true });
   } catch (error) {

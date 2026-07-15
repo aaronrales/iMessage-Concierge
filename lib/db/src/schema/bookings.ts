@@ -3,6 +3,7 @@ import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 import { usersTable } from "./users";
 import { threadsTable } from "./threads";
+import { plansTable } from "./plans";
 
 export const bookingStatusEnum = pgEnum("booking_status", [
   "drafted",
@@ -17,6 +18,9 @@ export const bookingsTable = pgTable("bookings", {
   threadId: integer("thread_id")
     .notNull()
     .references(() => threadsTable.id, { onDelete: "cascade" }),
+  // Nullable: not every booking anchors to a plan yet (existing flows predate
+  // the plans table), but new plan-driven bookings should set this.
+  planId: integer("plan_id").references(() => plansTable.id, { onDelete: "set null" }),
   createdByUserId: integer("created_by_user_id").references(() => usersTable.id, {
     onDelete: "set null",
   }),

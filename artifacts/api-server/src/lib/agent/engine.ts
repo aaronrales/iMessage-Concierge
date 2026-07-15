@@ -3,6 +3,11 @@ import { db, profilesTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import type { ThreadContext } from "./context";
 import { logger } from "../logger";
+import { AGENT_TOOLS, executeAgentTool } from "./tools";
+import type OpenAI from "openai";
+
+/** Safety valve against a runaway tool-call loop; one turn should need at most a couple of round trips. */
+const MAX_TOOL_ITERATIONS = 3;
 
 export interface AgentTurnResult {
   reply: string;
@@ -29,6 +34,8 @@ You have these capabilities, which you can trigger by filling in the matching fi
 - Marking a person's onboarding complete once you've learned their name and at least one or two real preferences. Onboarding does not need to be exhaustive -- a couple of natural questions is enough.
 - Starting a group poll when a group needs to choose between a few concrete options (e.g. restaurant choices, dates). Only do this in group threads, and only when there are genuinely multiple options to choose between.
 - Drafting a booking when a concrete plan has been decided (e.g. "let's book Sushi Place for 7pm Saturday, party of 4") and it needs a human to confirm before it's considered real. Always require a human approval step for bookings -- never claim a booking is confirmed yourself. If you don't know who should approve, default to the person who is currently talking to you.
+
+You can also call the search_venues tool whenever you're about to suggest a specific place, so you never invent a venue that doesn't exist.
 
 Always respond with ONLY a JSON object matching this shape, no prose outside the JSON:
 {
@@ -86,6 +93,49 @@ function buildProfileSummary(context: ThreadContext): string {
     .join("\n");
 }
 
+/**
+ * Runs the completion loop, executing any tool calls the model makes along
+ * the way, until it returns a final (non-tool-call) message. This is the
+ * Phase 0 "agent turn may include tool calls" architecture -- the fast
+ * single-call path for chitchat still lands here too, it just resolves after
+ * one iteration since the model has no reason to call a tool.
+ */
+async function runTurnWithTools(messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[]): Promise<string> {
+  for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
+    const completion = await openai.chat.completions.create({
+      model: CHAT_MODEL,
+      max_completion_tokens: 1024,
+      response_format: { type: "json_object" },
+      tools: AGENT_TOOLS,
+      messages,
+    });
+
+    const message = completion.choices[0]?.message;
+    if (!message) {
+      return "{}";
+    }
+
+    if (message.tool_calls && message.tool_calls.length > 0) {
+      messages.push(message);
+      for (const toolCall of message.tool_calls) {
+        if (toolCall.type !== "function") continue;
+        const result = await executeAgentTool(toolCall.function.name, toolCall.function.arguments);
+        messages.push({
+          role: "tool",
+          tool_call_id: toolCall.id,
+          content: JSON.stringify(result),
+        });
+      }
+      continue;
+    }
+
+    return message.content ?? "{}";
+  }
+
+  logger.warn("Agent turn exceeded max tool-call iterations without a final response");
+  return "{}";
+}
+
 export async function runAgentTurn(context: ThreadContext, currentUserId: number): Promise<AgentTurnResult> {
   const currentUser = context.participants.find((p) => p.user.id === currentUserId)?.user;
   const isGroup = context.thread.isGroup;
@@ -98,20 +148,13 @@ export async function runAgentTurn(context: ThreadContext, currentUserId: number
     `Known people in this thread:\n${buildProfileSummary(context)}`,
   ].join("\n\n");
 
-  const messages: { role: "system" | "user" | "assistant"; content: string }[] = [
+  const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
     { role: "system", content: SYSTEM_PROMPT },
     { role: "system", content: situational },
     ...buildTranscript(context, currentUserId),
   ];
 
-  const completion = await openai.chat.completions.create({
-    model: CHAT_MODEL,
-    max_completion_tokens: 1024,
-    response_format: { type: "json_object" },
-    messages,
-  });
-
-  const raw = completion.choices[0]?.message?.content ?? "{}";
+  const raw = await runTurnWithTools(messages);
 
   let parsed: RawAgentResponse;
   try {
