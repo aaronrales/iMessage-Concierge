@@ -17,6 +17,10 @@ export const threadsTable = pgTable("threads", {
   // avoid a schema import cycle (plans.ts already imports threads.ts); the
   // relationship is enforced in application code instead.
   pendingFeedbackPlanId: integer("pending_feedback_plan_id"),
+  // Set once the group's one-time "I'm this group's AI concierge" intro has
+  // been sent, so it never repeats even as new members join later (new
+  // members instead get a short one-line welcome, see thread_participants).
+  introducedAt: timestamp("introduced_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true })
     .notNull()

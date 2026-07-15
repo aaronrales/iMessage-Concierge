@@ -25,6 +25,13 @@ export const pollsTable = pgTable("polls", {
   kind: pollKindEnum("kind").notNull().default("choice"),
   status: pollStatusEnum("status").notNull().default("open"),
   winningOptionId: integer("winning_option_id"),
+  // Tiebreaker persona (Phase 2): set when a stalled poll gets a confident
+  // "executive decision" announcement. `tiebreakOptionId` is the option that
+  // will be locked in; `tiebreakAnnouncedAt` marks when the objection window
+  // started. Both are cleared if someone objects before the lock job fires.
+  // No FK (same pattern as `winningOptionId`) -- app code enforces validity.
+  tiebreakOptionId: integer("tiebreak_option_id"),
+  tiebreakAnnouncedAt: timestamp("tiebreak_announced_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   closedAt: timestamp("closed_at", { withTimezone: true }),
 });

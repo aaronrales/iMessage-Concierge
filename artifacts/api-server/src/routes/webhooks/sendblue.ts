@@ -5,9 +5,11 @@ import {
   findOrCreateGroupThread,
   findOrCreateUser,
   getParticipantsNeedingDisclosure,
+  hasGroupBeenIntroduced,
   isParticipantMuted,
   loadThreadContext,
   markDisclosureSent,
+  markGroupIntroduced,
   recordMessage,
   setParticipantMuted,
 } from "../../lib/agent/context";
@@ -18,6 +20,7 @@ import { sendToThread } from "../../lib/agent/delivery";
 import { detectKnowledgeCommand, handleKnowledgeCommand } from "../../lib/agent/knowledge";
 import { detectMuteCommand, shouldRespondInGroup } from "../../lib/agent/etiquette";
 import {
+  clearTiebreak,
   closePollWithWinner,
   computeDatePollWinner,
   countDistinctVoters,
@@ -25,6 +28,7 @@ import {
   getOpenPoll,
   matchOption,
   matchOptions,
+  parseTapback,
   recordVote,
   recordVotes,
   tallyPoll,
@@ -39,8 +43,14 @@ import {
 import { confirmPlan, getOrCreateActivePlan, setPlanScheduledFor, setPlanVenue, setPendingFeedback } from "../../lib/agent/plans";
 import { buildGoogleCalendarLink, describePlanSchedule } from "../../lib/agent/calendar";
 import { scheduleDayBeforeReminder, scheduleNonVoterNudge } from "../../lib/agent/scheduler";
+import { buildReservationLinks, describeReservationLinks } from "../../lib/agent/bookingLinks";
+import { buildPlanCardMediaUrl } from "../../lib/agent/planCard";
+import { captureOccasion } from "../../lib/agent/occasions";
 import { feedbackTable, db, threadParticipantsTable, threadsTable, usersTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
+
+/** iMessage tapback text on this poll's own announcement bubbles counts as a vote (Phase 2 texting UX polish). */
+const OBJECTION_PATTERN = /\b(no|nope|wait|hold on|object|objection|don'?t lock|actually)\b/i;
 
 const router: IRouter = Router();
 
@@ -74,14 +84,37 @@ async function processAgentTurn(threadId: number, senderUserId: number): Promise
 
   if (result.poll && isGroup) {
     const plan = await getOrCreateActivePlan(threadId, result.poll.question);
-    const { poll } = await createPoll(threadId, result.poll.question, result.poll.options, {
+    const { poll, options } = await createPoll(threadId, result.poll.question, result.poll.options, {
       kind: result.poll.kind,
       planId: plan.id,
       optionDates: result.poll.optionDates,
     });
-    if (result.poll.kind === "date") {
-      await scheduleNonVoterNudge(threadId, poll.id);
+    // Tiebreaker persona (and reliable tapback voting) apply to any poll
+    // that can stall, not just date polls -- schedule the escalation path
+    // for both kinds.
+    await scheduleNonVoterNudge(threadId, poll.id);
+
+    // Each option gets its own bubble so a tapback on it is unambiguous
+    // (see `parseTapback` -- iMessage quotes the whole reacted message).
+    for (const [index, option] of options.entries()) {
+      await sendToThread(threadId, `${index + 1}. ${option.label}`);
     }
+  }
+
+  if (result.occasion) {
+    const aboutUser = result.occasion.aboutName
+      ? context.participants.find(
+          (p) => p.user.displayName?.toLowerCase() === result.occasion?.aboutName?.toLowerCase(),
+        )?.user
+      : undefined;
+    await captureOccasion({
+      threadId,
+      aboutUserId: aboutUser?.id ?? null,
+      mentionedByUserId: senderUserId,
+      kind: result.occasion.kind,
+      label: result.occasion.label,
+      occasionDate: result.occasion.date,
+    });
   }
 
   if (result.bookingDraft) {
@@ -164,16 +197,33 @@ router.post("/webhooks/sendblue/:secret", async (req, res): Promise<void> => {
       const sender = participants.find((p) => p.phoneNumber === event.from_number) ?? (await findOrCreateUser(event.from_number));
       senderUserId = sender.id;
 
-      // One-time onboarding disclosure for any participant who has never
-      // seen it -- sent into the group so everyone present sees it, not just
-      // the new member.
-      const needingDisclosure = await getParticipantsNeedingDisclosure(threadId);
-      for (const person of needingDisclosure) {
+      // One-time, whole-group intro when the concierge is first added to a
+      // new group -- said once, ever, regardless of how many people later
+      // join. Distinct from the per-person welcome below.
+      if (!(await hasGroupBeenIntroduced(threadId))) {
         await sendToThread(
           threadId,
-          `Hi ${person.displayName ?? "there"} -- I'm this group's AI concierge. I help plan things here (polls, bookings, reminders). Say "what do you know about me?" any time to see what I've learned, or "mute you" to have me stay quiet.`,
+          `Hi all -- I'm this group's AI concierge. I help plan things here (polls, bookings, reminders). Say "what do you know about me?" any time to see what I've learned, or "mute you" to have me stay quiet.`,
         );
+        await markGroupIntroduced(threadId);
+      }
+
+      // Any participant the concierge doesn't have a profile for yet gets a
+      // short one-line welcome in the group -- never a full questionnaire
+      // dropped into the group -- plus an optional 1:1 DM where the actual
+      // preference-gathering questions happen privately.
+      const needingDisclosure = await getParticipantsNeedingDisclosure(threadId);
+      for (const person of needingDisclosure) {
+        await sendToThread(threadId, `Hey ${person.displayName ?? "there"}, welcome -- glad to have you here.`);
         await markDisclosureSent(threadId, person.id);
+
+        if (person.phoneNumber) {
+          const { thread: dmThread } = await findOrCreateDirectThread(person.phoneNumber);
+          await sendToThread(
+            dmThread.id,
+            `Hi! I'm the AI concierge for that group -- I help plan things like dinners and hangouts. Quick one so I can help plan things you'll actually enjoy: any budget range or dietary needs I should know about? Totally optional, just chat with me here whenever.`,
+          );
+        }
       }
     } else {
       const { thread, user } = await findOrCreateDirectThread(event.from_number);
@@ -237,8 +287,28 @@ router.post("/webhooks/sendblue/:secret", async (req, res): Promise<void> => {
     // 3. If there's an open poll on this thread, check whether this message is a vote.
     const openPoll = await getOpenPoll(threadId);
     if (openPoll) {
+      // Tiebreaker persona: if an "executive decision" is currently in its
+      // objection window, a deterministic objection cancels the auto-lock
+      // rather than being treated as a vote or a normal chat message.
+      if (openPoll.poll.tiebreakAnnouncedAt && OBJECTION_PATTERN.test(event.content)) {
+        await clearTiebreak(openPoll.poll.id);
+        await sendToThread(threadId, "Got it, holding off -- what would you prefer instead?");
+        res.status(200).json({ received: true });
+        return;
+      }
+
+      // Texting UX polish: an iMessage tapback ("Loved \"...\"") on one of
+      // the poll's own option bubbles counts as a vote for that option.
+      // Only positive reactions (loved/liked/emphasized) register.
+      const tapback = parseTapback(event.content);
+      const effectiveContent = tapback && tapback.isPositive ? tapback.quotedContent : event.content;
+      if (tapback && !tapback.isPositive) {
+        res.status(200).json({ received: true });
+        return;
+      }
+
       if (openPoll.poll.kind === "date") {
-        const matched = matchOptions(event.content, openPoll.options);
+        const matched = matchOptions(effectiveContent, openPoll.options);
         if (matched.length > 0) {
           await recordVotes(openPoll.poll.id, matched.map((m) => m.id), senderUserId);
           const participantRows = await db
@@ -276,7 +346,7 @@ router.post("/webhooks/sendblue/:secret", async (req, res): Promise<void> => {
           return;
         }
       } else {
-        const matched = matchOption(event.content, openPoll.options);
+        const matched = matchOption(effectiveContent, openPoll.options);
         if (matched) {
           await recordVote(openPoll.poll.id, matched.id, senderUserId);
           const tally = await tallyPoll(openPoll.poll.id, openPoll.options);
@@ -320,6 +390,7 @@ router.post("/webhooks/sendblue/:secret", async (req, res): Promise<void> => {
       if (intent === "approve") {
         const booking = await confirmBooking(pendingBooking.id);
         let confirmationSuffix = "";
+        let mediaUrl: string | undefined;
         if (booking.planId) {
           const plan = await confirmPlan(booking.planId);
           const link = buildGoogleCalendarLink(plan);
@@ -327,8 +398,23 @@ router.post("/webhooks/sendblue/:secret", async (req, res): Promise<void> => {
           if (plan.scheduledFor) {
             await scheduleDayBeforeReminder(booking.threadId, plan.id, plan.scheduledFor);
           }
+
+          // Plan cards: a visual confirmation card once the plan is locked in.
+          const attendeeRows = await db
+            .select({ user: usersTable })
+            .from(threadParticipantsTable)
+            .innerJoin(usersTable, eq(threadParticipantsTable.userId, usersTable.id))
+            .where(eq(threadParticipantsTable.threadId, booking.threadId));
+          const attendeeNames = attendeeRows.map((row) => row.user.displayName ?? row.user.phoneNumber);
+          mediaUrl = (await buildPlanCardMediaUrl(plan, attendeeNames)) ?? undefined;
         }
-        await sendToThread(booking.threadId, `Confirmed: "${booking.title}".${confirmationSuffix}`);
+
+        // Booking deep links: a pre-filled Resy/OpenTable search, framed
+        // explicitly as a search, never a guaranteed table.
+        const links = buildReservationLinks(booking);
+        const linksLine = ` ${describeReservationLinks(links)}`;
+
+        await sendToThread(booking.threadId, `Confirmed: "${booking.title}".${confirmationSuffix}${linksLine}`, mediaUrl);
         if (booking.threadId !== threadId) {
           await sendToThread(threadId, `Thanks -- approved "${booking.title}".`);
         }

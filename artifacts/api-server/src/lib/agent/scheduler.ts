@@ -4,25 +4,55 @@ import { db, threadParticipantsTable } from "@workspace/db";
 import { logger } from "../logger";
 import { canSendProactiveMessage, recordProactiveSend } from "./messagingBudget";
 import { sendToThread } from "./delivery";
-import { getOpenPoll, countDistinctVoters } from "./polls";
-import { getPlanById, getStalledPlans, getPlansNeedingFeedbackPrompt, setPendingFeedback, markPlanDone } from "./plans";
+import {
+  getOpenPoll,
+  countDistinctVoters,
+  getLeadingOption,
+  announceTiebreak,
+  closePollWithWinner,
+} from "./polls";
+import {
+  getPlanById,
+  getStalledPlans,
+  getPlansNeedingFeedbackPrompt,
+  setPendingFeedback,
+  markPlanDone,
+  setPlanVenue,
+  setPlanScheduledFor,
+} from "./plans";
 import { buildGoogleCalendarLink, describePlanSchedule } from "./calendar";
+import { getOccasionsDueForReminder, markOccasionReminded } from "./occasions";
 
 const QUEUES = {
   pollNudge: "poll-nudge",
+  pollTiebreakAnnounce: "poll-tiebreak-announce",
+  pollTiebreakLock: "poll-tiebreak-lock",
   planReminder: "plan-reminder",
   planRevive: "plan-revive",
   feedbackPrompt: "feedback-prompt",
+  occasionScan: "occasion-scan",
 } as const;
 
 const NON_VOTER_NUDGE_DELAY_SECONDS = 4 * 60 * 60; // 4 hours after a poll opens
+// Tiebreaker persona: if a poll is still unresolved 4 hours after the soft
+// nudge (8h total), the concierge makes a confident call instead of nudging
+// forever. The pick then locks in after a 1-hour objection window.
+const TIEBREAK_ANNOUNCE_DELAY_SECONDS = 4 * 60 * 60;
+const TIEBREAK_OBJECTION_WINDOW_SECONDS = 60 * 60;
 const STALLED_PLAN_THRESHOLD_MS = 24 * 60 * 60 * 1000; // 24 hours with no movement
 const STALLED_SCAN_CRON = "0 * * * *"; // hourly
 const FEEDBACK_SCAN_CRON = "*/30 * * * *"; // every 30 minutes
+const OCCASION_SCAN_CRON = "0 15 * * *"; // daily at 15:00 UTC
+const OCCASION_REMINDER_WINDOW_MS = 14 * 24 * 60 * 60 * 1000; // ~2 weeks out
 
 let boss: PgBoss | null = null;
 
 interface PollNudgeJobData {
+  threadId: number;
+  pollId: number;
+}
+
+interface PollTiebreakJobData {
   threadId: number;
   pollId: number;
 }
@@ -41,15 +71,80 @@ async function handlePollNudge({ data }: { data: PollNudgeJobData }): Promise<vo
     .from(threadParticipantsTable)
     .where(eq(threadParticipantsTable.threadId, data.threadId));
   const voterCount = await countDistinctVoters(data.pollId);
-  if (voterCount >= participantRows.length) return; // everyone already voted
+  if (voterCount < participantRows.length) {
+    if (await canSendProactiveMessage(data.threadId, "nudge")) {
+      await sendToThread(
+        data.threadId,
+        `Friendly nudge -- still waiting on ${participantRows.length - voterCount} of you for "${open.poll.question}". Reply with your pick when you get a sec.`,
+      );
+      await recordProactiveSend(data.threadId, "nudge");
+    }
+  }
 
-  if (!(await canSendProactiveMessage(data.threadId, "nudge"))) return;
+  // Tiebreaker persona: whether or not the nudge itself went out (budget may
+  // have blocked it), still schedule the escalation check so a quiet group
+  // doesn't stall forever just because the nudge was rate-limited.
+  if (voterCount < participantRows.length && boss) {
+    await boss.sendAfter(
+      QUEUES.pollTiebreakAnnounce,
+      { threadId: data.threadId, pollId: data.pollId },
+      null,
+      TIEBREAK_ANNOUNCE_DELAY_SECONDS,
+    );
+  }
+}
+
+async function handlePollTiebreakAnnounce({ data }: { data: PollTiebreakJobData }): Promise<void> {
+  const open = await getOpenPoll(data.threadId);
+  if (!open || open.poll.id !== data.pollId) return; // already resolved -- nothing to break the tie on
+
+  const participantRows = await db
+    .select({ userId: threadParticipantsTable.userId })
+    .from(threadParticipantsTable)
+    .where(eq(threadParticipantsTable.threadId, data.threadId));
+  const voterCount = await countDistinctVoters(data.pollId);
+  if (voterCount >= participantRows.length) return; // resolved itself in the meantime
+
+  const leading = await getLeadingOption(data.pollId, open.options);
+  if (!leading) return;
+
+  await announceTiebreak(data.pollId, leading.id);
+  await sendToThread(
+    data.threadId,
+    `Executive decision: ${leading.label}. Object within the hour or it's locked in.`,
+  );
+
+  if (boss) {
+    await boss.sendAfter(
+      QUEUES.pollTiebreakLock,
+      { threadId: data.threadId, pollId: data.pollId },
+      null,
+      TIEBREAK_OBJECTION_WINDOW_SECONDS,
+    );
+  }
+}
+
+async function handlePollTiebreakLock({ data }: { data: PollTiebreakJobData }): Promise<void> {
+  const open = await getOpenPoll(data.threadId);
+  if (!open || open.poll.id !== data.pollId) return; // resolved normally in the meantime
+  if (!open.poll.tiebreakAnnouncedAt || !open.poll.tiebreakOptionId) return; // objected to, or never announced
+
+  const optionId = open.poll.tiebreakOptionId;
+  const option = open.options.find((candidate) => candidate.id === optionId);
+  await closePollWithWinner(data.pollId, optionId);
+
+  if (open.poll.planId && option) {
+    if (open.poll.kind === "date" && option.optionDate) {
+      await setPlanScheduledFor(open.poll.planId, option.optionDate);
+    } else if (open.poll.kind === "choice") {
+      await setPlanVenue(open.poll.planId, option.label);
+    }
+  }
 
   await sendToThread(
     data.threadId,
-    `Friendly nudge -- still waiting on ${participantRows.length - voterCount} of you for "${open.poll.question}". Reply with your pick when you get a sec.`,
+    `Locking in ${option?.label ?? "that pick"} since nobody objected. Moving forward with it.`,
   );
-  await recordProactiveSend(data.threadId, "nudge");
 }
 
 async function handlePlanReminder({ data }: { data: PlanReminderJobData }): Promise<void> {
@@ -99,6 +194,25 @@ async function handleFeedbackScan(): Promise<void> {
   }
 }
 
+async function handleOccasionScan(): Promise<void> {
+  const due = await getOccasionsDueForReminder(OCCASION_REMINDER_WINDOW_MS);
+  for (const occasion of due) {
+    // Budget gating first, same reasoning as feedback prompts: never mark an
+    // occasion "reminded" unless the message actually went out, so a denied
+    // send gets retried on the next daily scan instead of being lost.
+    if (!(await canSendProactiveMessage(occasion.threadId, "occasion_reminder"))) continue;
+
+    const daysAway = Math.round((occasion.occasionDate.getTime() - Date.now()) / (24 * 60 * 60 * 1000));
+    const when = daysAway <= 0 ? "coming right up" : `in about ${daysAway} day${daysAway === 1 ? "" : "s"}`;
+    await sendToThread(
+      occasion.threadId,
+      `Heads up -- ${occasion.label} is ${when}. Want me to help plan something for it?`,
+    );
+    await recordProactiveSend(occasion.threadId, "occasion_reminder");
+    await markOccasionReminded(occasion.id);
+  }
+}
+
 export async function scheduleNonVoterNudge(threadId: number, pollId: number): Promise<void> {
   if (!boss) return;
   await boss.sendAfter(QUEUES.pollNudge, { threadId, pollId }, null, NON_VOTER_NUDGE_DELAY_SECONDS);
@@ -132,6 +246,12 @@ export async function initScheduler(): Promise<void> {
   await boss.work<PollNudgeJobData>(QUEUES.pollNudge, async (jobs: { data: PollNudgeJobData }[]) => {
     for (const job of jobs) await handlePollNudge(job);
   });
+  await boss.work<PollTiebreakJobData>(QUEUES.pollTiebreakAnnounce, async (jobs: { data: PollTiebreakJobData }[]) => {
+    for (const job of jobs) await handlePollTiebreakAnnounce(job);
+  });
+  await boss.work<PollTiebreakJobData>(QUEUES.pollTiebreakLock, async (jobs: { data: PollTiebreakJobData }[]) => {
+    for (const job of jobs) await handlePollTiebreakLock(job);
+  });
   await boss.work<PlanReminderJobData>(QUEUES.planReminder, async (jobs: { data: PlanReminderJobData }[]) => {
     for (const job of jobs) await handlePlanReminder(job);
   });
@@ -141,9 +261,13 @@ export async function initScheduler(): Promise<void> {
   await boss.work(QUEUES.feedbackPrompt, async () => {
     await handleFeedbackScan();
   });
+  await boss.work(QUEUES.occasionScan, async () => {
+    await handleOccasionScan();
+  });
 
   await boss.schedule(QUEUES.planRevive, STALLED_SCAN_CRON);
   await boss.schedule(QUEUES.feedbackPrompt, FEEDBACK_SCAN_CRON);
+  await boss.schedule(QUEUES.occasionScan, OCCASION_SCAN_CRON);
 
   logger.info("Proactive messaging scheduler started");
 }

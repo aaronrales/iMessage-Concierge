@@ -4,6 +4,7 @@ import { eq } from "drizzle-orm";
 import type { ThreadContext } from "./context";
 import { logger } from "../logger";
 import { AGENT_TOOLS, executeAgentTool } from "./tools";
+import { showTypingIndicator } from "./delivery";
 import type OpenAI from "openai";
 
 /** Safety valve against a runaway tool-call loop; one turn should need at most a couple of round trips. */
@@ -25,6 +26,12 @@ export interface AgentTurnResult {
     approverPhoneNumber: string | null;
     details: Record<string, unknown>;
   } | null;
+  occasion: {
+    aboutName: string | null;
+    kind: "birthday" | "anniversary" | "visit" | "other";
+    label: string;
+    date: Date;
+  } | null;
 }
 
 const SYSTEM_PROMPT = `You are a personal AI concierge that lives inside iMessage. You help one person or a small group plan the stuff of everyday life -- dinners, weekend trips, birthdays, "where should we all meet". You are warm, concise, and text like a helpful friend, not a corporate assistant. Keep replies short enough for a text message (usually under 3 sentences) and never use emojis.
@@ -34,7 +41,8 @@ You have these capabilities, which you can trigger by filling in the matching fi
 - Marking a person's onboarding complete once you've learned their name and at least one or two real preferences. Onboarding does not need to be exhaustive -- a couple of natural questions is enough.
 - Starting a group poll when a group needs to choose between a few concrete options (e.g. restaurant choices). Only do this in group threads, and only when there are genuinely multiple options to choose between.
 - Starting a date/time coordination poll (a "date" kind poll) when a group needs to agree on when to do something and there are multiple candidate dates/times on the table. Give each option as a clear label (e.g. "Friday 7pm") AND, when you know the actual calendar date, an ISO 8601 date-time string for it. People may say several dates work for them -- that's expected and handled outside your JSON response.
-- Drafting a booking when a concrete plan has been decided (e.g. "let's book Sushi Place for 7pm Saturday, party of 4") and it needs a human to confirm before it's considered real. Always require a human approval step for bookings -- never claim a booking is confirmed yourself. If you don't know who should approve, default to the person who is currently talking to you.
+- Drafting a booking when a concrete plan has been decided (e.g. "let's book Sushi Place for 7pm Saturday, party of 4") and it needs a human to confirm before it's considered real. Always require a human approval step for bookings -- never claim a booking is confirmed yourself. If you don't know who should approve, default to the person who is currently talking to you. If you know the venue name, an ISO date/time, and/or a party size, put them in "details" as "venue", "when", and "partySize" -- these are used to build real Resy/OpenTable search links, so use exactly those keys when you know the values.
+- Capturing a future occasion (a birthday, anniversary, or someone's upcoming visit) whenever it comes up in passing, e.g. "it's Sarah's birthday next month" or "Jake's visiting in three weeks". Only fill in "occasion" when you can resolve an actual calendar date from context (today's date is given below) -- if you can't pin down a real date, leave it out entirely rather than guessing. This is for remembering things to proactively resurface later, not something to mention back right away.
 
 You can also call the search_venues tool whenever you're about to suggest a specific place, so you never invent a venue that doesn't exist.
 
@@ -45,7 +53,8 @@ Always respond with ONLY a JSON object matching this shape, no prose outside the
   "profile_updates": { "budget"?: string, "dietary_needs"?: string, "preferences"?: string[], "notes"?: string } | null,
   "onboarding_complete": boolean | null,
   "poll": { "question": string, "options": string[], "kind": "choice" | "date", "option_dates": (string | null)[] } | null,
-  "booking_draft": { "title": string, "approver_phone_number": string | null, "details": object } | null
+  "booking_draft": { "title": string, "approver_phone_number": string | null, "details": object } | null,
+  "occasion": { "about_name": string | null, "kind": "birthday" | "anniversary" | "visit" | "other", "label": string, "date": string } | null
 }
 Set "display_name" whenever the person tells you their name and it isn't already known -- otherwise leave it null.`;
 
@@ -64,6 +73,12 @@ interface RawAgentResponse {
     title?: unknown;
     approver_phone_number?: unknown;
     details?: unknown;
+  } | null;
+  occasion?: {
+    about_name?: unknown;
+    kind?: unknown;
+    label?: unknown;
+    date?: unknown;
   } | null;
 }
 
@@ -142,6 +157,7 @@ export async function runAgentTurn(context: ThreadContext, currentUserId: number
   const isGroup = context.thread.isGroup;
 
   const situational = [
+    `Today's date is ${new Date().toISOString().slice(0, 10)}. Use this to resolve relative dates like "next month" or "in three weeks" into real calendar dates.`,
     `This is a ${isGroup ? "group" : "1:1"} thread.`,
     `You are currently responding to: ${currentUser?.displayName ?? currentUser?.phoneNumber ?? "unknown"} (phone: ${
       currentUser?.phoneNumber
@@ -154,6 +170,13 @@ export async function runAgentTurn(context: ThreadContext, currentUserId: number
     { role: "system", content: situational },
     ...buildTranscript(context, currentUserId),
   ];
+
+  // Texting UX polish: show the "..." typing indicator while the model
+  // thinks/calls tools, since a real reply can take a few seconds (venue
+  // lookups especially). 1:1 only -- Sendblue doesn't support it for groups.
+  if (!isGroup) {
+    await showTypingIndicator(context.thread.id);
+  }
 
   const raw = await runTurnWithTools(messages);
 
@@ -215,6 +238,24 @@ export async function runAgentTurn(context: ThreadContext, currentUserId: number
         }
       : null;
 
+  const occasionKind = new Set(["birthday", "anniversary", "visit", "other"]);
+  const occasionDateRaw = typeof parsed.occasion?.date === "string" ? new Date(parsed.occasion.date) : null;
+  const occasion =
+    parsed.occasion &&
+    typeof parsed.occasion.label === "string" &&
+    occasionDateRaw &&
+    !Number.isNaN(occasionDateRaw.getTime()) &&
+    occasionDateRaw.getTime() > Date.now()
+      ? {
+          aboutName: typeof parsed.occasion.about_name === "string" ? parsed.occasion.about_name : null,
+          kind: (typeof parsed.occasion.kind === "string" && occasionKind.has(parsed.occasion.kind)
+            ? parsed.occasion.kind
+            : "other") as "birthday" | "anniversary" | "visit" | "other",
+          label: parsed.occasion.label,
+          date: occasionDateRaw,
+        }
+      : null;
+
   return {
     reply: typeof parsed.reply === "string" ? parsed.reply : "Got it.",
     displayName: typeof parsed.display_name === "string" && parsed.display_name.trim() ? parsed.display_name.trim() : null,
@@ -222,6 +263,7 @@ export async function runAgentTurn(context: ThreadContext, currentUserId: number
     onboardingComplete: typeof parsed.onboarding_complete === "boolean" ? parsed.onboarding_complete : null,
     poll,
     bookingDraft,
+    occasion,
   };
 }
 

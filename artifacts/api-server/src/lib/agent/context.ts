@@ -205,6 +205,16 @@ export async function markDisclosureSent(threadId: number, userId: number): Prom
     .where(and(eq(threadParticipantsTable.threadId, threadId), eq(threadParticipantsTable.userId, userId)));
 }
 
+/** Whether this group thread has ever received its one-time "I'm this group's AI concierge" intro. */
+export async function hasGroupBeenIntroduced(threadId: number): Promise<boolean> {
+  const [thread] = await db.select({ introducedAt: threadsTable.introducedAt }).from(threadsTable).where(eq(threadsTable.id, threadId));
+  return Boolean(thread?.introducedAt);
+}
+
+export async function markGroupIntroduced(threadId: number): Promise<void> {
+  await db.update(threadsTable).set({ introducedAt: new Date() }).where(eq(threadsTable.id, threadId));
+}
+
 export async function getOtherParticipants(threadId: number, excludingUserId: number) {
   return db
     .select({ user: usersTable, role: threadParticipantsTable.role })

@@ -193,3 +193,66 @@ export async function closePollWithWinner(pollId: number, winningOptionId: numbe
     .set({ status: "closed", closedAt: new Date(), winningOptionId })
     .where(eq(pollsTable.id, pollId));
 }
+
+/**
+ * Tiebreaker persona: the option with the most votes so far, regardless of
+ * whether every expected voter has responded (unlike `computeDatePollWinner`,
+ * which requires a full intersection). Falls back to the first-listed option
+ * if nobody has voted at all, so a stalled poll with zero engagement still
+ * gets a confident call instead of stalling forever.
+ */
+export async function getLeadingOption(
+  pollId: number,
+  options: { id: number; label: string }[],
+): Promise<{ id: number; label: string } | null> {
+  if (options.length === 0) return null;
+  const votes = await db.select().from(pollVotesTable).where(eq(pollVotesTable.pollId, pollId));
+
+  if (votes.length === 0) return options[0] ?? null;
+
+  const votersByOption = new Map<number, Set<number>>();
+  for (const vote of votes) {
+    const set = votersByOption.get(vote.optionId) ?? new Set<number>();
+    set.add(vote.userId);
+    votersByOption.set(vote.optionId, set);
+  }
+
+  const withCounts = options
+    .map((option) => ({ option, voteCount: votersByOption.get(option.id)?.size ?? 0 }))
+    .sort((a, b) => b.voteCount - a.voteCount);
+
+  return withCounts[0]?.option ?? null;
+}
+
+/** Marks a poll's tiebreak announcement -- the "executive decision" with an objection window. */
+export async function announceTiebreak(pollId: number, optionId: number): Promise<void> {
+  await db
+    .update(pollsTable)
+    .set({ tiebreakOptionId: optionId, tiebreakAnnouncedAt: new Date() })
+    .where(eq(pollsTable.id, pollId));
+}
+
+/** Cancels a pending tiebreak, e.g. because someone objected within the window. */
+export async function clearTiebreak(pollId: number): Promise<void> {
+  await db
+    .update(pollsTable)
+    .set({ tiebreakOptionId: null, tiebreakAnnouncedAt: null })
+    .where(eq(pollsTable.id, pollId));
+}
+
+/** iMessage tapback text patterns, e.g. `Loved "Thai food?"` or `Liked "1. Thai"`. */
+const TAPBACK_PATTERN = /^(loved|liked|emphasized|laughed at|disliked|questioned)\s+[“"](.+)[”"]$/i;
+const POSITIVE_TAPBACKS = new Set(["loved", "liked", "emphasized"]);
+
+export interface TapbackVote {
+  quotedContent: string;
+  isPositive: boolean;
+}
+
+/** Parses an inbound message as an iMessage tapback reaction, if it looks like one. */
+export function parseTapback(content: string): TapbackVote | null {
+  const match = TAPBACK_PATTERN.exec(content.trim());
+  if (!match) return null;
+  const [, reactionType, quotedContent] = match;
+  return { quotedContent: quotedContent ?? "", isPositive: POSITIVE_TAPBACKS.has((reactionType ?? "").toLowerCase()) };
+}
