@@ -1,0 +1,12 @@
+(1) What's still missing:
+
+A. No turn-quality review loop. Your original pitch had HITL at its core, and the dashboard has approvals — but there's no way to review what the agent said and tag failures. A dead-simple "recent turns" feed in the dashboard (reply + context + thumbs-up/down + failure tag) turns your dogfood weeks into structured prompt-improvement fuel instead of vibes. This is the cheapest highest-leverage addition before launch.
+
+B. Small ones: the replit.md Gotchas section still references YELP_API_KEY (the code moved to Google Places — stale doc line that will confuse the next session); and proactive sends have frequency caps but no time-of-day gate — a plan reminder scheduled relative to a late event can fire at 11pm. A quiet-hours check (no proactive sends before ~8am / after ~10pm local) in the delivery path is a ten-line trust protector.
+
+(2) New magic, exploiting infrastructure this round added:
+
+A. Send a contact card first. On the first-ever DM, attach a vCard so the concierge gets a name and avatar in the person's Contacts. Right now it's an anonymous number — the single biggest "is this spam?" signal working against you. One media attachment converts it into a named presence in their phone forever. Highest trust-per-line-of-code available.
+B. Photo-first voting. You built carousels and tapback voting separately — fuse them. Options go out as one photo bubble per venue, a tapback on the photo is the vote. Choosing a restaurant by heart-ing a picture is a fundamentally better decision UX than reading names, feels Tinder-native, and it's mostly wiring you already have.
+C. Celebration moments. Send styles exist — point them at emotional peaks: confetti when a poll resolves or a booking confirms, balloons on an occasion-reminder for a birthday. Zero new infrastructure; pure delight at exactly the moments people screenshot.
+D. A contextual group intro. The intro line when the concierge joins a group is static. Its first message is your one guaranteed wow-window: read the recent thread, and if planning talk is already happening, open with something concrete — "Sounds like Saturday dinner is in the works — want three options that work for everyone?" A generic bot intro gets ignored; a bot that walks in mid-conversation already useful gets talked to.
