@@ -872,6 +872,7 @@ router.post("/webhooks/sendblue/:secret", async (req, res): Promise<void> => {
     // message just because the concierge is present.
     if (isGroup) {
       if (await isParticipantMuted(threadId, senderUserId)) {
+        req.log.info({ threadId, senderUserId, gate: "muted" }, "Group message suppressed: participant is muted");
         res.status(200).json({ received: true });
         return;
       }
@@ -882,9 +883,17 @@ router.post("/webhooks/sendblue/:secret", async (req, res): Promise<void> => {
         // like "drinks?" or "who's around sat?" don't read as the bot ignoring.
         const activePlanForGate = await getActivePlan(threadId);
         if (!activePlanForGate && !(await checkPlanningIntentWithLLM(event.content))) {
+          req.log.info(
+            { threadId, senderUserId, gate: "regex_rejected_llm_no" },
+            "Group message suppressed: regex gate failed, no active plan, LLM confirmed no planning intent",
+          );
           res.status(200).json({ received: true });
           return;
         }
+        req.log.info(
+          { threadId, senderUserId, gate: "regex_rejected_allowed_by_plan_or_llm" },
+          "Group message passed etiquette gate via active plan or LLM intent",
+        );
       }
     }
 

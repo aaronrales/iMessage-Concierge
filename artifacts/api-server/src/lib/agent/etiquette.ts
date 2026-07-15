@@ -6,6 +6,7 @@
  */
 
 import { openai, CHAT_MODEL } from "../openaiClient";
+import { logger } from "../logger";
 
 const MUTE_PATTERN = /\b(mute (you|yourself|the bot|concierge)|be quiet|stop responding|pause( yourself)?)\b/i;
 const UNMUTE_PATTERN = /\b(unmute (you|yourself|the bot|concierge)|start responding again|you can talk again)\b/i;
@@ -63,9 +64,13 @@ export async function checkPlanningIntentWithLLM(content: string): Promise<boole
     });
     const answer = (completion.choices[0]?.message?.content ?? "").trim().toLowerCase();
     return answer.startsWith("yes");
-  } catch {
-    // If the LLM check fails, default to silence (no false positives in group threads).
-    return false;
+  } catch (err) {
+    // Fail toward responding, not silence. An unnecessary reply in a group is
+    // far less bad than the concierge going dark because the LLM API had a
+    // momentary hiccup. The full etiquette gate (mute check + regex) already
+    // filtered out obvious non-planning chatter before reaching this point.
+    logger.warn({ err }, "checkPlanningIntentWithLLM failed; defaulting to respond");
+    return true;
   }
 }
 
