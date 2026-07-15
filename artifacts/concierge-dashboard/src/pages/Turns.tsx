@@ -85,14 +85,43 @@ function TurnCard({ turn }: { turn: Turn }) {
   const [notes, setNotes] = useState(turn.notes ?? "");
   const [expanded, setExpanded] = useState(false);
   const [showContext, setShowContext] = useState(false);
+  const [localRatedAt, setLocalRatedAt] = useState<string | null>(turn.ratedAt);
+
+  const applyRatingToCache = (variables: Parameters<typeof submitRating>[0], ratedAt: string) => {
+    qc.setQueryData<Turn[]>(["turns"], (old) => {
+      if (!old) return old;
+      return old.map((t) =>
+        t.messageId === variables.messageId
+          ? {
+              ...t,
+              rating: variables.rating,
+              failureTag: variables.failureTag ?? null,
+              notes: variables.notes ?? null,
+              ratedAt,
+            }
+          : t,
+      );
+    });
+  };
 
   const mutation = useMutation({
     mutationFn: submitRating,
-    onSuccess: () => {
+    onSuccess: (_, variables) => {
       toast.success("Rating saved.");
+      const ratedAt = new Date().toISOString();
+      setLocalRatedAt(ratedAt);
+      // Immediately patch the cache so the header stats update and the card
+      // stays locked in even if the refetch fires slowly
+      applyRatingToCache(variables, ratedAt);
       qc.invalidateQueries({ queryKey: ["turns"] });
     },
-    onError: () => toast.error("Couldn't save rating."),
+    onError: (_, variables) => {
+      toast.error("Couldn't save rating.");
+      // Roll back optimistic UI
+      setPendingRating(turn.rating);
+      setLocalRatedAt(turn.ratedAt);
+      if (variables.rating === "thumbs_down") setExpanded(false);
+    },
   });
 
   const handleRate = (rating: "thumbs_up" | "thumbs_down") => {
@@ -245,9 +274,9 @@ function TurnCard({ turn }: { turn: Turn }) {
           <ThumbsDown className="h-4 w-4" />
           Needs work
         </button>
-        {turn.ratedAt && (
+        {localRatedAt && (
           <span className="text-xs text-muted-foreground ml-auto">
-            Rated {formatDistanceToNow(new Date(turn.ratedAt), { addSuffix: true })}
+            Rated {formatDistanceToNow(new Date(localRatedAt), { addSuffix: true })}
           </span>
         )}
       </div>
