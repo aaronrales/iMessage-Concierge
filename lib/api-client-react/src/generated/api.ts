@@ -24,10 +24,13 @@ import type {
   ErrorResponse,
   HealthStatus,
   ListBookingsParams,
+  ListVenuesParams,
   SendblueWebhookEvent,
   ThreadDetail,
   ThreadSummary,
   UserWithProfile,
+  Venue,
+  VenueDetail,
   WebhookAck
 } from './api.schemas';
 
@@ -891,5 +894,380 @@ export const useRejectBooking = <TError = ErrorType<ErrorResponse>,
         TContext
       > => {
       return useMutation(getRejectBookingMutationOptions(options));
+    }
+
+export const getListVenuesUrl = (params?: ListVenuesParams,) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value))
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0 ? `/api/venues?${stringifiedParams}` : `/api/venues`
+}
+
+/**
+ * Powers the Concierge Ops Dashboard review queue -- defaults to `pending_review` so reviewers see freshly-extracted venues first.
+ * @summary List venues by tier
+ */
+export const listVenues = async (params?: ListVenuesParams, options?: RequestInit): Promise<Venue[]> => {
+
+  return customFetch<Venue[]>(getListVenuesUrl(params),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getListVenuesQueryKey = (params?: ListVenuesParams,) => {
+    return [
+    `/api/venues`, ...(params ? [params] : [])
+    ] as const;
+    }
+
+
+export const getListVenuesQueryOptions = <TData = Awaited<ReturnType<typeof listVenues>>, TError = ErrorType<unknown>>(params?: ListVenuesParams, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listVenues>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getListVenuesQueryKey(params);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof listVenues>>> = ({ signal }) => listVenues(params, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof listVenues>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type ListVenuesQueryResult = NonNullable<Awaited<ReturnType<typeof listVenues>>>
+export type ListVenuesQueryError = ErrorType<unknown>
+
+
+/**
+ * @summary List venues by tier
+ */
+
+export function useListVenues<TData = Awaited<ReturnType<typeof listVenues>>, TError = ErrorType<unknown>>(
+ params?: ListVenuesParams, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listVenues>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getListVenuesQueryOptions(params,options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export const getGetVenueUrl = (id: number,) => {
+
+
+
+
+  return `/api/venues/${id}`
+}
+
+/**
+ * @summary Get a venue with its extracted signals and attributes
+ */
+export const getVenue = async (id: number, options?: RequestInit): Promise<VenueDetail> => {
+
+  return customFetch<VenueDetail>(getGetVenueUrl(id),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetVenueQueryKey = (id: number,) => {
+    return [
+    `/api/venues/${id}`
+    ] as const;
+    }
+
+
+export const getGetVenueQueryOptions = <TData = Awaited<ReturnType<typeof getVenue>>, TError = ErrorType<ErrorResponse>>(id: number, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getVenue>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetVenueQueryKey(id);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getVenue>>> = ({ signal }) => getVenue(id, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, enabled: id !== null && id !== undefined, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getVenue>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type GetVenueQueryResult = NonNullable<Awaited<ReturnType<typeof getVenue>>>
+export type GetVenueQueryError = ErrorType<ErrorResponse>
+
+
+/**
+ * @summary Get a venue with its extracted signals and attributes
+ */
+
+export function useGetVenue<TData = Awaited<ReturnType<typeof getVenue>>, TError = ErrorType<ErrorResponse>>(
+ id: number, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getVenue>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getGetVenueQueryOptions(id,options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export const getApproveVenueUrl = (id: number,) => {
+
+
+
+
+  return `/api/venues/${id}/approve`
+}
+
+/**
+ * @summary Approve a venue to Tier 1
+ */
+export const approveVenue = async (id: number, options?: RequestInit): Promise<Venue> => {
+
+  return customFetch<Venue>(getApproveVenueUrl(id),
+  {
+    ...options,
+    method: 'PATCH'
+
+
+  }
+);}
+
+
+
+
+
+export const getApproveVenueMutationOptions = <TError = ErrorType<ErrorResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof approveVenue>>, TError,{id: number}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof approveVenue>>, TError,{id: number}, TContext> => {
+
+const mutationKey = ['approveVenue'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof approveVenue>>, {id: number}> = (props) => {
+          const {id} = props ?? {};
+
+          return  approveVenue(id,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type ApproveVenueMutationResult = NonNullable<Awaited<ReturnType<typeof approveVenue>>>
+
+    export type ApproveVenueMutationError = ErrorType<ErrorResponse>
+
+    /**
+ * @summary Approve a venue to Tier 1
+ */
+export const useApproveVenue = <TError = ErrorType<ErrorResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof approveVenue>>, TError,{id: number}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof approveVenue>>,
+        TError,
+        {id: number},
+        TContext
+      > => {
+      return useMutation(getApproveVenueMutationOptions(options));
+    }
+
+export const getDowngradeVenueUrl = (id: number,) => {
+
+
+
+
+  return `/api/venues/${id}/downgrade`
+}
+
+/**
+ * @summary Downgrade a venue to Tier 2
+ */
+export const downgradeVenue = async (id: number, options?: RequestInit): Promise<Venue> => {
+
+  return customFetch<Venue>(getDowngradeVenueUrl(id),
+  {
+    ...options,
+    method: 'PATCH'
+
+
+  }
+);}
+
+
+
+
+
+export const getDowngradeVenueMutationOptions = <TError = ErrorType<ErrorResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof downgradeVenue>>, TError,{id: number}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof downgradeVenue>>, TError,{id: number}, TContext> => {
+
+const mutationKey = ['downgradeVenue'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof downgradeVenue>>, {id: number}> = (props) => {
+          const {id} = props ?? {};
+
+          return  downgradeVenue(id,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type DowngradeVenueMutationResult = NonNullable<Awaited<ReturnType<typeof downgradeVenue>>>
+
+    export type DowngradeVenueMutationError = ErrorType<ErrorResponse>
+
+    /**
+ * @summary Downgrade a venue to Tier 2
+ */
+export const useDowngradeVenue = <TError = ErrorType<ErrorResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof downgradeVenue>>, TError,{id: number}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof downgradeVenue>>,
+        TError,
+        {id: number},
+        TContext
+      > => {
+      return useMutation(getDowngradeVenueMutationOptions(options));
+    }
+
+export const getRejectVenueUrl = (id: number,) => {
+
+
+
+
+  return `/api/venues/${id}/reject`
+}
+
+/**
+ * @summary Reject a venue to untiered
+ */
+export const rejectVenue = async (id: number, options?: RequestInit): Promise<Venue> => {
+
+  return customFetch<Venue>(getRejectVenueUrl(id),
+  {
+    ...options,
+    method: 'PATCH'
+
+
+  }
+);}
+
+
+
+
+
+export const getRejectVenueMutationOptions = <TError = ErrorType<ErrorResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof rejectVenue>>, TError,{id: number}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof rejectVenue>>, TError,{id: number}, TContext> => {
+
+const mutationKey = ['rejectVenue'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof rejectVenue>>, {id: number}> = (props) => {
+          const {id} = props ?? {};
+
+          return  rejectVenue(id,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type RejectVenueMutationResult = NonNullable<Awaited<ReturnType<typeof rejectVenue>>>
+
+    export type RejectVenueMutationError = ErrorType<ErrorResponse>
+
+    /**
+ * @summary Reject a venue to untiered
+ */
+export const useRejectVenue = <TError = ErrorType<ErrorResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof rejectVenue>>, TError,{id: number}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof rejectVenue>>,
+        TError,
+        {id: number},
+        TContext
+      > => {
+      return useMutation(getRejectVenueMutationOptions(options));
     }
 

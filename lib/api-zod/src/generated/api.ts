@@ -276,3 +276,163 @@ export const RejectBookingResponse = zod.object({
 })
 
 
+/**
+ * Powers the Concierge Ops Dashboard review queue -- defaults to `pending_review` so reviewers see freshly-extracted venues first.
+ * @summary List venues by tier
+ */
+export const ListVenuesQueryParams = zod.object({
+  "tier": zod.enum(['pending_review', 'tier1', 'tier2', 'untiered']).optional()
+})
+
+export const ListVenuesResponseItem = zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "venueType": zod.string(),
+  "neighborhood": zod.string(),
+  "borough": zod.string().nullish(),
+  "city": zod.string(),
+  "address": zod.string().nullish(),
+  "category": zod.string().nullish(),
+  "tier": zod.enum(['pending_review', 'tier1', 'tier2', 'untiered']),
+  "compositeScore": zod.string().nullish(),
+  "firstPartyWeight": zod.string(),
+  "closureSuspected": zod.boolean(),
+  "candidateSourceRef": zod.string().nullish(),
+  "lastValidatedAt": zod.coerce.date().nullish(),
+  "createdAt": zod.coerce.date(),
+  "updatedAt": zod.coerce.date()
+})
+export const ListVenuesResponse = zod.array(ListVenuesResponseItem)
+
+
+/**
+ * @summary Get a venue with its extracted signals and attributes
+ */
+export const GetVenueParams = zod.object({
+  "id": zod.coerce.number()
+})
+
+export const GetVenueResponse = zod.object({
+  "venue": zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "venueType": zod.string(),
+  "neighborhood": zod.string(),
+  "borough": zod.string().nullish(),
+  "city": zod.string(),
+  "address": zod.string().nullish(),
+  "category": zod.string().nullish(),
+  "tier": zod.enum(['pending_review', 'tier1', 'tier2', 'untiered']),
+  "compositeScore": zod.string().nullish(),
+  "firstPartyWeight": zod.string(),
+  "closureSuspected": zod.boolean(),
+  "candidateSourceRef": zod.string().nullish(),
+  "lastValidatedAt": zod.coerce.date().nullish(),
+  "createdAt": zod.coerce.date(),
+  "updatedAt": zod.coerce.date()
+}),
+  "signals": zod.array(zod.object({
+  "id": zod.number(),
+  "venueId": zod.number(),
+  "source": zod.string(),
+  "value": zod.record(zod.string(), zod.unknown()),
+  "confidence": zod.string(),
+  "sourceUrls": zod.array(zod.string()),
+  "schemaVersion": zod.number(),
+  "extractedAt": zod.coerce.date()
+})),
+  "attributes": zod.array(zod.object({
+  "id": zod.number(),
+  "venueId": zod.number(),
+  "dimension": zod.string(),
+  "value": zod.record(zod.string(), zod.unknown()),
+  "confidence": zod.string(),
+  "sourceCount": zod.number(),
+  "sourceUrls": zod.array(zod.string()),
+  "schemaVersion": zod.number(),
+  "extractedAt": zod.coerce.date()
+}))
+})
+
+
+/**
+ * @summary Approve a venue to Tier 1
+ */
+export const ApproveVenueParams = zod.object({
+  "id": zod.coerce.number()
+})
+
+export const ApproveVenueResponse = zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "venueType": zod.string(),
+  "neighborhood": zod.string(),
+  "borough": zod.string().nullish(),
+  "city": zod.string(),
+  "address": zod.string().nullish(),
+  "category": zod.string().nullish(),
+  "tier": zod.enum(['pending_review', 'tier1', 'tier2', 'untiered']),
+  "compositeScore": zod.string().nullish(),
+  "firstPartyWeight": zod.string(),
+  "closureSuspected": zod.boolean(),
+  "candidateSourceRef": zod.string().nullish(),
+  "lastValidatedAt": zod.coerce.date().nullish(),
+  "createdAt": zod.coerce.date(),
+  "updatedAt": zod.coerce.date()
+})
+
+
+/**
+ * @summary Downgrade a venue to Tier 2
+ */
+export const DowngradeVenueParams = zod.object({
+  "id": zod.coerce.number()
+})
+
+export const DowngradeVenueResponse = zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "venueType": zod.string(),
+  "neighborhood": zod.string(),
+  "borough": zod.string().nullish(),
+  "city": zod.string(),
+  "address": zod.string().nullish(),
+  "category": zod.string().nullish(),
+  "tier": zod.enum(['pending_review', 'tier1', 'tier2', 'untiered']),
+  "compositeScore": zod.string().nullish(),
+  "firstPartyWeight": zod.string(),
+  "closureSuspected": zod.boolean(),
+  "candidateSourceRef": zod.string().nullish(),
+  "lastValidatedAt": zod.coerce.date().nullish(),
+  "createdAt": zod.coerce.date(),
+  "updatedAt": zod.coerce.date()
+})
+
+
+/**
+ * @summary Reject a venue to untiered
+ */
+export const RejectVenueParams = zod.object({
+  "id": zod.coerce.number()
+})
+
+export const RejectVenueResponse = zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "venueType": zod.string(),
+  "neighborhood": zod.string(),
+  "borough": zod.string().nullish(),
+  "city": zod.string(),
+  "address": zod.string().nullish(),
+  "category": zod.string().nullish(),
+  "tier": zod.enum(['pending_review', 'tier1', 'tier2', 'untiered']),
+  "compositeScore": zod.string().nullish(),
+  "firstPartyWeight": zod.string(),
+  "closureSuspected": zod.boolean(),
+  "candidateSourceRef": zod.string().nullish(),
+  "lastValidatedAt": zod.coerce.date().nullish(),
+  "createdAt": zod.coerce.date(),
+  "updatedAt": zod.coerce.date()
+})
+
+

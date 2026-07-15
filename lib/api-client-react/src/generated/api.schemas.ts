@@ -203,7 +203,79 @@ export interface Booking {
   decidedAt?: string | null;
 }
 
+export type VenueTier = typeof VenueTier[keyof typeof VenueTier];
+
+
+export const VenueTier = {
+  pending_review: 'pending_review',
+  tier1: 'tier1',
+  tier2: 'tier2',
+  untiered: 'untiered',
+} as const;
+
+export interface Venue {
+  id: number;
+  name: string;
+  venueType: string;
+  neighborhood: string;
+  /** @nullable */
+  borough?: string | null;
+  city: string;
+  /** @nullable */
+  address?: string | null;
+  /** @nullable */
+  category?: string | null;
+  tier: VenueTier;
+  /** @nullable */
+  compositeScore?: string | null;
+  firstPartyWeight: string;
+  closureSuspected: boolean;
+  /** @nullable */
+  candidateSourceRef?: string | null;
+  /** @nullable */
+  lastValidatedAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type VenueSignalValue = { [key: string]: unknown };
+
+export interface VenueSignal {
+  id: number;
+  venueId: number;
+  source: string;
+  value: VenueSignalValue;
+  confidence: string;
+  sourceUrls: string[];
+  schemaVersion: number;
+  extractedAt: string;
+}
+
+export type VenueAttributeValue = { [key: string]: unknown };
+
+export interface VenueAttribute {
+  id: number;
+  venueId: number;
+  dimension: string;
+  value: VenueAttributeValue;
+  confidence: string;
+  sourceCount: number;
+  sourceUrls: string[];
+  schemaVersion: number;
+  extractedAt: string;
+}
+
+export interface VenueDetail {
+  venue: Venue;
+  signals: VenueSignal[];
+  attributes: VenueAttribute[];
+}
+
 export type ListBookingsParams = {
 status?: BookingStatus;
+};
+
+export type ListVenuesParams = {
+tier?: VenueTier;
 };
 

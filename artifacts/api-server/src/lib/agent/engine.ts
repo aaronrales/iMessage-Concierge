@@ -128,7 +128,10 @@ function buildProfileSummary(context: ThreadContext): string {
  * single-call path for chitchat still lands here too, it just resolves after
  * one iteration since the model has no reason to call a tool.
  */
-async function runTurnWithTools(messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[]): Promise<string> {
+async function runTurnWithTools(
+  messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[],
+  threadId: number,
+): Promise<string> {
   for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
     const completion = await openai.chat.completions.create({
       model: CHAT_MODEL,
@@ -147,7 +150,7 @@ async function runTurnWithTools(messages: OpenAI.Chat.Completions.ChatCompletion
       messages.push(message);
       for (const toolCall of message.tool_calls) {
         if (toolCall.type !== "function") continue;
-        const result = await executeAgentTool(toolCall.function.name, toolCall.function.arguments);
+        const result = await executeAgentTool(toolCall.function.name, toolCall.function.arguments, threadId);
         messages.push({
           role: "tool",
           tool_call_id: toolCall.id,
@@ -197,7 +200,7 @@ export async function runAgentTurn(context: ThreadContext, currentUserId: number
     await showTypingIndicator(context.thread.id);
   }
 
-  const raw = await runTurnWithTools(messages);
+  const raw = await runTurnWithTools(messages, context.thread.id);
 
   let parsed: RawAgentResponse;
   try {

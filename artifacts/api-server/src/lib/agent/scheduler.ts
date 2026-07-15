@@ -31,6 +31,7 @@ import {
   markOnboardingNudgeSentForUser,
 } from "./context";
 import { DEFAULT_CITY, daysUntilNextSaturday, getForecastForDay } from "./weather";
+import { ensureRevalidationConfigSeeded, runRevalidationScan } from "./venueCorpus/revalidation";
 
 const QUEUES = {
   pollNudge: "poll-nudge",
@@ -42,6 +43,7 @@ const QUEUES = {
   occasionScan: "occasion-scan",
   serendipityScan: "serendipity-scan",
   onboardingNudge: "onboarding-nudge",
+  venueRevalidationScan: "venue-revalidation-scan",
 } as const;
 
 const NON_VOTER_NUDGE_DELAY_SECONDS = 4 * 60 * 60; // 4 hours after a poll opens
@@ -58,6 +60,11 @@ const OCCASION_REMINDER_WINDOW_MS = 14 * 24 * 60 * 60 * 1000; // ~2 weeks out
 const SERENDIPITY_SCAN_CRON = "0 16 * * *"; // daily at 16:00 UTC
 const ONBOARDING_NUDGE_SCAN_CRON = "*/30 * * * *"; // every 30 minutes
 const ONBOARDING_STALL_THRESHOLD_MS = 24 * 60 * 60 * 1000; // 24 hours with no reply to the onboarding DM
+// Runs daily, but `getVenuesDueForRevalidation` only returns venues whose
+// own type's cadence (monthly for restaurants/bars, see
+// `venueTypeRevalidationConfigTable`) has actually elapsed -- daily is just
+// how often we check whether anything has come due, not the cadence itself.
+const VENUE_REVALIDATION_SCAN_CRON = "0 9 * * *"; // daily at 09:00 UTC
 // A group has to have gone quiet for a real stretch before an unprompted
 // suggestion is worth the interruption -- this is what keeps it feeling
 // rare and well-timed instead of naggy.
@@ -310,6 +317,13 @@ export async function scheduleDayBeforeReminder(threadId: number, planId: number
   await boss.sendAfter(QUEUES.planReminder, { threadId, planId }, null, delaySeconds);
 }
 
+async function handleVenueRevalidationScan(): Promise<void> {
+  const result = await runRevalidationScan();
+  if (result.checked > 0) {
+    logger.info({ checked: result.checked, suppressed: result.suppressed }, "Venue revalidation scan complete");
+  }
+}
+
 export async function initScheduler(): Promise<void> {
   if (boss) return;
 
@@ -318,6 +332,8 @@ export async function initScheduler(): Promise<void> {
     logger.warn("DATABASE_URL not set; proactive scheduler disabled");
     return;
   }
+
+  await ensureRevalidationConfigSeeded();
 
   boss = new PgBoss(connectionString);
   boss.on("error", (error: unknown) => logger.error({ error }, "pg-boss error"));
@@ -354,12 +370,16 @@ export async function initScheduler(): Promise<void> {
   await boss.work(QUEUES.onboardingNudge, async () => {
     await handleOnboardingNudgeScan();
   });
+  await boss.work(QUEUES.venueRevalidationScan, async () => {
+    await handleVenueRevalidationScan();
+  });
 
   await boss.schedule(QUEUES.planRevive, STALLED_SCAN_CRON);
   await boss.schedule(QUEUES.feedbackPrompt, FEEDBACK_SCAN_CRON);
   await boss.schedule(QUEUES.occasionScan, OCCASION_SCAN_CRON);
   await boss.schedule(QUEUES.serendipityScan, SERENDIPITY_SCAN_CRON);
   await boss.schedule(QUEUES.onboardingNudge, ONBOARDING_NUDGE_SCAN_CRON);
+  await boss.schedule(QUEUES.venueRevalidationScan, VENUE_REVALIDATION_SCAN_CRON);
 
   logger.info("Proactive messaging scheduler started");
 }

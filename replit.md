@@ -25,14 +25,15 @@ A personal AI concierge that lives inside iMessage. It joins 1:1 and group threa
 
 ## Where things live
 
-- DB schema: `lib/db/src/schema/` — `users`, `profiles`, `threads`, `threadParticipants`, `messages`, `polls`/`pollOptions`/`pollVotes`, `bookings`
+- DB schema: `lib/db/src/schema/` — `users`, `profiles`, `threads`, `threadParticipants`, `messages`, `polls`/`pollOptions`/`pollVotes`, `bookings`, `venues`/`venueSignals`/`venueAttributes`/`venueTypeRevalidationConfig`/`recommendationEvents`/`venueFeedback`
 - API contract: `lib/api-spec/openapi.yaml` — source of truth; run codegen after editing
 - Sendblue webhook receiver: `artifacts/api-server/src/routes/webhooks/sendblue.ts` — this is the core orchestration loop (vote detection → approval detection → LLM turn)
 - Sendblue outbound client: `artifacts/api-server/src/lib/sendblue.ts`
 - LLM conversation engine: `artifacts/api-server/src/lib/agent/engine.ts` — single structured-JSON completion per inbound message (reply + profile updates + onboarding + poll + booking draft)
 - Poll tallying: `artifacts/api-server/src/lib/agent/polls.ts`
 - Booking draft/approval helpers: `artifacts/api-server/src/lib/agent/bookings.ts`
-- Dashboard read/action API routes: `artifacts/api-server/src/routes/{users,threads,bookings}.ts`
+- Dashboard read/action API routes: `artifacts/api-server/src/routes/{users,threads,bookings,venues}.ts`
+- Curated venue corpus (NYC): `artifacts/api-server/src/lib/agent/venueCorpus/` — extraction, scoring/tiering, review, lookup, population, revalidation, recommendation/feedback logging. Manual population runner: `pnpm --filter @workspace/api-server run populate-venues -- --neighborhood "<name>" [--borough <name>] [--venue-type restaurant|bar] [--limit <n>]`. Dashboard review queue at `/venues`.
 
 ## Architecture decisions
 
@@ -61,6 +62,7 @@ A personal AI concierge that lives inside iMessage. It joins 1:1 and group threa
 - `SENDBLUE_API_KEY_ID` / `SENDBLUE_API_SECRET_KEY` / `SENDBLUE_FROM_NUMBER` must be set (via secrets) for real outbound iMessage sends to work. The webhook receiver and dashboard APIs work fully without them (verified via direct webhook POSTs); `sendblue.ts` logs a warning and no-ops on send rather than throwing when they're missing.
 - The webhook endpoint is `POST /api/webhooks/sendblue/:secret` — the `:secret` path segment must match the `SENDBLUE_WEBHOOK_SECRET` env var (auto-generated, not a Sendblue-issued value). This is the only authenticity check available since Sendblue doesn't sign webhook payloads. Register this exact full URL (including the secret) as the Sendblue `receive` webhook, not the bare `/api/webhooks/sendblue` path.
 - Always run `pnpm --filter @workspace/api-spec run codegen` after editing `lib/api-spec/openapi.yaml`, then `pnpm --filter @workspace/api-server run typecheck`.
+- `YELP_API_KEY` is not currently set. The venue candidate-sourcing step (`listVenueCandidates`, used by both the existing `search_venues` agent tool and the new venue-corpus population job) warns and returns zero candidates without it — set this secret before running the real NYC population pass.
 
 ## Pointers
 

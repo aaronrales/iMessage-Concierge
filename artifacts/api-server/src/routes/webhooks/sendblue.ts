@@ -52,6 +52,7 @@ import { buildReservationLinks, describeReservationLinks } from "../../lib/agent
 import { buildPlanCardMediaUrl } from "../../lib/agent/planCard";
 import { captureOccasion } from "../../lib/agent/occasions";
 import { recordPastChoice } from "../../lib/agent/tasteEngine";
+import { findVenueIdByName, markVenuePicked, recordVenueFeedback } from "../../lib/agent/venueCorpus/recommendationLog";
 import {
   aggregatePrivateInput,
   createPrivateInputRequest,
@@ -60,7 +61,7 @@ import {
   recordPrivateInputResponse,
   resolvePrivateInputRequest,
 } from "../../lib/agent/privateInput";
-import { feedbackTable, db, threadParticipantsTable, threadsTable, usersTable } from "@workspace/db";
+import { feedbackTable, db, plansTable, threadParticipantsTable, threadsTable, usersTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 
 /** iMessage tapback text on this poll's own announcement bubbles counts as a vote (Phase 2 texting UX polish). */
@@ -364,6 +365,23 @@ router.post("/webhooks/sendblue/:secret", async (req, res): Promise<void> => {
         kind: ratingMatch ? "rating" : "free_text",
         value,
       });
+
+      // Venue-specific feedback, distinct from the generic plan feedback
+      // above -- best-effort matched by the plan's free-text `venue` name
+      // against the curated corpus. Nothing consumes this for ranking yet.
+      const [feedbackPlan] = await db.select().from(plansTable).where(eq(plansTable.id, threadRow.pendingFeedbackPlanId));
+      if (feedbackPlan?.venue) {
+        const venueId = await findVenueIdByName(feedbackPlan.venue);
+        await recordVenueFeedback({
+          venueId,
+          threadId,
+          planId: feedbackPlan.id,
+          userId: senderUserId,
+          rating: ratingMatch ? Number.parseInt(ratingMatch[1] as string, 10) : null,
+          comment: ratingMatch ? null : event.content.trim(),
+        });
+      }
+
       await setPendingFeedback(threadId, null);
       await sendToThread(threadId, "Thanks for the feedback -- noted for next time!");
       res.status(200).json({ received: true });
@@ -521,6 +539,13 @@ router.post("/webhooks/sendblue/:secret", async (req, res): Promise<void> => {
           // preferences.
           if (plan.venue) {
             await Promise.all(attendeeRows.map((row) => recordPastChoice(row.user.id, plan.venue as string)));
+
+            // A confirmed booking is the strongest possible "picked" signal
+            // for the venue corpus's recommendation-event log.
+            const pickedVenueId = await findVenueIdByName(plan.venue);
+            if (pickedVenueId) {
+              await markVenuePicked(booking.threadId, pickedVenueId, plan.id);
+            }
           }
         }
 

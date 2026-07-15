@@ -263,6 +263,114 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /venues:
+    get:
+      operationId: listVenues
+      tags: [venues]
+      summary: List venues by tier
+      description: >
+        Powers the Concierge Ops Dashboard review queue -- defaults to
+        `pending_review` so reviewers see freshly-extracted venues first.
+      parameters:
+        - name: tier
+          in: query
+          required: false
+          schema:
+            $ref: "#/components/schemas/VenueTier"
+      responses:
+        "200":
+          description: Venues
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Venue"
+
+  /venues/{id}:
+    get:
+      operationId: getVenue
+      tags: [venues]
+      summary: Get a venue with its extracted signals and attributes
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "200":
+          description: Venue detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VenueDetail"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /venues/{id}/approve:
+    patch:
+      operationId: approveVenue
+      tags: [venues]
+      summary: Approve a venue to Tier 1
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "200":
+          description: Venue approved to Tier 1
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Venue"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /venues/{id}/downgrade:
+    patch:
+      operationId: downgradeVenue
+      tags: [venues]
+      summary: Downgrade a venue to Tier 2
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "200":
+          description: Venue downgraded to Tier 2
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Venue"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /venues/{id}/reject:
+    patch:
+      operationId: rejectVenue
+      tags: [venues]
+      summary: Reject a venue to untiered
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "200":
+          description: Venue rejected to untiered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Venue"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
 components:
   parameters:
     IdParam:
@@ -553,3 +661,114 @@ components:
         decidedAt:
           type: ["string", "null"]
           format: date-time
+
+    VenueTier:
+      type: string
+      enum: [pending_review, tier1, tier2, untiered]
+
+    Venue:
+      type: object
+      required: [id, name, venueType, neighborhood, city, tier, firstPartyWeight, closureSuspected, createdAt, updatedAt]
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        venueType:
+          type: string
+        neighborhood:
+          type: string
+        borough:
+          type: ["string", "null"]
+        city:
+          type: string
+        address:
+          type: ["string", "null"]
+        category:
+          type: ["string", "null"]
+        tier:
+          $ref: "#/components/schemas/VenueTier"
+        compositeScore:
+          type: ["string", "null"]
+        firstPartyWeight:
+          type: string
+        closureSuspected:
+          type: boolean
+        candidateSourceRef:
+          type: ["string", "null"]
+        lastValidatedAt:
+          type: ["string", "null"]
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    VenueSignal:
+      type: object
+      required: [id, venueId, source, value, confidence, sourceUrls, schemaVersion, extractedAt]
+      properties:
+        id:
+          type: integer
+        venueId:
+          type: integer
+        source:
+          type: string
+        value:
+          type: object
+          additionalProperties: true
+        confidence:
+          type: string
+        sourceUrls:
+          type: array
+          items:
+            type: string
+        schemaVersion:
+          type: integer
+        extractedAt:
+          type: string
+          format: date-time
+
+    VenueAttribute:
+      type: object
+      required: [id, venueId, dimension, value, confidence, sourceCount, sourceUrls, schemaVersion, extractedAt]
+      properties:
+        id:
+          type: integer
+        venueId:
+          type: integer
+        dimension:
+          type: string
+        value:
+          type: object
+          additionalProperties: true
+        confidence:
+          type: string
+        sourceCount:
+          type: integer
+        sourceUrls:
+          type: array
+          items:
+            type: string
+        schemaVersion:
+          type: integer
+        extractedAt:
+          type: string
+          format: date-time
+
+    VenueDetail:
+      type: object
+      required: [venue, signals, attributes]
+      properties:
+        venue:
+          $ref: "#/components/schemas/Venue"
+        signals:
+          type: array
+          items:
+            $ref: "#/components/schemas/VenueSignal"
+        attributes:
+          type: array
+          items:
+            $ref: "#/components/schemas/VenueAttribute"
