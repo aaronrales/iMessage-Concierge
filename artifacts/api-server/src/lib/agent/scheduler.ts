@@ -1,6 +1,6 @@
 import { PgBoss } from "pg-boss";
 import { eq } from "drizzle-orm";
-import { db, threadParticipantsTable } from "@workspace/db";
+import { db, threadParticipantsTable, threadsTable } from "@workspace/db";
 import { logger } from "../logger";
 import { canSendProactiveMessage, recordProactiveSend } from "./messagingBudget";
 import { sendToThread } from "./delivery";
@@ -12,6 +12,8 @@ import {
   closePollWithWinner,
 } from "./polls";
 import {
+  getActivePlan,
+  getMostRecentPlanForThread,
   getPlanById,
   getStalledPlans,
   getPlansNeedingFeedbackPrompt,
@@ -22,6 +24,8 @@ import {
 } from "./plans";
 import { buildGoogleCalendarLink, describePlanSchedule } from "./calendar";
 import { getOccasionsDueForReminder, markOccasionReminded } from "./occasions";
+import { getAllGroupThreadIds } from "./context";
+import { DEFAULT_CITY, daysUntilNextSaturday, getForecastForDay } from "./weather";
 
 const QUEUES = {
   pollNudge: "poll-nudge",
@@ -31,6 +35,7 @@ const QUEUES = {
   planRevive: "plan-revive",
   feedbackPrompt: "feedback-prompt",
   occasionScan: "occasion-scan",
+  serendipityScan: "serendipity-scan",
 } as const;
 
 const NON_VOTER_NUDGE_DELAY_SECONDS = 4 * 60 * 60; // 4 hours after a poll opens
@@ -44,6 +49,11 @@ const STALLED_SCAN_CRON = "0 * * * *"; // hourly
 const FEEDBACK_SCAN_CRON = "*/30 * * * *"; // every 30 minutes
 const OCCASION_SCAN_CRON = "0 15 * * *"; // daily at 15:00 UTC
 const OCCASION_REMINDER_WINDOW_MS = 14 * 24 * 60 * 60 * 1000; // ~2 weeks out
+const SERENDIPITY_SCAN_CRON = "0 16 * * *"; // daily at 16:00 UTC
+// A group has to have gone quiet for a real stretch before an unprompted
+// suggestion is worth the interruption -- this is what keeps it feeling
+// rare and well-timed instead of naggy.
+const SERENDIPITY_MIN_DAYS_SINCE_LAST_PLAN = 21;
 
 let boss: PgBoss | null = null;
 
@@ -213,6 +223,47 @@ async function handleOccasionScan(): Promise<void> {
   }
 }
 
+/**
+ * Rationed proactive serendipity: once a day, checks every group thread for
+ * the rare combination of "good weather coming up" + "this group hasn't met
+ * in a while" + "nothing already in flight" + "budget allows it" -- the
+ * `serendipity` category is the strictest tier (1 per 14 days), which is
+ * what keeps this feeling like an occasional delight instead of a nag.
+ */
+async function handleSerendipityScan(): Promise<void> {
+  const threadIds = await getAllGroupThreadIds();
+
+  for (const threadId of threadIds) {
+    // Never compete with a plan that's already in motion.
+    const activePlan = await getActivePlan(threadId);
+    if (activePlan) continue;
+
+    const mostRecent = await getMostRecentPlanForThread(threadId);
+    const lastPlanAt = mostRecent?.scheduledFor ?? mostRecent?.createdAt ?? null;
+    const daysSinceLastPlan = lastPlanAt ? (Date.now() - lastPlanAt.getTime()) / (24 * 60 * 60 * 1000) : Infinity;
+    if (daysSinceLastPlan < SERENDIPITY_MIN_DAYS_SINCE_LAST_PLAN) continue;
+
+    if (!(await canSendProactiveMessage(threadId, "serendipity"))) continue;
+
+    const [threadRow] = await db.select({ homeCity: threadsTable.homeCity }).from(threadsTable).where(eq(threadsTable.id, threadId));
+    const city = threadRow?.homeCity || DEFAULT_CITY;
+    const daysOut = daysUntilNextSaturday();
+    const forecast = await getForecastForDay(city, daysOut);
+    if (!forecast || !forecast.isGoodWeather) continue;
+
+    const weeksSince = Math.round(daysSinceLastPlan / 7);
+    const cadenceLine =
+      weeksSince > 0 && Number.isFinite(daysSinceLastPlan)
+        ? `you all haven't met up in about ${weeksSince} week${weeksSince === 1 ? "" : "s"}`
+        : "it's been a while since you all last got together";
+    await sendToThread(
+      threadId,
+      `${Math.round(forecast.highF)}\u00b0 this Saturday and ${cadenceLine} -- want me to find a spot?`,
+    );
+    await recordProactiveSend(threadId, "serendipity");
+  }
+}
+
 export async function scheduleNonVoterNudge(threadId: number, pollId: number): Promise<void> {
   if (!boss) return;
   await boss.sendAfter(QUEUES.pollNudge, { threadId, pollId }, null, NON_VOTER_NUDGE_DELAY_SECONDS);
@@ -264,10 +315,14 @@ export async function initScheduler(): Promise<void> {
   await boss.work(QUEUES.occasionScan, async () => {
     await handleOccasionScan();
   });
+  await boss.work(QUEUES.serendipityScan, async () => {
+    await handleSerendipityScan();
+  });
 
   await boss.schedule(QUEUES.planRevive, STALLED_SCAN_CRON);
   await boss.schedule(QUEUES.feedbackPrompt, FEEDBACK_SCAN_CRON);
   await boss.schedule(QUEUES.occasionScan, OCCASION_SCAN_CRON);
+  await boss.schedule(QUEUES.serendipityScan, SERENDIPITY_SCAN_CRON);
 
   logger.info("Proactive messaging scheduler started");
 }

@@ -11,3 +11,4 @@ export * from "./bookings";
 export * from "./messagingBudget";
 export * from "./feedback";
 export * from "./occasions";
+export * from "./privateInput";

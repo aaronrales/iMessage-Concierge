@@ -69,6 +69,17 @@ export async function markPlanDone(planId: number): Promise<Plan> {
   return plan;
 }
 
+/** Most recent plan for a thread regardless of status, for cadence calculations (e.g. "how long since this group last met"). */
+export async function getMostRecentPlanForThread(threadId: number): Promise<Plan | null> {
+  const rows = await db
+    .select()
+    .from(plansTable)
+    .where(eq(plansTable.threadId, threadId))
+    .orderBy(desc(plansTable.createdAt))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
 export async function getPlanById(planId: number): Promise<Plan | null> {
   const [plan] = await db.select().from(plansTable).where(eq(plansTable.id, planId));
   return plan ?? null;

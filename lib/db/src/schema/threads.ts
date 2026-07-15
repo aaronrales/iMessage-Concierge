@@ -21,6 +21,10 @@ export const threadsTable = pgTable("threads", {
   // been sent, so it never repeats even as new members join later (new
   // members instead get a short one-line welcome, see thread_participants).
   introducedAt: timestamp("introduced_at", { withTimezone: true }),
+  // Best-effort home city for this group, used to localize weather lookups
+  // for the serendipity feature. Backfilled from a confirmed booking's
+  // `details.city` when known; falls back to a default city when null.
+  homeCity: text("home_city"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true })
     .notNull()

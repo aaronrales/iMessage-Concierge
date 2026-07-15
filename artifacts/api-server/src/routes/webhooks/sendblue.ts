@@ -40,12 +40,21 @@ import {
   findPendingBookingForApprover,
   rejectBookingRecord,
 } from "../../lib/agent/bookings";
-import { confirmPlan, getOrCreateActivePlan, setPlanScheduledFor, setPlanVenue, setPendingFeedback } from "../../lib/agent/plans";
+import { confirmPlan, getActivePlan, getOrCreateActivePlan, setPlanScheduledFor, setPlanVenue, setPendingFeedback } from "../../lib/agent/plans";
 import { buildGoogleCalendarLink, describePlanSchedule } from "../../lib/agent/calendar";
 import { scheduleDayBeforeReminder, scheduleNonVoterNudge } from "../../lib/agent/scheduler";
 import { buildReservationLinks, describeReservationLinks } from "../../lib/agent/bookingLinks";
 import { buildPlanCardMediaUrl } from "../../lib/agent/planCard";
 import { captureOccasion } from "../../lib/agent/occasions";
+import { recordPastChoice } from "../../lib/agent/tasteEngine";
+import {
+  aggregatePrivateInput,
+  createPrivateInputRequest,
+  getOpenPrivateInputRequestForUser,
+  isPrivateInputComplete,
+  recordPrivateInputResponse,
+  resolvePrivateInputRequest,
+} from "../../lib/agent/privateInput";
 import { feedbackTable, db, threadParticipantsTable, threadsTable, usersTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 
@@ -115,6 +124,21 @@ async function processAgentTurn(threadId: number, senderUserId: number): Promise
       label: result.occasion.label,
       occasionDate: result.occasion.date,
     });
+  }
+
+  if (result.privateQuestion && isGroup) {
+    const plan = await getActivePlan(threadId);
+    const request = await createPrivateInputRequest(threadId, plan?.id ?? null, result.privateQuestion);
+    for (const { user } of context.participants) {
+      if (!user.phoneNumber) continue;
+      const { thread: dmThread } = await findOrCreateDirectThread(user.phoneNumber);
+      await sendToThread(dmThread.id, result.privateQuestion);
+    }
+    // Track which request each DM thread is currently answering isn't
+    // needed explicitly -- `getOpenPrivateInputRequestForUser` resolves it
+    // by joining through thread_participants, since a request is keyed to
+    // the group thread and every participant is a member of it.
+    void request;
   }
 
   if (result.bookingDraft) {
@@ -214,10 +238,20 @@ router.post("/webhooks/sendblue/:secret", async (req, res): Promise<void> => {
       // preference-gathering questions happen privately.
       const needingDisclosure = await getParticipantsNeedingDisclosure(threadId);
       for (const person of needingDisclosure) {
-        await sendToThread(threadId, `Hey ${person.displayName ?? "there"}, welcome -- glad to have you here.`);
+        // Cross-thread memory: someone who already has a completed profile
+        // from another thread is a known quantity the moment they show up
+        // here -- skip re-running the preference questionnaire and just
+        // acknowledge that the concierge already knows them.
+        const isReturningMember = person.onboardingStatus === "completed";
+        await sendToThread(
+          threadId,
+          isReturningMember
+            ? `Hey ${person.displayName ?? "there"}, welcome -- I already know your usual picks, so I'll factor those in.`
+            : `Hey ${person.displayName ?? "there"}, welcome -- glad to have you here.`,
+        );
         await markDisclosureSent(threadId, person.id);
 
-        if (person.phoneNumber) {
+        if (!isReturningMember && person.phoneNumber) {
           const { thread: dmThread } = await findOrCreateDirectThread(person.phoneNumber);
           await sendToThread(
             dmThread.id,
@@ -282,6 +316,27 @@ router.post("/webhooks/sendblue/:secret", async (req, res): Promise<void> => {
       await sendToThread(threadId, "Thanks for the feedback -- noted for next time!");
       res.status(200).json({ received: true });
       return;
+    }
+
+    // 2.5. Private aggregation over DM: if this is a 1:1 thread and the
+    // sender owes an answer to an open private-input request, this reply is
+    // almost certainly that answer, not a normal chat message. Only the
+    // combined result (never this raw answer) ever reaches the group.
+    if (!isGroup) {
+      const openRequest = await getOpenPrivateInputRequestForUser(senderUserId);
+      if (openRequest) {
+        await recordPrivateInputResponse(openRequest.id, senderUserId, event.content);
+        await sendToThread(threadId, "Got it, thanks -- keeping that between us.");
+
+        if (await isPrivateInputComplete(openRequest)) {
+          const summary = await aggregatePrivateInput(openRequest);
+          await resolvePrivateInputRequest(openRequest.id, summary);
+          await sendToThread(openRequest.threadId, summary);
+        }
+
+        res.status(200).json({ received: true });
+        return;
+      }
     }
 
     // 3. If there's an open poll on this thread, check whether this message is a vote.
@@ -407,6 +462,14 @@ router.post("/webhooks/sendblue/:secret", async (req, res): Promise<void> => {
             .where(eq(threadParticipantsTable.threadId, booking.threadId));
           const attendeeNames = attendeeRows.map((row) => row.user.displayName ?? row.user.phoneNumber);
           mediaUrl = (await buildPlanCardMediaUrl(plan, attendeeNames)) ?? undefined;
+
+          // Cross-thread memory: remember what this group actually did, per
+          // person, so the next thread this person is in (even a brand new
+          // group) already has real history to draw on -- not just stated
+          // preferences.
+          if (plan.venue) {
+            await Promise.all(attendeeRows.map((row) => recordPastChoice(row.user.id, plan.venue as string)));
+          }
         }
 
         // Booking deep links: a pre-filled Resy/OpenTable search, framed

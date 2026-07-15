@@ -215,6 +215,12 @@ export async function markGroupIntroduced(threadId: number): Promise<void> {
   await db.update(threadsTable).set({ introducedAt: new Date() }).where(eq(threadsTable.id, threadId));
 }
 
+/** All group thread ids, for scans that need to walk every group (e.g. the serendipity job). */
+export async function getAllGroupThreadIds(): Promise<number[]> {
+  const rows = await db.select({ id: threadsTable.id }).from(threadsTable).where(eq(threadsTable.isGroup, true));
+  return rows.map((row) => row.id);
+}
+
 export async function getOtherParticipants(threadId: number, excludingUserId: number) {
   return db
     .select({ user: usersTable, role: threadParticipantsTable.role })
