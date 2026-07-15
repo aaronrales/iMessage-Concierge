@@ -189,52 +189,77 @@ async function handlePlanReminder({ data }: { data: PlanReminderJobData }): Prom
 async function handlePlanRevive(): Promise<void> {
   const stalled = await getStalledPlans(STALLED_PLAN_THRESHOLD_MS);
   for (const plan of stalled) {
-    if (!(await canSendProactiveMessage(plan.threadId, "nudge"))) continue;
-    await sendToThread(
-      plan.threadId,
-      `Hey -- "${plan.title}" has been sitting for a bit. Still want to lock something in, or should we drop it?`,
-    );
-    await recordProactiveSend(plan.threadId, "nudge");
+    try {
+      if (!(await canSendProactiveMessage(plan.threadId, "nudge"))) continue;
+      await sendToThread(
+        plan.threadId,
+        `Hey -- "${plan.title}" has been sitting for a bit. Still want to lock something in, or should we drop it?`,
+      );
+      await recordProactiveSend(plan.threadId, "nudge");
+    } catch (error) {
+      logger.error({ error, planId: plan.id, threadId: plan.threadId }, "Failed to process plan-revive item; continuing with the rest of the batch");
+    }
   }
 }
 
 async function handleFeedbackScan(): Promise<void> {
   const due = await getPlansNeedingFeedbackPrompt();
   for (const plan of due) {
-    // Budget gating runs first and skips the plan entirely if denied -- we
-    // must never flag a thread as "awaiting feedback" (which hijacks the
-    // user's next reply) unless we actually sent the prompt asking for it.
-    // The plan stays "confirmed" so the next scan retries it once budget
-    // allows.
-    if (!(await canSendProactiveMessage(plan.threadId, "nudge"))) continue;
+    try {
+      // Budget gating runs first and skips the plan entirely if denied -- we
+      // must never flag a thread as "awaiting feedback" (which hijacks the
+      // user's next reply) unless we're actually about to send the prompt
+      // asking for it. The plan stays "confirmed" so the next scan retries
+      // it once budget allows.
+      if (!(await canSendProactiveMessage(plan.threadId, "nudge"))) continue;
 
-    await sendToThread(plan.threadId, `How was "${plan.title}"? Reply with a quick rating (1-5) or a few words.`);
-    await recordProactiveSend(plan.threadId, "nudge");
+      // Mark done and flag the thread *before* sending: if the process
+      // crashes between this write and the send below, the worst case is a
+      // skipped prompt (retried never, since the plan is no longer
+      // "confirmed") rather than the same prompt going out twice on the next
+      // scan. If the send throws synchronously (as opposed to a hard
+      // crash), we can and must roll the "awaiting feedback" flag back --
+      // otherwise the thread stays flagged and the user's next unrelated
+      // message gets misread as feedback for a prompt they never received.
+      await markPlanDone(plan.id);
+      await setPendingFeedback(plan.threadId, plan.id);
 
-    // Only now -- after the prompt was actually sent -- do we mark the plan
-    // done and flag the thread so the next inbound reply is captured as the
-    // answer to this specific prompt.
-    await markPlanDone(plan.id);
-    await setPendingFeedback(plan.threadId, plan.id);
+      try {
+        await sendToThread(plan.threadId, `How was "${plan.title}"? Reply with a quick rating (1-5) or a few words.`);
+        await recordProactiveSend(plan.threadId, "nudge");
+      } catch (sendError) {
+        await setPendingFeedback(plan.threadId, null);
+        throw sendError;
+      }
+    } catch (error) {
+      logger.error({ error, planId: plan.id, threadId: plan.threadId }, "Failed to process feedback-scan item; continuing with the rest of the batch");
+    }
   }
 }
 
 async function handleOccasionScan(): Promise<void> {
   const due = await getOccasionsDueForReminder(OCCASION_REMINDER_WINDOW_MS);
   for (const occasion of due) {
-    // Budget gating first, same reasoning as feedback prompts: never mark an
-    // occasion "reminded" unless the message actually went out, so a denied
-    // send gets retried on the next daily scan instead of being lost.
-    if (!(await canSendProactiveMessage(occasion.threadId, "occasion_reminder"))) continue;
+    try {
+      // Budget gating first, same reasoning as feedback prompts: don't mark
+      // an occasion "reminded" unless we're actually about to send.
+      if (!(await canSendProactiveMessage(occasion.threadId, "occasion_reminder"))) continue;
 
-    const daysAway = Math.round((occasion.occasionDate.getTime() - Date.now()) / (24 * 60 * 60 * 1000));
-    const when = daysAway <= 0 ? "coming right up" : `in about ${daysAway} day${daysAway === 1 ? "" : "s"}`;
-    await sendToThread(
-      occasion.threadId,
-      `Heads up -- ${occasion.label} is ${when}. Want me to help plan something for it?`,
-    );
-    await recordProactiveSend(occasion.threadId, "occasion_reminder");
-    await markOccasionReminded(occasion.id);
+      // Marked *before* the send so a crash in between skips this occasion's
+      // reminder (retried never) rather than sending it twice on the next
+      // daily scan.
+      await markOccasionReminded(occasion.id);
+
+      const daysAway = Math.round((occasion.occasionDate.getTime() - Date.now()) / (24 * 60 * 60 * 1000));
+      const when = daysAway <= 0 ? "coming right up" : `in about ${daysAway} day${daysAway === 1 ? "" : "s"}`;
+      await sendToThread(
+        occasion.threadId,
+        `Heads up -- ${occasion.label} is ${when}. Want me to help plan something for it?`,
+      );
+      await recordProactiveSend(occasion.threadId, "occasion_reminder");
+    } catch (error) {
+      logger.error({ error, occasionId: occasion.id, threadId: occasion.threadId }, "Failed to process occasion-scan item; continuing with the rest of the batch");
+    }
   }
 }
 
@@ -249,33 +274,37 @@ async function handleSerendipityScan(): Promise<void> {
   const threadIds = await getAllGroupThreadIds();
 
   for (const threadId of threadIds) {
-    // Never compete with a plan that's already in motion.
-    const activePlan = await getActivePlan(threadId);
-    if (activePlan) continue;
+    try {
+      // Never compete with a plan that's already in motion.
+      const activePlan = await getActivePlan(threadId);
+      if (activePlan) continue;
 
-    const mostRecent = await getMostRecentPlanForThread(threadId);
-    const lastPlanAt = mostRecent?.scheduledFor ?? mostRecent?.createdAt ?? null;
-    const daysSinceLastPlan = lastPlanAt ? (Date.now() - lastPlanAt.getTime()) / (24 * 60 * 60 * 1000) : Infinity;
-    if (daysSinceLastPlan < SERENDIPITY_MIN_DAYS_SINCE_LAST_PLAN) continue;
+      const mostRecent = await getMostRecentPlanForThread(threadId);
+      const lastPlanAt = mostRecent?.scheduledFor ?? mostRecent?.createdAt ?? null;
+      const daysSinceLastPlan = lastPlanAt ? (Date.now() - lastPlanAt.getTime()) / (24 * 60 * 60 * 1000) : Infinity;
+      if (daysSinceLastPlan < SERENDIPITY_MIN_DAYS_SINCE_LAST_PLAN) continue;
 
-    if (!(await canSendProactiveMessage(threadId, "serendipity"))) continue;
+      if (!(await canSendProactiveMessage(threadId, "serendipity"))) continue;
 
-    const [threadRow] = await db.select({ homeCity: threadsTable.homeCity }).from(threadsTable).where(eq(threadsTable.id, threadId));
-    const city = threadRow?.homeCity || DEFAULT_CITY;
-    const daysOut = daysUntilNextSaturday();
-    const forecast = await getForecastForDay(city, daysOut);
-    if (!forecast || !forecast.isGoodWeather) continue;
+      const [threadRow] = await db.select({ homeCity: threadsTable.homeCity }).from(threadsTable).where(eq(threadsTable.id, threadId));
+      const city = threadRow?.homeCity || DEFAULT_CITY;
+      const daysOut = daysUntilNextSaturday();
+      const forecast = await getForecastForDay(city, daysOut);
+      if (!forecast || !forecast.isGoodWeather) continue;
 
-    const weeksSince = Math.round(daysSinceLastPlan / 7);
-    const cadenceLine =
-      weeksSince > 0 && Number.isFinite(daysSinceLastPlan)
-        ? `you all haven't met up in about ${weeksSince} week${weeksSince === 1 ? "" : "s"}`
-        : "it's been a while since you all last got together";
-    await sendToThread(
-      threadId,
-      `${Math.round(forecast.highF)}\u00b0 this Saturday and ${cadenceLine} -- want me to find a spot?`,
-    );
-    await recordProactiveSend(threadId, "serendipity");
+      const weeksSince = Math.round(daysSinceLastPlan / 7);
+      const cadenceLine =
+        weeksSince > 0 && Number.isFinite(daysSinceLastPlan)
+          ? `you all haven't met up in about ${weeksSince} week${weeksSince === 1 ? "" : "s"}`
+          : "it's been a while since you all last got together";
+      await sendToThread(
+        threadId,
+        `${Math.round(forecast.highF)}\u00b0 this Saturday and ${cadenceLine} -- want me to find a spot?`,
+      );
+      await recordProactiveSend(threadId, "serendipity");
+    } catch (error) {
+      logger.error({ error, threadId }, "Failed to process serendipity-scan item; continuing with the rest of the batch");
+    }
   }
 }
 
@@ -290,17 +319,25 @@ export async function sendOnboardingNudge(userId: number): Promise<void> {
   if (!user || !user.phoneNumber || user.onboardingStatus === "completed") return;
 
   const { thread } = await findOrCreateDirectThread(user.phoneNumber);
+
+  // Marked before the send: if the process crashes in between, the nudge
+  // simply never goes out (fine -- it was one-time and best-effort) rather
+  // than risking a duplicate on the next scan or a manual retry.
+  await markOnboardingNudgeSentForUser(userId);
   await sendToThread(
     thread.id,
     "No pressure at all -- whenever you get a sec, I'd love to know a bit more about you so I can plan things you'll actually enjoy. Even one quick answer helps!",
   );
-  await markOnboardingNudgeSentForUser(userId);
 }
 
 async function handleOnboardingNudgeScan(): Promise<void> {
   const userIds = await getStalledOnboardingUserIds(ONBOARDING_STALL_THRESHOLD_MS);
   for (const userId of userIds) {
-    await sendOnboardingNudge(userId);
+    try {
+      await sendOnboardingNudge(userId);
+    } catch (error) {
+      logger.error({ error, userId }, "Failed to process onboarding-nudge-scan item; continuing with the rest of the batch");
+    }
   }
 }
 

@@ -1,12 +1,14 @@
 import { Router, type IRouter } from "express";
 import { ReceiveSendblueWebhookBody, ReceiveSendblueWebhookParams } from "@workspace/api-zod";
 import {
+  claimInboundMessage,
   findOrCreateDirectThread,
   findOrCreateGroupThread,
   findOrCreateUser,
   getGroupThreadsForUser,
   getParticipantsNeedingDisclosure,
   hasGroupBeenIntroduced,
+  hasMessageWithHandle,
   hasOnboardingRecapBeenSent,
   isGroupFullyOnboarded,
   isParticipantMuted,
@@ -132,16 +134,12 @@ async function processAgentTurn(threadId: number, senderUserId: number): Promise
     }
   }
 
-  if (result.homeCity) {
-    // Best-effort and thread-scoped: apply the learned city to every group
-    // this sender is in that doesn't already have one, rather than trying
-    // to disambiguate which specific group the mention was about.
-    const groupThreads = await getGroupThreadsForUser(senderUserId);
-    for (const groupThread of groupThreads) {
-      if (!groupThread.homeCity) {
-        await setThreadHomeCityIfUnset(groupThread.id, result.homeCity);
-      }
-    }
+  if (result.homeCity && isGroup && !context.thread.homeCity) {
+    // Scoped to the thread the mention actually happened in -- applying it
+    // to every group the sender belongs to risked mislabeling an unrelated
+    // group (e.g. a one-off trip-planning thread) with a city that only
+    // made sense in this conversation.
+    await setThreadHomeCityIfUnset(threadId, result.homeCity);
   }
 
   if (result.poll && isGroup) {
@@ -260,6 +258,20 @@ router.post("/webhooks/sendblue/:secret", async (req, res): Promise<void> => {
     return;
   }
 
+  // Cheap pre-check: Sendblue retries webhook deliveries on any
+  // non-2xx/timeout response, and this handler can take a while (LLM turn,
+  // multiple sends) -- so the same inbound message can arrive more than
+  // once. This skips the common case (a retry that lands well after the
+  // first delivery finished) before doing any work at all. It is *not*
+  // sufficient on its own for near-simultaneous concurrent deliveries --
+  // see the atomic `claimInboundMessage` call below, which is the real
+  // guard against duplicate side effects.
+  if (event.message_handle && (await hasMessageWithHandle(event.message_handle))) {
+    req.log.info({ messageHandle: event.message_handle }, "Ignoring duplicate Sendblue webhook delivery");
+    res.status(200).json({ received: true });
+    return;
+  }
+
   try {
     const isGroup = Boolean(event.group_id);
 
@@ -273,7 +285,46 @@ router.post("/webhooks/sendblue/:secret", async (req, res): Promise<void> => {
       threadId = thread.id;
       const sender = participants.find((p) => p.phoneNumber === event.from_number) ?? (await findOrCreateUser(event.from_number));
       senderUserId = sender.id;
+    } else {
+      const { thread, user } = await findOrCreateDirectThread(event.from_number);
+      threadId = thread.id;
+      senderUserId = user.id;
+    }
 
+    // Atomic idempotency guard: claims this delivery by inserting the
+    // message row under the unique `sendblueMessageHandle` constraint. If a
+    // near-simultaneous retry already won that insert, this returns null --
+    // stop here, *before* running any of the group-intro/disclosure side
+    // effects below or the agent turn, so a duplicate delivery can never
+    // trigger them twice. Messages without a handle (shouldn't happen for
+    // real inbound Sendblue events, but keeps this defensive) always fall
+    // through and get recorded normally.
+    if (event.message_handle) {
+      const claimed = await claimInboundMessage({
+        threadId,
+        userId: senderUserId,
+        content: event.content,
+        sendblueMessageHandle: event.message_handle,
+        rawPayload: event,
+      });
+      if (!claimed) {
+        req.log.info({ messageHandle: event.message_handle }, "Ignoring duplicate Sendblue webhook delivery (race)");
+        res.status(200).json({ received: true });
+        return;
+      }
+    } else {
+      await recordMessage({
+        threadId,
+        userId: senderUserId,
+        direction: "inbound",
+        role: "user",
+        content: event.content,
+        sendblueMessageHandle: null,
+        rawPayload: event,
+      });
+    }
+
+    if (isGroup) {
       // One-time, whole-group intro when the concierge is first added to a
       // new group -- said once, ever, regardless of how many people later
       // join. Distinct from the per-person welcome below.
@@ -312,21 +363,7 @@ router.post("/webhooks/sendblue/:secret", async (req, res): Promise<void> => {
           );
         }
       }
-    } else {
-      const { thread, user } = await findOrCreateDirectThread(event.from_number);
-      threadId = thread.id;
-      senderUserId = user.id;
     }
-
-    await recordMessage({
-      threadId,
-      userId: senderUserId,
-      direction: "inbound",
-      role: "user",
-      content: event.content,
-      sendblueMessageHandle: event.message_handle ?? null,
-      rawPayload: event,
-    });
 
     // 1. Deterministic commands that must always work regardless of mute
     // state or LLM behavior: mute/unmute and "what do you know about me".

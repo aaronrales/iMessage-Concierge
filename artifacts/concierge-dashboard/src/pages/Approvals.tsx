@@ -10,13 +10,14 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Empty, EmptyMedia, EmptyHeader, EmptyTitle, EmptyDescription } from "@/components/ui/empty";
+import { ErrorState } from "@/components/ErrorState";
 
 export function ApprovalsPage() {
   const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState("pending");
 
-  const { data: pendingBookings, isLoading: isPendingLoading } = useListBookings({ status: 'pending_approval' });
-  const { data: historyBookings, isLoading: isHistoryLoading } = useListBookings(); // Can filter client side for others
+  const { data: pendingBookings, isLoading: isPendingLoading, isError: isPendingError, refetch: refetchPending } = useListBookings({ status: 'pending_approval' });
+  const { data: historyBookings, isLoading: isHistoryLoading, isError: isHistoryError, refetch: refetchHistory } = useListBookings(); // Can filter client side for others
 
   const approveBooking = useApproveBooking();
   const rejectBooking = useRejectBooking();
@@ -176,6 +177,10 @@ export function ApprovalsPage() {
                     <div key={i} className="bg-card border border-border rounded-2xl h-48 animate-pulse" />
                   ))}
                 </div>
+              ) : isPendingError ? (
+                <div className="h-full min-h-[400px] flex items-center justify-center">
+                  <ErrorState description="Couldn't load pending approvals." onRetry={() => refetchPending()} />
+                </div>
               ) : pendingBookings?.length === 0 ? (
                 <div className="h-full min-h-[400px] flex items-center justify-center">
                   <Empty>
@@ -205,6 +210,10 @@ export function ApprovalsPage() {
                   {[1, 2, 3].map(i => (
                     <div key={i} className="bg-card border border-border rounded-2xl h-40 animate-pulse" />
                   ))}
+                </div>
+              ) : isHistoryError ? (
+                <div className="h-full min-h-[400px] flex items-center justify-center">
+                  <ErrorState description="Couldn't load booking history." onRetry={() => refetchHistory()} />
                 </div>
               ) : historical.length === 0 ? (
                 <div className="h-full min-h-[400px] flex items-center justify-center">

@@ -11,9 +11,10 @@ import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Empty, EmptyMedia, EmptyHeader, EmptyTitle, EmptyDescription } from "@/components/ui/empty";
+import { ErrorState } from "@/components/ErrorState";
 
 export function UsersPage() {
-  const { data: users, isLoading } = useListUsers();
+  const { data: users, isLoading, isError, refetch } = useListUsers();
   const [search, setSearch] = useState("");
   const [selectedUserId, setSelectedUserId] = useState<number | null>(null);
   const [needsAttentionOnly, setNeedsAttentionOnly] = useState(false);
@@ -112,6 +113,8 @@ export function UsersPage() {
                 </div>
               ))}
             </div>
+          ) : isError ? (
+            <ErrorState description="Couldn't load users." onRetry={() => refetch()} />
           ) : filteredUsers.length === 0 ? (
             <div className="p-8 text-center text-muted-foreground text-sm">
               No users found.

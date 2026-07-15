@@ -1,4 +1,4 @@
-import { pgTable, serial, integer, text, timestamp, boolean, unique } from "drizzle-orm/pg-core";
+import { pgTable, serial, integer, text, timestamp, boolean, unique, index } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 import { usersTable } from "./users";
@@ -28,7 +28,13 @@ export const threadParticipantsTable = pgTable(
     onboardingNudgeSentAt: timestamp("onboarding_nudge_sent_at", { withTimezone: true }),
     joinedAt: timestamp("joined_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (table) => [unique().on(table.threadId, table.userId)],
+  (table) => [
+    unique().on(table.threadId, table.userId),
+    // The (threadId, userId) unique index above already serves threadId-only
+    // lookups (it's the leading column); userId-only lookups (e.g. onboarding
+    // scans across all of a user's groups) need their own index.
+    index("thread_participants_user_id_idx").on(table.userId),
+  ],
 );
 
 export const insertThreadParticipantSchema = createInsertSchema(threadParticipantsTable).omit({

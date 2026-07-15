@@ -5,3 +5,5 @@
 - Open-Meteo (geocoding-api.open-meteo.com + api.open-meteo.com) needs no API key and is a solid default for weather-gated features -- geocode city name to lat/lon first, then request the daily forecast.
 - [OpenAI web_search + structured JSON](openai-websearch-structured-json.md) — `tools:[{type:"web_search"}]` combined with strict `json_schema` output works in one `responses.create` call via the AI Integrations proxy, despite the installed SDK's stale TS types.
 - [Free-text extensible vocab fields](extensible-vocab-text-columns.md) — use `text` columns (not pg-enum) for LLM-extracted category/source/dimension fields so new values don't need a migration.
+- [drizzle-kit push in a non-TTY shell](drizzle-kit-push-non-tty.md) — destructive-change prompts crash without a TTY; apply the one risky DDL statement by hand, then re-run push.
+- [Mark-before-send ordering](mark-before-send-ordering.md) — for one-shot proactive sends, persist the "already sent" marker before the send, not after, to fail toward under- not double-sending.

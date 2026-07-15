@@ -139,6 +139,57 @@ export async function loadThreadContext(threadId: number): Promise<ThreadContext
   };
 }
 
+/**
+ * Whether an inbound message with this Sendblue message handle has already
+ * been recorded. Cheap pre-check the webhook handler uses to skip a retried
+ * delivery *before* doing any work at all. Not sufficient on its own to
+ * guarantee at-most-once processing under concurrent deliveries -- see
+ * `claimInboundMessage`, which is the actual atomic guard.
+ */
+export async function hasMessageWithHandle(sendblueMessageHandle: string): Promise<boolean> {
+  const [existing] = await db
+    .select({ id: messagesTable.id })
+    .from(messagesTable)
+    .where(eq(messagesTable.sendblueMessageHandle, sendblueMessageHandle));
+  return Boolean(existing);
+}
+
+/**
+ * Atomically claims an inbound message by its Sendblue message handle:
+ * inserts the message row, relying on the unique constraint on
+ * `sendblueMessageHandle` to make exactly one concurrent caller win. Returns
+ * the inserted row if this call claimed it, or `null` if another delivery
+ * (near-simultaneous retry) already claimed it first.
+ *
+ * The webhook handler must call this -- and check the result -- *before*
+ * running any side effects (group intro, disclosure welcomes, agent turn),
+ * not just the cheaper `hasMessageWithHandle` pre-check, or two
+ * near-simultaneous retries of the same delivery can both pass the
+ * pre-check and both run those side effects before either insert lands.
+ */
+export async function claimInboundMessage(params: {
+  threadId: number;
+  userId: number | null;
+  content: string;
+  sendblueMessageHandle: string;
+  rawPayload?: unknown;
+}): Promise<Message | null> {
+  const [message] = await db
+    .insert(messagesTable)
+    .values({
+      threadId: params.threadId,
+      userId: params.userId,
+      direction: "inbound",
+      role: "user",
+      content: params.content,
+      sendblueMessageHandle: params.sendblueMessageHandle,
+      rawPayload: params.rawPayload ?? null,
+    })
+    .onConflictDoNothing({ target: messagesTable.sendblueMessageHandle })
+    .returning();
+  return message ?? null;
+}
+
 export async function recordMessage(params: {
   threadId: number;
   userId: number | null;

@@ -1,4 +1,4 @@
-import { pgTable, serial, integer, timestamp, unique } from "drizzle-orm/pg-core";
+import { pgTable, serial, integer, timestamp, unique, index } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 import { pollsTable } from "./polls";
@@ -25,7 +25,12 @@ export const pollVotesTable = pgTable(
   // several rows per (pollId, userId) -- one per date the voter says works --
   // so the unique constraint is on the full triple to prevent exact dupes
   // while still allowing multi-select.
-  (table) => [unique().on(table.pollId, table.userId, table.optionId)],
+  (table) => [
+    unique().on(table.pollId, table.userId, table.optionId),
+    // The unique index above covers pollId-leading lookups; optionId-only
+    // lookups (tallying votes for one option) need their own index.
+    index("poll_votes_option_id_idx").on(table.optionId),
+  ],
 );
 
 export const insertPollVoteSchema = createInsertSchema(pollVotesTable).omit({

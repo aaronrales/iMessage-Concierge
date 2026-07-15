@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { eq } from "drizzle-orm";
+import { desc, eq, inArray } from "drizzle-orm";
 import {
   db,
   messagesTable,
@@ -9,54 +9,87 @@ import {
   threadParticipantsTable,
   threadsTable,
   usersTable,
+  type Message,
 } from "@workspace/db";
 import { GetThreadParams, GetThreadResponse, ListThreadsResponse } from "@workspace/api-zod";
 
 const router: IRouter = Router();
 
-async function getParticipantSummaries(threadId: number) {
+interface ParticipantSummary {
+  userId: number;
+  phoneNumber: string;
+  displayName: string | null;
+  role: string;
+}
+
+/** Participant summaries for every thread id given, batched into a single query keyed by thread id. */
+async function getParticipantSummariesByThreadId(threadIds: number[]): Promise<Map<number, ParticipantSummary[]>> {
+  const result = new Map<number, ParticipantSummary[]>();
+  if (threadIds.length === 0) return result;
+
   const rows = await db
-    .select({ user: usersTable, role: threadParticipantsTable.role })
+    .select({ threadId: threadParticipantsTable.threadId, user: usersTable, role: threadParticipantsTable.role })
     .from(threadParticipantsTable)
     .innerJoin(usersTable, eq(threadParticipantsTable.userId, usersTable.id))
-    .where(eq(threadParticipantsTable.threadId, threadId));
+    .where(inArray(threadParticipantsTable.threadId, threadIds));
 
-  return rows.map((row) => ({
-    userId: row.user.id,
-    phoneNumber: row.user.phoneNumber,
-    displayName: row.user.displayName,
-    role: row.role,
-  }));
+  for (const row of rows) {
+    const list = result.get(row.threadId) ?? [];
+    list.push({
+      userId: row.user.id,
+      phoneNumber: row.user.phoneNumber,
+      displayName: row.user.displayName,
+      role: row.role,
+    });
+    result.set(row.threadId, list);
+  }
+  return result;
+}
+
+/** Most recent message per thread id, batched into a single query instead of one per thread. */
+async function getLatestMessagesByThreadId(threadIds: number[]): Promise<Map<number, Message>> {
+  const result = new Map<number, Message>();
+  if (threadIds.length === 0) return result;
+
+  // Ordered newest-first per thread (threadId, then createdAt desc), so the
+  // first row seen for a given thread id while iterating is its latest
+  // message -- no need to fetch and sort every message per thread.
+  const rows = await db
+    .select()
+    .from(messagesTable)
+    .where(inArray(messagesTable.threadId, threadIds))
+    .orderBy(messagesTable.threadId, desc(messagesTable.createdAt));
+
+  for (const row of rows) {
+    if (!result.has(row.threadId)) {
+      result.set(row.threadId, row);
+    }
+  }
+  return result;
 }
 
 router.get("/threads", async (_req, res): Promise<void> => {
   const threads = await db.select().from(threadsTable).orderBy(threadsTable.updatedAt);
+  const threadIds = threads.map((thread) => thread.id);
 
-  const summaries = await Promise.all(
-    threads.map(async (thread) => {
-      const participants = await getParticipantSummaries(thread.id);
-      const [lastMessage] = await db
-        .select()
-        .from(messagesTable)
-        .where(eq(messagesTable.threadId, thread.id))
-        .orderBy(messagesTable.createdAt)
-        .limit(1);
+  const [participantsByThreadId, latestMessageByThreadId] = await Promise.all([
+    getParticipantSummariesByThreadId(threadIds),
+    getLatestMessagesByThreadId(threadIds),
+  ]);
 
-      const recent = await db.select().from(messagesTable).where(eq(messagesTable.threadId, thread.id));
-      const latest = recent.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0] ?? lastMessage;
-
-      return {
-        id: thread.id,
-        isGroup: thread.isGroup,
-        title: thread.title,
-        participants,
-        lastMessagePreview: latest?.content ?? null,
-        lastMessageAt: latest?.createdAt ?? null,
-        createdAt: thread.createdAt,
-        updatedAt: thread.updatedAt,
-      };
-    }),
-  );
+  const summaries = threads.map((thread) => {
+    const latest = latestMessageByThreadId.get(thread.id);
+    return {
+      id: thread.id,
+      isGroup: thread.isGroup,
+      title: thread.title,
+      participants: participantsByThreadId.get(thread.id) ?? [],
+      lastMessagePreview: latest?.content ?? null,
+      lastMessageAt: latest?.createdAt ?? null,
+      createdAt: thread.createdAt,
+      updatedAt: thread.updatedAt,
+    };
+  });
 
   res.json(ListThreadsResponse.parse(summaries));
 });
@@ -74,47 +107,52 @@ router.get("/threads/:id", async (req, res): Promise<void> => {
     return;
   }
 
-  const participants = await getParticipantSummaries(thread.id);
+  const [participantsByThreadId, messages, polls] = await Promise.all([
+    getParticipantSummariesByThreadId([thread.id]),
+    db.select().from(messagesTable).where(eq(messagesTable.threadId, thread.id)).orderBy(messagesTable.createdAt),
+    db.select().from(pollsTable).where(eq(pollsTable.threadId, thread.id)),
+  ]);
 
-  const messages = await db
-    .select()
-    .from(messagesTable)
-    .where(eq(messagesTable.threadId, thread.id))
-    .orderBy(messagesTable.createdAt);
+  const pollIds = polls.map((poll) => poll.id);
+  const [allOptions, allVotes] = await Promise.all([
+    pollIds.length
+      ? db.select().from(pollOptionsTable).where(inArray(pollOptionsTable.pollId, pollIds)).orderBy(pollOptionsTable.position)
+      : Promise.resolve([]),
+    pollIds.length ? db.select().from(pollVotesTable).where(inArray(pollVotesTable.pollId, pollIds)) : Promise.resolve([]),
+  ]);
 
-  const polls = await db.select().from(pollsTable).where(eq(pollsTable.threadId, thread.id));
-  const pollSummaries = await Promise.all(
-    polls.map(async (poll) => {
-      const options = await db
-        .select()
-        .from(pollOptionsTable)
-        .where(eq(pollOptionsTable.pollId, poll.id))
-        .orderBy(pollOptionsTable.position);
-      const votes = await db.select().from(pollVotesTable).where(eq(pollVotesTable.pollId, poll.id));
+  const optionsByPollId = new Map<number, typeof allOptions>();
+  for (const option of allOptions) {
+    const list = optionsByPollId.get(option.pollId) ?? [];
+    list.push(option);
+    optionsByPollId.set(option.pollId, list);
+  }
+  const voteCountByOptionId = new Map<number, number>();
+  for (const vote of allVotes) {
+    voteCountByOptionId.set(vote.optionId, (voteCountByOptionId.get(vote.optionId) ?? 0) + 1);
+  }
 
-      return {
-        id: poll.id,
-        question: poll.question,
-        status: poll.status,
-        winningOptionId: poll.winningOptionId,
-        options: options.map((option) => ({
-          id: option.id,
-          label: option.label,
-          position: option.position,
-          voteCount: votes.filter((vote) => vote.optionId === option.id).length,
-        })),
-        createdAt: poll.createdAt,
-        closedAt: poll.closedAt,
-      };
-    }),
-  );
+  const pollSummaries = polls.map((poll) => ({
+    id: poll.id,
+    question: poll.question,
+    status: poll.status,
+    winningOptionId: poll.winningOptionId,
+    options: (optionsByPollId.get(poll.id) ?? []).map((option) => ({
+      id: option.id,
+      label: option.label,
+      position: option.position,
+      voteCount: voteCountByOptionId.get(option.id) ?? 0,
+    })),
+    createdAt: poll.createdAt,
+    closedAt: poll.closedAt,
+  }));
 
   res.json(
     GetThreadResponse.parse({
       id: thread.id,
       isGroup: thread.isGroup,
       title: thread.title,
-      participants,
+      participants: participantsByThreadId.get(thread.id) ?? [],
       messages,
       polls: pollSummaries,
       createdAt: thread.createdAt,

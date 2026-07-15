@@ -7,13 +7,14 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { Empty, EmptyMedia, EmptyHeader, EmptyTitle, EmptyDescription } from "@/components/ui/empty";
+import { ErrorState } from "@/components/ErrorState";
 
 export function ThreadsPage() {
-  const { data: threads, isLoading: isLoadingList } = useListThreads();
+  const { data: threads, isLoading: isLoadingList, isError: isErrorList, refetch: refetchList } = useListThreads();
   const [search, setSearch] = useState("");
   const [selectedThreadId, setSelectedThreadId] = useState<number | null>(null);
 
-  const { data: threadDetail, isLoading: isLoadingDetail } = useGetThread(selectedThreadId || 0, { 
+  const { data: threadDetail, isLoading: isLoadingDetail, isError: isErrorDetail, refetch: refetchDetail } = useGetThread(selectedThreadId || 0, { 
     query: { enabled: !!selectedThreadId, queryKey: ['thread', selectedThreadId] } 
   });
 
@@ -52,6 +53,8 @@ export function ThreadsPage() {
                 </div>
               ))}
             </div>
+          ) : isErrorList ? (
+            <ErrorState description="Couldn't load threads." onRetry={() => refetchList()} />
           ) : filteredThreads.length === 0 ? (
             <div className="p-8 text-center text-muted-foreground text-sm">
               No threads found.
@@ -109,6 +112,10 @@ export function ThreadsPage() {
               <Bot className="h-8 w-8 animate-pulse text-primary/50" />
               <p>Loading thread...</p>
             </div>
+          </div>
+        ) : isErrorDetail && selectedThreadId ? (
+          <div className="flex-1 flex items-center justify-center">
+            <ErrorState description="Couldn't load this thread." onRetry={() => refetchDetail()} />
           </div>
         ) : threadDetail ? (
           <>

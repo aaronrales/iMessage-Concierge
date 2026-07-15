@@ -1,4 +1,4 @@
-import { pgTable, serial, integer, text, timestamp, pgEnum } from "drizzle-orm/pg-core";
+import { pgTable, serial, integer, text, timestamp, pgEnum, index } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 import { threadsTable } from "./threads";
@@ -13,28 +13,32 @@ export const pollStatusEnum = pgEnum("poll_status", ["open", "closed"]);
 // simple plurality.
 export const pollKindEnum = pgEnum("poll_kind", ["choice", "date"]);
 
-export const pollsTable = pgTable("polls", {
-  id: serial("id").primaryKey(),
-  threadId: integer("thread_id")
-    .notNull()
-    .references(() => threadsTable.id, { onDelete: "cascade" }),
-  // Nullable: not every poll anchors to a plan yet (existing flows predate
-  // the plans table), but new plan-driven polls should set this.
-  planId: integer("plan_id").references(() => plansTable.id, { onDelete: "set null" }),
-  question: text("question").notNull(),
-  kind: pollKindEnum("kind").notNull().default("choice"),
-  status: pollStatusEnum("status").notNull().default("open"),
-  winningOptionId: integer("winning_option_id"),
-  // Tiebreaker persona (Phase 2): set when a stalled poll gets a confident
-  // "executive decision" announcement. `tiebreakOptionId` is the option that
-  // will be locked in; `tiebreakAnnouncedAt` marks when the objection window
-  // started. Both are cleared if someone objects before the lock job fires.
-  // No FK (same pattern as `winningOptionId`) -- app code enforces validity.
-  tiebreakOptionId: integer("tiebreak_option_id"),
-  tiebreakAnnouncedAt: timestamp("tiebreak_announced_at", { withTimezone: true }),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  closedAt: timestamp("closed_at", { withTimezone: true }),
-});
+export const pollsTable = pgTable(
+  "polls",
+  {
+    id: serial("id").primaryKey(),
+    threadId: integer("thread_id")
+      .notNull()
+      .references(() => threadsTable.id, { onDelete: "cascade" }),
+    // Nullable: not every poll anchors to a plan yet (existing flows predate
+    // the plans table), but new plan-driven polls should set this.
+    planId: integer("plan_id").references(() => plansTable.id, { onDelete: "set null" }),
+    question: text("question").notNull(),
+    kind: pollKindEnum("kind").notNull().default("choice"),
+    status: pollStatusEnum("status").notNull().default("open"),
+    winningOptionId: integer("winning_option_id"),
+    // Tiebreaker persona (Phase 2): set when a stalled poll gets a confident
+    // "executive decision" announcement. `tiebreakOptionId` is the option that
+    // will be locked in; `tiebreakAnnouncedAt` marks when the objection window
+    // started. Both are cleared if someone objects before the lock job fires.
+    // No FK (same pattern as `winningOptionId`) -- app code enforces validity.
+    tiebreakOptionId: integer("tiebreak_option_id"),
+    tiebreakAnnouncedAt: timestamp("tiebreak_announced_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    closedAt: timestamp("closed_at", { withTimezone: true }),
+  },
+  (table) => [index("polls_thread_id_idx").on(table.threadId)],
+);
 
 export const insertPollSchema = createInsertSchema(pollsTable).omit({
   id: true,
