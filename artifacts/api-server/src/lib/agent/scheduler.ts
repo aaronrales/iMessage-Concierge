@@ -265,9 +265,19 @@ async function handleOccasionScan(): Promise<void> {
 
       const daysAway = Math.round((occasion.occasionDate.getTime() - Date.now()) / (24 * 60 * 60 * 1000));
       const when = daysAway <= 0 ? "coming right up" : `in about ${daysAway} day${daysAway === 1 ? "" : "s"}`;
+
+      // For birthdays and anniversaries landing today (daysAway ≤ 0), send
+      // the reminder with balloons so it feels like a proper celebration
+      // greeting rather than a dry calendar alert.
+      const isToday = daysAway <= 0;
+      const isCelebration = occasion.kind === "birthday" || occasion.kind === "anniversary";
+      const occasionSendStyle = isToday && isCelebration ? "balloons" : undefined;
+
       await sendToThread(
         occasion.threadId,
         `Heads up -- ${occasion.label} is ${when}. Want me to help plan something for it?`,
+        undefined,
+        occasionSendStyle,
       );
       await recordProactiveSend(occasion.threadId, "occasion_reminder");
     } catch (error) {

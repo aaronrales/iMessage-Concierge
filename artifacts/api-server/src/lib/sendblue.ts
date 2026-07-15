@@ -7,13 +7,25 @@ interface SendMessageOptions {
   content: string;
   /** URL of an already-uploaded attachment (see `uploadMediaToSendblue`). */
   mediaUrl?: string;
+  /**
+   * iMessage bubble/screen effect. Only applies to iMessage recipients;
+   * SMS fallbacks receive the same text content without error.
+   * Values: celebration, shooting_star, fireworks, lasers, love, confetti,
+   * balloons, spotlight, echo, invisible, gentle, loud, slam.
+   */
+  sendStyle?: string;
 }
 
 interface SendGroupMessageOptions {
   groupId: string;
   content: string;
   mediaUrl?: string;
+  /** See `sendStyle` on `SendMessageOptions`. */
+  sendStyle?: string;
 }
+
+/** Valid tapback reaction types accepted by Sendblue's `/api/send-reaction`. */
+export type TapbackReaction = "love" | "like" | "dislike" | "laugh" | "emphasize" | "question";
 
 function getCredentials(): { keyId: string; secretKey: string; fromNumber: string } | null {
   const keyId = process.env["SENDBLUE_API_KEY_ID"];
@@ -67,13 +79,14 @@ async function post(path: string, body: Record<string, unknown>): Promise<unknow
 }
 
 /** Send a 1:1 iMessage/SMS. Returns the Sendblue message handle if available. */
-export async function sendDirectMessage({ to, content, mediaUrl }: SendMessageOptions): Promise<string | null> {
+export async function sendDirectMessage({ to, content, mediaUrl, sendStyle }: SendMessageOptions): Promise<string | null> {
   const credentials = getCredentials();
   const data = (await post("/api/send-message", {
     content,
     number: to,
     from_number: credentials?.fromNumber,
     ...(mediaUrl ? { media_url: mediaUrl } : {}),
+    ...(sendStyle ? { send_style: sendStyle } : {}),
   })) as { message_handle?: string } | null;
 
   return data?.message_handle ?? null;
@@ -84,6 +97,7 @@ export async function sendGroupMessage({
   groupId,
   content,
   mediaUrl,
+  sendStyle,
 }: SendGroupMessageOptions): Promise<string | null> {
   const credentials = getCredentials();
   const data = (await post("/api/send-group-message", {
@@ -91,9 +105,37 @@ export async function sendGroupMessage({
     group_id: groupId,
     from_number: credentials?.fromNumber,
     ...(mediaUrl ? { media_url: mediaUrl } : {}),
+    ...(sendStyle ? { send_style: sendStyle } : {}),
   })) as { message_handle?: string } | null;
 
   return data?.message_handle ?? null;
+}
+
+/**
+ * Sends a tapback reaction (❤️ 👍 👎 😂 !! ?) to a specific inbound message.
+ * Best-effort: logs failures but never throws, so a reaction hiccup never
+ * blocks the main reply flow. iMessage only; a no-op on SMS threads.
+ *
+ * @param messageHandle  The Apple GUID from the inbound Sendblue webhook
+ *                       (`message_handle` field on the event body).
+ * @param reaction       One of: love, like, dislike, laugh, emphasize, question.
+ */
+export async function sendReaction(messageHandle: string, reaction: TapbackReaction): Promise<void> {
+  const credentials = getCredentials();
+  if (!credentials) {
+    logger.warn({ messageHandle }, "Sendblue credentials not configured; skipping reaction");
+    return;
+  }
+  try {
+    await post("/api/send-reaction", {
+      from_number: credentials.fromNumber,
+      message_handle: messageHandle,
+      reaction,
+    });
+  } catch (error) {
+    // Best-effort: a failed reaction must never break the surrounding flow.
+    logger.warn({ error, messageHandle, reaction }, "Failed to send Sendblue tapback reaction");
+  }
 }
 
 /**

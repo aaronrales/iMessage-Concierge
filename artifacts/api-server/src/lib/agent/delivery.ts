@@ -2,6 +2,7 @@ import { eq } from "drizzle-orm";
 import { db, threadsTable } from "@workspace/db";
 import { logger } from "../logger";
 import { sendDirectMessage, sendGroupMessage, sendTypingIndicator } from "../sendblue";
+import type { TapbackReaction } from "../sendblue";
 import { recordMessage } from "./context";
 
 const MAX_BUBBLE_CHARS = 220;
@@ -59,11 +60,19 @@ export function splitIntoBubbles(content: string): string[] {
  * record, never taken from the caller. Shared by the webhook handler and the
  * proactive scheduler (`scheduler.ts`) so both go through one delivery path.
  *
- * Long replies are split into multiple natural-length bubbles. `mediaUrl`,
- * when given, is attached to the *last* bubble only (e.g. a plan card image
- * follows the text, the way a person would send it).
+ * Long replies are split into multiple natural-length bubbles. `mediaUrl` and
+ * `sendStyle`, when given, are applied to the *last* bubble only (the
+ * "climax" bubble — e.g. a plan card or celebration effect follows the text).
+ *
+ * @param sendStyle  Optional iMessage bubble/screen effect (celebration,
+ *   confetti, balloons, etc.). Silently ignored for SMS recipients.
  */
-export async function sendToThread(threadId: number, content: string, mediaUrl?: string): Promise<void> {
+export async function sendToThread(
+  threadId: number,
+  content: string,
+  mediaUrl?: string,
+  sendStyle?: string,
+): Promise<void> {
   const [thread] = await db.select().from(threadsTable).where(eq(threadsTable.id, threadId));
   const bubbles = splitIntoBubbles(content);
   if (bubbles.length === 0 && !mediaUrl) return;
@@ -71,13 +80,26 @@ export async function sendToThread(threadId: number, content: string, mediaUrl?:
 
   for (let i = 0; i < bubbles.length; i++) {
     const bubbleContent = bubbles[i] as string;
-    const bubbleMediaUrl = i === bubbles.length - 1 ? mediaUrl : undefined;
+    const isLast = i === bubbles.length - 1;
+    // Media and expressive style both land on the final bubble.
+    const bubbleMediaUrl = isLast ? mediaUrl : undefined;
+    const bubbleSendStyle = isLast ? sendStyle : undefined;
 
     try {
       if (thread?.isGroup && thread.sendblueGroupId) {
-        await sendGroupMessage({ groupId: thread.sendblueGroupId, content: bubbleContent, mediaUrl: bubbleMediaUrl });
+        await sendGroupMessage({
+          groupId: thread.sendblueGroupId,
+          content: bubbleContent,
+          mediaUrl: bubbleMediaUrl,
+          sendStyle: bubbleSendStyle,
+        });
       } else if (thread?.primaryPhoneNumber) {
-        await sendDirectMessage({ to: thread.primaryPhoneNumber, content: bubbleContent, mediaUrl: bubbleMediaUrl });
+        await sendDirectMessage({
+          to: thread.primaryPhoneNumber,
+          content: bubbleContent,
+          mediaUrl: bubbleMediaUrl,
+          sendStyle: bubbleSendStyle,
+        });
       } else {
         logger.warn({ threadId }, "Cannot send outbound message: thread has no known transport");
       }
@@ -88,6 +110,9 @@ export async function sendToThread(threadId: number, content: string, mediaUrl?:
     await recordMessage({ threadId, userId: null, direction: "outbound", role: "assistant", content: bubbleContent });
   }
 }
+
+// Re-export so callers in the webhook/scheduler can import from one place.
+export type { TapbackReaction };
 
 /**
  * Fires a typing indicator for a thread while a tool call (venue lookup,

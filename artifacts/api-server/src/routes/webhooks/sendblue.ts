@@ -66,7 +66,7 @@ import {
 } from "../../lib/agent/privateInput";
 import { feedbackTable, db, plansTable, threadParticipantsTable, threadsTable, usersTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
-import { createGroupWithNumbers } from "../../lib/sendblue";
+import { createGroupWithNumbers, sendReaction } from "../../lib/sendblue";
 
 /** iMessage tapback text on this poll's own announcement bubbles counts as a vote (Phase 2 texting UX polish). */
 const OBJECTION_PATTERN = /\b(no|nope|wait|hold on|object|objection|don'?t lock|actually)\b/i;
@@ -537,6 +537,13 @@ router.post("/webhooks/sendblue/:secret", async (req, res): Promise<void> => {
         const matched = matchOptions(effectiveContent, openPoll.options);
         if (matched.length > 0) {
           await recordVotes(openPoll.poll.id, matched.map((m) => m.id), senderUserId);
+
+          // React to the voter's message to acknowledge their vote quietly —
+          // avoids pushing a text bubble for every vote in a busy group.
+          if (event.message_handle) {
+            void sendReaction(event.message_handle, "like");
+          }
+
           const participantRows = await db
             .select()
             .from(threadParticipantsTable)
@@ -561,6 +568,8 @@ router.post("/webhooks/sendblue/:secret", async (req, res): Promise<void> => {
               winner.isFullIntersection
                 ? `Everyone's free "${winner.option.label}" -- let's lock that in.`
                 : `We didn't get a date that works for literally everyone, so going with the best overlap: "${winner.option.label}".`,
+              undefined,
+              "celebration",
             );
           } else {
             await sendToThread(
@@ -575,6 +584,12 @@ router.post("/webhooks/sendblue/:secret", async (req, res): Promise<void> => {
         const matched = matchOption(effectiveContent, openPoll.options);
         if (matched) {
           await recordVote(openPoll.poll.id, matched.id, senderUserId);
+
+          // React to the voter's message quietly — less noise than a text reply.
+          if (event.message_handle) {
+            void sendReaction(event.message_handle, "like");
+          }
+
           const tally = await tallyPoll(openPoll.poll.id, openPoll.options);
           const voterCount = await countDistinctVoters(openPoll.poll.id);
           const participantRows = await db
@@ -594,6 +609,8 @@ router.post("/webhooks/sendblue/:secret", async (req, res): Promise<void> => {
               await sendToThread(
                 threadId,
                 `Everyone's voted! We're going with "${winnerTally.option.label}" (${tallyLine}).`,
+                undefined,
+                "confetti",
               );
             }
           } else {
@@ -614,6 +631,12 @@ router.post("/webhooks/sendblue/:secret", async (req, res): Promise<void> => {
     if (pendingBooking) {
       const intent = detectApprovalIntent(event.content);
       if (intent === "approve") {
+        // React to the approver's "YES" message with a heart — confirms we
+        // received it before the async confirmation work finishes.
+        if (event.message_handle) {
+          void sendReaction(event.message_handle, "love");
+        }
+
         const booking = await confirmBooking(pendingBooking.id);
         let confirmationSuffix = "";
         let mediaUrl: string | undefined;
@@ -664,7 +687,8 @@ router.post("/webhooks/sendblue/:secret", async (req, res): Promise<void> => {
         const links = buildReservationLinks(booking);
         const linksLine = ` ${describeReservationLinks(links)}`;
 
-        await sendToThread(booking.threadId, `Confirmed: "${booking.title}".${confirmationSuffix}${linksLine}`, mediaUrl);
+        // Plan locked in — celebrate it.
+        await sendToThread(booking.threadId, `Confirmed: "${booking.title}".${confirmationSuffix}${linksLine}`, mediaUrl, "celebration");
         if (booking.threadId !== threadId) {
           await sendToThread(threadId, `Thanks -- approved "${booking.title}".`);
         }
