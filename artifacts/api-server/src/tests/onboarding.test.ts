@@ -58,7 +58,17 @@ import {
   extractPersonality,
   ONBOARDING,
 } from "../lib/agent/onboarding";
-import { handleDirectOnboardingStep } from "../lib/agent/onboardingFlow";
+import { handleDirectOnboardingStep, checkAndSendGroupKickoffRecap } from "../lib/agent/onboardingFlow";
+
+// Context mock handles — imported so individual tests can override with
+// mockResolvedValueOnce to exercise specific recap paths.
+import {
+  getGroupThreadsForUser,
+  hasOnboardingRecapBeenSent,
+  isGroupFullyOnboarded,
+  loadThreadContext,
+  markOnboardingRecapSent,
+} from "../lib/agent/context";
 
 // Import after mocks are established.
 import { detectMuteCommand } from "../lib/agent/etiquette";
@@ -498,5 +508,140 @@ describe("handleDirectOnboardingStep — step 3 (personality signal, completion)
       { budget: null, dietaryNeeds: null, preferences: [] }, "+15551234567", mockSendContactCard,
     );
     expect(mockSendContactCard).not.toHaveBeenCalled();
+  });
+});
+
+// ============================================================================
+// checkAndSendGroupKickoffRecap — direct unit tests
+//
+// The top-level vi.mock("../lib/agent/context") sets safe defaults:
+//   getGroupThreadsForUser → []           (no groups — function is a no-op)
+//   hasOnboardingRecapBeenSent → true     (recap already sent — skip)
+//   isGroupFullyOnboarded → false         (group not ready — skip)
+//   loadThreadContext → { participants: [] }
+//
+// Each test overrides the specific mocks it needs via mockResolvedValueOnce.
+// ============================================================================
+
+describe("checkAndSendGroupKickoffRecap", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("sends the recap message to a fully-onboarded group that hasn't received it yet", async () => {
+    (getGroupThreadsForUser as ReturnType<typeof vi.fn>).mockResolvedValueOnce([{ id: 99 }]);
+    (hasOnboardingRecapBeenSent as ReturnType<typeof vi.fn>).mockResolvedValueOnce(false);
+    (isGroupFullyOnboarded as ReturnType<typeof vi.fn>).mockResolvedValueOnce(true);
+    (loadThreadContext as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      participants: [
+        { user: { displayName: "Alice" }, profile: null },
+        { user: { displayName: "Bob" }, profile: null },
+      ],
+    });
+
+    await checkAndSendGroupKickoffRecap(1);
+
+    expect(sendToThread).toHaveBeenCalledWith(99, expect.stringContaining("Everyone's set up now"));
+    expect(sendToThread).toHaveBeenCalledWith(99, expect.stringContaining("Alice"));
+    expect(sendToThread).toHaveBeenCalledWith(99, expect.stringContaining("Bob"));
+    expect(markOnboardingRecapSent).toHaveBeenCalledWith(99);
+  });
+
+  it("does not send when the group is not yet fully onboarded", async () => {
+    (getGroupThreadsForUser as ReturnType<typeof vi.fn>).mockResolvedValueOnce([{ id: 99 }]);
+    (hasOnboardingRecapBeenSent as ReturnType<typeof vi.fn>).mockResolvedValueOnce(false);
+    // isGroupFullyOnboarded stays false (default)
+
+    await checkAndSendGroupKickoffRecap(1);
+
+    expect(sendToThread).not.toHaveBeenCalled();
+    expect(markOnboardingRecapSent).not.toHaveBeenCalled();
+  });
+
+  it("does not send when the recap was already sent for this group", async () => {
+    (getGroupThreadsForUser as ReturnType<typeof vi.fn>).mockResolvedValueOnce([{ id: 99 }]);
+    // hasOnboardingRecapBeenSent stays true (default) — recap guard skips this group
+
+    await checkAndSendGroupKickoffRecap(1);
+
+    expect(sendToThread).not.toHaveBeenCalled();
+    expect(markOnboardingRecapSent).not.toHaveBeenCalled();
+  });
+
+  it("includes public preferences in the recap line", async () => {
+    (getGroupThreadsForUser as ReturnType<typeof vi.fn>).mockResolvedValueOnce([{ id: 99 }]);
+    (hasOnboardingRecapBeenSent as ReturnType<typeof vi.fn>).mockResolvedValueOnce(false);
+    (isGroupFullyOnboarded as ReturnType<typeof vi.fn>).mockResolvedValueOnce(true);
+    (loadThreadContext as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      participants: [
+        {
+          user: { displayName: "Alice" },
+          profile: { preferencesVisibility: "public", preferences: ["Italian", "wine bars"] },
+        },
+      ],
+    });
+
+    await checkAndSendGroupKickoffRecap(1);
+
+    const sentMsg = (sendToThread as ReturnType<typeof vi.fn>).mock.calls[0]?.[1] as string;
+    expect(sentMsg).toContain("Italian");
+    expect(sentMsg).toContain("wine bars");
+  });
+
+  it("omits private preferences from the recap line", async () => {
+    (getGroupThreadsForUser as ReturnType<typeof vi.fn>).mockResolvedValueOnce([{ id: 99 }]);
+    (hasOnboardingRecapBeenSent as ReturnType<typeof vi.fn>).mockResolvedValueOnce(false);
+    (isGroupFullyOnboarded as ReturnType<typeof vi.fn>).mockResolvedValueOnce(true);
+    (loadThreadContext as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      participants: [
+        {
+          user: { displayName: "Alice" },
+          profile: { preferencesVisibility: "private", preferences: ["sushi"] },
+        },
+      ],
+    });
+
+    await checkAndSendGroupKickoffRecap(1);
+
+    const sentMsg = (sendToThread as ReturnType<typeof vi.fn>).mock.calls[0]?.[1] as string;
+    expect(sentMsg).toContain("Alice");
+    expect(sentMsg).not.toContain("sushi");
+  });
+
+  it("skips a group whose recap was already sent and still processes a second ready group", async () => {
+    (getGroupThreadsForUser as ReturnType<typeof vi.fn>).mockResolvedValueOnce([{ id: 99 }, { id: 100 }]);
+    (hasOnboardingRecapBeenSent as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce(true)    // group 99: already sent → skipped
+      .mockResolvedValueOnce(false);  // group 100: not sent → eligible
+    (isGroupFullyOnboarded as ReturnType<typeof vi.fn>).mockResolvedValueOnce(true); // group 100
+    (loadThreadContext as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ participants: [] });
+
+    await checkAndSendGroupKickoffRecap(1);
+
+    expect(sendToThread).toHaveBeenCalledWith(100, expect.stringContaining("Everyone's set up now"));
+    expect(markOnboardingRecapSent).toHaveBeenCalledWith(100);
+    expect(markOnboardingRecapSent).not.toHaveBeenCalledWith(99);
+  });
+
+  it("fires when called from step 3 of handleDirectOnboardingStep if the group is ready", async () => {
+    const mockCreate = openai.chat.completions.create as ReturnType<typeof vi.fn>;
+    mockCreate.mockResolvedValueOnce({ choices: [{ message: { content: '["sushi"]' } }] });
+
+    (getGroupThreadsForUser as ReturnType<typeof vi.fn>).mockResolvedValueOnce([{ id: 99 }]);
+    (hasOnboardingRecapBeenSent as ReturnType<typeof vi.fn>).mockResolvedValueOnce(false);
+    (isGroupFullyOnboarded as ReturnType<typeof vi.fn>).mockResolvedValueOnce(true);
+    (loadThreadContext as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      participants: [{ user: { displayName: "Alice" }, profile: null }],
+    });
+
+    await handleDirectOnboardingStep(
+      3, 1, 10, "I love sushi", "Alice",
+      { budget: null, dietaryNeeds: null, preferences: [] }, "+15551234567", vi.fn().mockResolvedValue(undefined),
+    );
+
+    // sendToThread fires twice: completion message (threadId=10) and group recap (threadId=99).
+    expect(sendToThread).toHaveBeenCalledWith(10, expect.stringContaining("All set"));
+    expect(sendToThread).toHaveBeenCalledWith(99, expect.stringContaining("Everyone's set up now"));
+    expect(markOnboardingRecapSent).toHaveBeenCalledWith(99);
   });
 });
