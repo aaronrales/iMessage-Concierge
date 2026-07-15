@@ -45,8 +45,13 @@ function scoreFreeText(note: string): number {
     if (Number.isFinite(rating)) return Math.max(0, Math.min(100, (rating / 5) * 100));
   }
 
-  const negativeHits = (text.match(/\b(bad|poor|closed|negative|rude|overpriced|avoid|loud|cramped|hard to get|notoriously hard|no evidence)\b/g) ?? []).length;
-  const positiveHits = (text.match(/\b(great|good|excellent|positive|friendly|honest|easy|spacious|quiet|walk-?in|patio|outdoor|reservation|bookable|present|listed|starred|recommended)\b/g) ?? [])
+  // "loud", "quiet", "busy", "lively", "intimate" are atmosphere descriptors whose
+  // valence is context-dependent (a loud room is great for a rowdy birthday, bad for a
+  // business dinner). Scoring them as universal quality signals produced systematic
+  // misranking -- they are deliberately treated as neutral here. Only genuine quality
+  // problems (rudeness, overcrowding, pricing complaints) count as negative.
+  const negativeHits = (text.match(/\b(bad|poor|closed|negative|rude|overpriced|avoid|cramped|hard to get|notoriously hard|no evidence)\b/g) ?? []).length;
+  const positiveHits = (text.match(/\b(great|good|excellent|positive|friendly|honest|easy|spacious|walk-?in|patio|outdoor|reservation|bookable|present|listed|starred|recommended)\b/g) ?? [])
     .length;
 
   const net = positiveHits - negativeHits;

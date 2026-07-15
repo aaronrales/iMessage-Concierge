@@ -25,7 +25,7 @@ import { scheduleAgentTurn } from "../../lib/agent/debounce";
 import { scrubPrivateProfileLeaks } from "../../lib/agent/privacy";
 import { sendToThread } from "../../lib/agent/delivery";
 import { detectKnowledgeCommand, handleKnowledgeCommand } from "../../lib/agent/knowledge";
-import { detectMuteCommand, shouldRespondInGroup } from "../../lib/agent/etiquette";
+import { checkPlanningIntentWithLLM, detectMuteCommand, shouldRespondInGroup } from "../../lib/agent/etiquette";
 import {
   clearTiebreak,
   closePollWithWinner,
@@ -48,13 +48,13 @@ import {
   rejectBookingRecord,
 } from "../../lib/agent/bookings";
 import { confirmPlan, getActivePlan, getOrCreateActivePlan, setPlanScheduledFor, setPlanVenue, setPendingFeedback } from "../../lib/agent/plans";
-import { buildGoogleCalendarLink, describePlanSchedule } from "../../lib/agent/calendar";
+import { buildGoogleCalendarLink, buildIcsUrl, describePlanSchedule } from "../../lib/agent/calendar";
 import { scheduleDayBeforeReminder, scheduleNonVoterNudge } from "../../lib/agent/scheduler";
 import { buildReservationLinks, describeReservationLinks } from "../../lib/agent/bookingLinks";
 import { buildPlanCardMediaUrl } from "../../lib/agent/planCard";
 import { captureOccasion } from "../../lib/agent/occasions";
 import { recordPastChoice } from "../../lib/agent/tasteEngine";
-import { findVenueIdByName, markVenuePicked, recordVenueFeedback } from "../../lib/agent/venueCorpus/recommendationLog";
+import { findVenueIdByName, logIgnoredVenuesForThread, markVenuePicked, recordVenueFeedback } from "../../lib/agent/venueCorpus/recommendationLog";
 import {
   aggregatePrivateInput,
   createPrivateInputRequest,
@@ -555,8 +555,14 @@ router.post("/webhooks/sendblue/:secret", async (req, res): Promise<void> => {
         let mediaUrl: string | undefined;
         if (booking.planId) {
           const plan = await confirmPlan(booking.planId);
-          const link = buildGoogleCalendarLink(plan);
-          confirmationSuffix = ` ${describePlanSchedule(plan)}.${link ? ` Add it to your calendar: ${link}` : ""}`;
+          const googleLink = buildGoogleCalendarLink(plan);
+          const icsLink = buildIcsUrl(plan.id);
+          // Prefer the .ics link (works natively with Apple Calendar on iPhone);
+          // include Google Calendar as a fallback when PUBLIC_API_URL is set.
+          const calendarParts = [
+            icsLink ? `Add to calendar: ${icsLink}` : googleLink ? `Add to calendar: ${googleLink}` : null,
+          ].filter(Boolean);
+          confirmationSuffix = ` ${describePlanSchedule(plan)}.${calendarParts.length ? ` ${calendarParts.join(" ")}` : ""}`;
           if (plan.scheduledFor) {
             await scheduleDayBeforeReminder(booking.threadId, plan.id, plan.scheduledFor);
           }
@@ -582,6 +588,9 @@ router.post("/webhooks/sendblue/:secret", async (req, res): Promise<void> => {
             const pickedVenueId = await findVenueIdByName(plan.venue);
             if (pickedVenueId) {
               await markVenuePicked(booking.threadId, pickedVenueId, plan.id);
+              // Log "ignored" for all other corpus venues that were shown to
+              // this thread during this plan session but not ultimately picked.
+              await logIgnoredVenuesForThread(booking.threadId, plan.id, pickedVenueId);
             }
           }
         }
@@ -622,8 +631,15 @@ router.post("/webhooks/sendblue/:secret", async (req, res): Promise<void> => {
         return;
       }
       if (!shouldRespondInGroup(event.content)) {
-        res.status(200).json({ received: true });
-        return;
+        // Borderline case: regex says no. If there's an active plan the
+        // concierge stays responsive without an extra LLM call. Otherwise
+        // run a cheap single-completion intent check so short-form triggers
+        // like "drinks?" or "who's around sat?" don't read as the bot ignoring.
+        const activePlanForGate = await getActivePlan(threadId);
+        if (!activePlanForGate && !(await checkPlanningIntentWithLLM(event.content))) {
+          res.status(200).json({ received: true });
+          return;
+        }
       }
     }
 

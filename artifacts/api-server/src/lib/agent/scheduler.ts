@@ -22,7 +22,7 @@ import {
   setPlanVenue,
   setPlanScheduledFor,
 } from "./plans";
-import { buildGoogleCalendarLink, describePlanSchedule } from "./calendar";
+import { buildGoogleCalendarLink, describePlanSchedule, CONCIERGE_TIMEZONE } from "./calendar";
 import { getOccasionsDueForReminder, markOccasionReminded } from "./occasions";
 import {
   findOrCreateDirectThread,
@@ -53,18 +53,21 @@ const NON_VOTER_NUDGE_DELAY_SECONDS = 4 * 60 * 60; // 4 hours after a poll opens
 const TIEBREAK_ANNOUNCE_DELAY_SECONDS = 4 * 60 * 60;
 const TIEBREAK_OBJECTION_WINDOW_SECONDS = 60 * 60;
 const STALLED_PLAN_THRESHOLD_MS = 24 * 60 * 60 * 1000; // 24 hours with no movement
-const STALLED_SCAN_CRON = "0 * * * *"; // hourly
-const FEEDBACK_SCAN_CRON = "*/30 * * * *"; // every 30 minutes
-const OCCASION_SCAN_CRON = "0 15 * * *"; // daily at 15:00 UTC
+const STALLED_SCAN_CRON = "0 * * * *"; // hourly (timezone-agnostic)
+const FEEDBACK_SCAN_CRON = "*/30 * * * *"; // every 30 minutes (timezone-agnostic)
+// Times below are in CONCIERGE_TIMEZONE (America/New_York by default) thanks
+// to the `tz` option passed to boss.schedule(). 10am local = good morning
+// window for occasion and serendipity nudges; 9am local for background jobs.
+const OCCASION_SCAN_CRON = "0 10 * * *"; // daily at 10:00 local
 const OCCASION_REMINDER_WINDOW_MS = 14 * 24 * 60 * 60 * 1000; // ~2 weeks out
-const SERENDIPITY_SCAN_CRON = "0 16 * * *"; // daily at 16:00 UTC
-const ONBOARDING_NUDGE_SCAN_CRON = "*/30 * * * *"; // every 30 minutes
+const SERENDIPITY_SCAN_CRON = "0 16 * * *"; // daily at 16:00 local
+const ONBOARDING_NUDGE_SCAN_CRON = "*/30 * * * *"; // every 30 minutes (timezone-agnostic)
 const ONBOARDING_STALL_THRESHOLD_MS = 24 * 60 * 60 * 1000; // 24 hours with no reply to the onboarding DM
 // Runs daily, but `getVenuesDueForRevalidation` only returns venues whose
 // own type's cadence (monthly for restaurants/bars, see
 // `venueTypeRevalidationConfigTable`) has actually elapsed -- daily is just
 // how often we check whether anything has come due, not the cadence itself.
-const VENUE_REVALIDATION_SCAN_CRON = "0 9 * * *"; // daily at 09:00 UTC
+const VENUE_REVALIDATION_SCAN_CRON = "0 9 * * *"; // daily at 09:00 local
 // A group has to have gone quiet for a real stretch before an unprompted
 // suggestion is worth the interruption -- this is what keeps it feeling
 // rare and well-timed instead of naggy.
@@ -411,12 +414,15 @@ export async function initScheduler(): Promise<void> {
     await handleVenueRevalidationScan();
   });
 
-  await boss.schedule(QUEUES.planRevive, STALLED_SCAN_CRON);
-  await boss.schedule(QUEUES.feedbackPrompt, FEEDBACK_SCAN_CRON);
-  await boss.schedule(QUEUES.occasionScan, OCCASION_SCAN_CRON);
-  await boss.schedule(QUEUES.serendipityScan, SERENDIPITY_SCAN_CRON);
-  await boss.schedule(QUEUES.onboardingNudge, ONBOARDING_NUDGE_SCAN_CRON);
-  await boss.schedule(QUEUES.venueRevalidationScan, VENUE_REVALIDATION_SCAN_CRON);
+  // All time-of-day crons are interpreted in CONCIERGE_TIMEZONE so reminders
+  // fire at the right local time regardless of where the server is hosted.
+  const tzOpt = { tz: CONCIERGE_TIMEZONE };
+  await boss.schedule(QUEUES.planRevive, STALLED_SCAN_CRON, {}, tzOpt);
+  await boss.schedule(QUEUES.feedbackPrompt, FEEDBACK_SCAN_CRON, {}, tzOpt);
+  await boss.schedule(QUEUES.occasionScan, OCCASION_SCAN_CRON, {}, tzOpt);
+  await boss.schedule(QUEUES.serendipityScan, SERENDIPITY_SCAN_CRON, {}, tzOpt);
+  await boss.schedule(QUEUES.onboardingNudge, ONBOARDING_NUDGE_SCAN_CRON, {}, tzOpt);
+  await boss.schedule(QUEUES.venueRevalidationScan, VENUE_REVALIDATION_SCAN_CRON, {}, tzOpt);
 
   logger.info("Proactive messaging scheduler started");
 }

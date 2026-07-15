@@ -4,13 +4,16 @@ A personal AI concierge that lives inside iMessage. It joins 1:1 and group threa
 
 ## Run & Operate
 
-- `pnpm --filter @workspace/api-server run dev` — run the API server (port 5000)
+- `pnpm --filter @workspace/api-server run dev` — run the API server (port 8080)
+- `pnpm --filter @workspace/api-server run test` — run unit tests (Vitest)
 - `pnpm run typecheck` — full typecheck across all packages
 - `pnpm run build` — typecheck + build all packages
 - `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
 - `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
 - Required env: `DATABASE_URL` — Postgres connection string
 - Required secrets for real iMessage traffic (not yet set — see Gotchas): `SENDBLUE_API_KEY_ID`, `SENDBLUE_API_SECRET_KEY`, `SENDBLUE_FROM_NUMBER`
+- Optional: `PUBLIC_API_URL` — full base URL of this API server (e.g. `https://abc.replit.app/api-server`); enables `.ics` calendar links in confirmation texts
+- Optional: `CONCIERGE_TIMEZONE` — IANA timezone for date formatting and cron schedules (defaults to `America/New_York`)
 
 ## Stack
 
@@ -29,7 +32,7 @@ A personal AI concierge that lives inside iMessage. It joins 1:1 and group threa
 - API contract: `lib/api-spec/openapi.yaml` — source of truth; run codegen after editing
 - Sendblue webhook receiver: `artifacts/api-server/src/routes/webhooks/sendblue.ts` — this is the core orchestration loop (vote detection → approval detection → LLM turn)
 - Sendblue outbound client: `artifacts/api-server/src/lib/sendblue.ts`
-- LLM conversation engine: `artifacts/api-server/src/lib/agent/engine.ts` — single structured-JSON completion per inbound message (reply + profile updates + onboarding + poll + booking draft)
+- LLM conversation engine: `artifacts/api-server/src/lib/agent/engine.ts` — multi-iteration tool-calling loop; calls `search_venues` tool (Google Places) before returning a final structured-JSON reply (reply + profile updates + onboarding + poll + booking draft + occasion + private_question + home_city)
 - Poll tallying: `artifacts/api-server/src/lib/agent/polls.ts`
 - Booking draft/approval helpers: `artifacts/api-server/src/lib/agent/bookings.ts`
 - Dashboard read/action API routes: `artifacts/api-server/src/routes/{users,threads,bookings,venues}.ts`
@@ -37,11 +40,15 @@ A personal AI concierge that lives inside iMessage. It joins 1:1 and group threa
 
 ## Architecture decisions
 
-- **One LLM call per inbound message, structured JSON output.** The model returns `{ reply, display_name, profile_updates, onboarding_complete, poll, booking_draft }` in a single completion rather than separate classifier + responder calls, to keep latency and cost low for a texting UX.
+- **Tool-calling loop, structured JSON output.** The agent runs in a loop (up to 3 iterations) calling `openai.chat.completions.create` with `tools: AGENT_TOOLS`. The model may call the `search_venues` tool (Google Places Text Search, `places.googleapis.com/v1/places:searchText`) zero or more times before returning a final structured-JSON reply `{ reply, display_name, profile_updates, onboarding_complete, home_city, poll, booking_draft, occasion, private_question }`. The fast 1:1 chitchat path resolves in one iteration (no tool call needed); venue suggestions trigger one extra round-trip. See `engine.ts` → `runTurnWithTools`.
+- **Group etiquette gate with LLM fallback.** For group threads, the webhook checks `shouldRespondInGroup` (regex) first. If the regex says no and there is no active plan, a cheap single-completion LLM check (`checkPlanningIntentWithLLM`) catches short-form triggers like "drinks?" that the regex misses. If the regex says yes, or there is an active plan, the LLM check is skipped entirely to keep per-message cost near zero.
+- **Group constraint boosting in corpus lookup.** When an agent turn runs in a group thread, `extractGroupConstraints` parses dietary needs, budget tiers, preferences, and party size from all members' profiles into a `GroupConstraints` struct. This is threaded through `executeAgentTool` → `lookupCorpusVenues`, which applies a ±15-point composite-score boost based on keyword matching against `venueAttributesTable` rows before final sort. The LLM also receives a text summary of constraints in its system prompt.
 - **Poll voting and booking approval are deterministic, not LLM-mediated.** Vote matching (`matchOption`) and approve/reject intent (`detectApprovalIntent`) use simple text matching before falling through to the LLM turn. This keeps the "did everyone vote / was this approved" logic auditable and avoids the model silently mis-tallying.
 - **Booking approval is always required before a booking is considered real.** `bookings.status` moves `drafted → pending_approval → approved/rejected/confirmed`. No real booking-provider API is called yet — `confirmBooking` simulates success. `provider`/`providerBookingId` columns exist for a future real integration.
+- **Calendar delivery on plan confirmation.** When a booking is approved, the confirmation text includes a `.ics` calendar file link (served by `GET /api/plans/:id/calendar.ics`) when `PUBLIC_API_URL` is set, falling back to a Google Calendar URL. The `.ics` file opens directly in Apple Calendar on iPhone without requiring a Google account.
 - **Default approver is the message sender** when the LLM doesn't specify one, so the flow always works even in a 1:1 thread or when the group doesn't name an approver.
 - **1:1 threads are keyed by phone number** (`threads.primaryPhoneNumber`), group threads by Sendblue's `group_id` (`threads.sendblueGroupId`) — there's no other stable group identifier from Sendblue.
+- **Timezone:** all date formatting and cron schedules use `CONCIERGE_TIMEZONE` (default: `America/New_York`). `describePlanSchedule` uses `Intl` with the explicit timezone; `pg-boss` schedules pass `{ tz: CONCIERGE_TIMEZONE }` so cron times are local, not UTC.
 - Sendblue outbound send failures are logged and swallowed, not thrown — a failed send should never crash message processing or lose the DB record of what happened.
 
 ## Product

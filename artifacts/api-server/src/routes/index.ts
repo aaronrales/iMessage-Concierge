@@ -5,6 +5,7 @@ import usersRouter from "./users";
 import threadsRouter from "./threads";
 import bookingsRouter from "./bookings";
 import venuesRouter from "./venues";
+import plansRouter from "./plans";
 
 const router: IRouter = Router();
 
@@ -14,5 +15,6 @@ router.use(usersRouter);
 router.use(threadsRouter);
 router.use(bookingsRouter);
 router.use(venuesRouter);
+router.use("/plans", plansRouter);
 
 export default router;
