@@ -107,6 +107,109 @@ function computeConstraintBoost(
   return boost;
 }
 
+// ─── Outdoor detection ────────────────────────────────────────────────────────
+
+/**
+ * Returns true if the corpus record for this venue has a confirmed outdoor /
+ * patio attribute. Used by the weather-rescue scanner to decide whether a
+ * confirmed plan needs an indoor-alternative nudge when rain is forecast.
+ * Silently returns false for unrecognized venues (not in corpus → no attribute
+ * data → we can't tell → don't falsely flag as outdoor).
+ */
+export async function isVenueOutdoor(venueName: string, neighborhood?: string): Promise<boolean> {
+  const rows = await db
+    .select({ id: venuesTable.id })
+    .from(venuesTable)
+    .where(
+      neighborhood
+        ? and(eq(venuesTable.name, venueName), eq(venuesTable.neighborhood, neighborhood))
+        : eq(venuesTable.name, venueName),
+    );
+
+  const venueId = rows[0]?.id;
+  if (!venueId) return false;
+
+  const [attrRow] = await db
+    .select({ value: venueAttributesTable.value })
+    .from(venueAttributesTable)
+    .where(and(eq(venueAttributesTable.venueId, venueId), eq(venueAttributesTable.dimension, "outdoor_seating")));
+
+  if (!attrRow) return false;
+  const note = (attrRow.value?.["note"] as string | undefined)?.toLowerCase() ?? "";
+  // Explicit negatives evaluated FIRST: a note like "no patio, but indoor
+  // seating available" still contains "patio" and would match the positive
+  // regex if checked second. Negatives win over incidental keyword matches.
+  if (/\b(no outdoor|no patio|no terrace|no outside|indoor only|entirely indoor)\b/.test(note)) return false;
+  // Only after ruling out negatives, check for confirmed positive markers.
+  if (/\b(patio|outdoor|terrace|rooftop|al fresco|garden|sidewalk)\b/.test(note)) return true;
+  return false;
+}
+
+/**
+ * Finds indoor alternatives (no outdoor / patio attribute, or attribute
+ * explicitly says indoor-only) in the same neighborhood or borough. Used by
+ * the weather-rescue message to give the group 2-3 concrete options.
+ *
+ * Returns up to `limit` Tier1/Tier2 non-outdoor venues. Falls back to any
+ * non-closure-suspected venue if fewer than `limit` are found with the
+ * strict indoor filter.
+ */
+export async function lookupIndoorAlternatives(
+  neighborhoodOrCity: string,
+  excludeVenueName: string | null,
+  limit = 3,
+): Promise<CorpusLookupResult[]> {
+  const rows = await db
+    .select()
+    .from(venuesTable)
+    .where(and(or(eq(venuesTable.tier, "tier1"), eq(venuesTable.tier, "tier2")), eq(venuesTable.closureSuspected, false)));
+
+  const normalized = neighborhoodOrCity.toLowerCase().trim();
+  const excludeNorm = excludeVenueName?.toLowerCase() ?? null;
+
+  const candidates = rows.filter((v) => {
+    if (excludeNorm && v.name.toLowerCase() === excludeNorm) return false;
+    return (
+      v.neighborhood.toLowerCase().includes(normalized) ||
+      v.city.toLowerCase().includes(normalized) ||
+      (v.borough?.toLowerCase().includes(normalized) ?? false)
+    );
+  });
+
+  if (candidates.length === 0) return [];
+
+  // Fetch outdoor_seating attributes for all candidates in one query.
+  const venueIds = candidates.map((v) => v.id);
+  const attrRows = await db
+    .select({ venueId: venueAttributesTable.venueId, value: venueAttributesTable.value })
+    .from(venueAttributesTable)
+    .where(and(inArray(venueAttributesTable.venueId, venueIds), eq(venueAttributesTable.dimension, "outdoor_seating")));
+
+  const outdoorNoteByVenueId = new Map(
+    attrRows.map((r) => [r.venueId, (r.value?.["note"] as string | undefined)?.toLowerCase() ?? ""]),
+  );
+
+  // Prefer venues whose outdoor_seating note doesn't confirm outdoor seating.
+  // Check negations first so "no patio" is treated as indoor, not outdoor.
+  const indoor = candidates.filter((v) => {
+    const note = outdoorNoteByVenueId.get(v.id) ?? "";
+    // Explicit negatives → definitely indoor
+    if (/\b(no outdoor|no patio|no terrace|no outside|indoor only|entirely indoor)\b/.test(note)) return true;
+    // Confirmed outdoor markers → exclude from indoor pool
+    if (/\b(patio|outdoor seating|terrace|rooftop|al fresco|garden|sidewalk)\b/.test(note)) return false;
+    // No attribute or ambiguous → treat as indoor (safe default for alternatives)
+    return true;
+  });
+
+  const pool = indoor.length >= limit ? indoor : candidates; // fall back if not enough indoor results
+  const sorted = pool.sort((a, b) => {
+    if (a.tier !== b.tier) return a.tier === "tier1" ? -1 : 1;
+    return Number(b.compositeScore ?? 0) - Number(a.compositeScore ?? 0);
+  });
+
+  return sorted.slice(0, limit).map((v) => ({ venue: v, hedge: v.tier === "tier2" }));
+}
+
 // ─── Lookup ───────────────────────────────────────────────────────────────────
 
 /**

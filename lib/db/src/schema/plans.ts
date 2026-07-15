@@ -24,6 +24,9 @@ export const plansTable = pgTable("plans", {
   // User ids of expected/confirmed attendees.
   attendeeUserIds: jsonb("attendee_user_ids").$type<number[]>().notNull().default([]),
   status: planStatusEnum("status").notNull().default("proposed"),
+  // Set when the weather-rescue nudge is sent for this plan, so the scan
+  // never repeats for the same plan even if rain persists.
+  weatherRescueSentAt: timestamp("weather_rescue_sent_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true })
     .notNull()

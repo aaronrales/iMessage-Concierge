@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, lte } from "drizzle-orm";
 import { db, plansTable, threadParticipantsTable, threadsTable, type Plan } from "@workspace/db";
 
 const ACTIVE_STATUSES = ["proposed", "deciding", "confirmed"] as const;
@@ -100,6 +100,34 @@ export async function getPlansNeedingFeedbackPrompt(): Promise<Plan[]> {
   const rows = await db.select().from(plansTable).where(eq(plansTable.status, "confirmed"));
   const now = Date.now();
   return rows.filter((plan) => plan.scheduledFor && plan.scheduledFor.getTime() < now);
+}
+
+/**
+ * Confirmed plans scheduled in the next `windowMs` milliseconds that have
+ * never received a weather-rescue nudge. These are candidates for the daily
+ * weather-rescue scan: if their venue is outdoor and bad weather is forecast,
+ * the scanner sends a proactive message suggesting indoor alternatives.
+ */
+export async function getConfirmedPlansForWeatherCheck(windowMs: number): Promise<Plan[]> {
+  const now = new Date();
+  const windowEnd = new Date(Date.now() + windowMs);
+  const rows = await db
+    .select()
+    .from(plansTable)
+    .where(
+      and(
+        eq(plansTable.status, "confirmed"),
+        gte(plansTable.scheduledFor, now),
+        lte(plansTable.scheduledFor, windowEnd),
+        isNull(plansTable.weatherRescueSentAt),
+      ),
+    );
+  return rows;
+}
+
+/** Records that the weather-rescue nudge has been sent for this plan, so it cannot repeat. */
+export async function markPlanWeatherWarned(planId: number): Promise<void> {
+  await db.update(plansTable).set({ weatherRescueSentAt: new Date() }).where(eq(plansTable.id, planId));
 }
 
 export async function setPendingFeedback(threadId: number, planId: number | null): Promise<void> {

@@ -97,6 +97,46 @@ export async function sendGroupMessage({
 }
 
 /**
+ * Attempts to create a new iMessage group by sending to an array of phone
+ * numbers. Sendblue's `/api/send-group-message` endpoint accepts a `numbers`
+ * array in place of `group_id` to bootstrap a new group thread.
+ *
+ * IMPORTANT: As of mid-2026, Sendblue's documented group-message endpoint
+ * officially requires `group_id` for existing groups. The `numbers`-based
+ * creation path is NOT publicly documented and may not be supported on all
+ * Sendblue plans. If this call succeeds, the response should include a
+ * `group_id` for the newly created group; if it fails (4xx) or returns no
+ * `group_id`, group creation is not available and callers must fall back to
+ * instructions for the user to create the group manually.
+ */
+export async function createGroupWithNumbers(numbers: string[], content: string): Promise<string | null> {
+  const credentials = getCredentials();
+  if (!credentials) {
+    logger.warn("Sendblue credentials are not configured; cannot create group");
+    return null;
+  }
+
+  try {
+    const data = (await post("/api/send-group-message", {
+      numbers: [...numbers, credentials.fromNumber],
+      content,
+      from_number: credentials.fromNumber,
+    })) as { group_id?: string } | null;
+
+    if (data?.group_id) {
+      logger.info({ groupId: data.group_id, participantCount: numbers.length }, "Sendblue group created");
+      return data.group_id;
+    }
+    logger.warn({ data }, "Sendblue group-create response missing group_id; group creation may not be supported");
+    return null;
+  } catch (error) {
+    // Swallow -- callers fall back to user-facing instructions.
+    logger.warn({ error }, "Sendblue group creation failed; falling back to manual-creation instructions");
+    return null;
+  }
+}
+
+/**
  * Sends an animated "..." typing indicator to a single recipient. Sendblue
  * does not support this for group chats, so callers should only invoke this
  * for 1:1 threads (see `delivery.ts`). Best-effort: failures are logged, not

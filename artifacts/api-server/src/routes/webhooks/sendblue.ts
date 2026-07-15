@@ -17,6 +17,7 @@ import {
   markGroupIntroduced,
   markOnboardingRecapSent,
   recordMessage,
+  resolveGroupParticipants,
   setParticipantMuted,
   setThreadHomeCityIfUnset,
 } from "../../lib/agent/context";
@@ -65,6 +66,7 @@ import {
 } from "../../lib/agent/privateInput";
 import { feedbackTable, db, plansTable, threadParticipantsTable, threadsTable, usersTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
+import { createGroupWithNumbers } from "../../lib/sendblue";
 
 /** iMessage tapback text on this poll's own announcement bubbles counts as a vote (Phase 2 texting UX polish). */
 const OBJECTION_PATTERN = /\b(no|nope|wait|hold on|object|objection|don'?t lock|actually)\b/i;
@@ -212,6 +214,68 @@ async function processAgentTurn(threadId: number, senderUserId: number): Promise
         `Heads up -- can you approve this booking: "${booking.title}"? Reply YES to confirm or NO to skip it.`,
       );
     }
+  }
+
+  // ── Instant group creation (1:1 only) ───────────────────────────────────────
+  // When the user asks the concierge to start a group with specific people,
+  // try to create it via Sendblue. Fall back to manual instructions if
+  // Sendblue doesn't support programmatic group creation (undocumented path).
+  if (result.groupCreationRequest && !isGroup) {
+    const gcr = result.groupCreationRequest;
+
+    // Safe, scoped resolution: explicit phones always flow through; name lookup
+    // is constrained to the sender's shared contacts and requires a unique match.
+    const { resolvedPhones, ambiguousNames, unknownNames } = await resolveGroupParticipants(
+      senderUserId,
+      gcr.participantNames,
+      gcr.participantPhones,
+    );
+
+    if (ambiguousNames.length > 0) {
+      // Multiple contacts share the same name — can't pick safely.
+      await sendToThread(
+        threadId,
+        `I found multiple contacts named ${ambiguousNames.join(" and ")} -- could you share their phone number(s) directly so I get the right person?`,
+      );
+    } else if (unknownNames.length > 0 && resolvedPhones.length === 0) {
+      // No phones at all — can't create any group.
+      await sendToThread(
+        threadId,
+        `I don't have contact info for ${unknownNames.join(" and ")} yet -- add me to a new iMessage thread with them and I'll take it from there.`,
+      );
+    } else if (resolvedPhones.length > 0) {
+      // Always include the requesting user so they're in the group they asked
+      // for -- omitting them would make the thread invisible to the person
+      // who triggered the creation.
+      const senderPhone = context.participants.find((p) => p.user.id === senderUserId)?.user.phoneNumber;
+      if (senderPhone && !resolvedPhones.includes(senderPhone)) {
+        resolvedPhones.push(senderPhone);
+      }
+
+      // Attempt Sendblue group creation with all phones we have.
+      const introMessage = `Hi all -- I'm an AI concierge${gcr.occasion ? ` helping plan ${gcr.occasion}` : ""}. I'll help coordinate things here (polls, bookings, reminders).`;
+      const newGroupId = await createGroupWithNumbers(resolvedPhones, introMessage);
+
+      if (newGroupId) {
+        // Sendblue created the group -- record it in our DB.
+        const { thread: newGroupThread } = await findOrCreateGroupThread(newGroupId, resolvedPhones);
+        await markGroupIntroduced(newGroupThread.id);
+        const missingNote = unknownNames.length > 0
+          ? ` (I couldn't add ${unknownNames.join(" and ")} -- you may need to add them manually.)`
+          : "";
+        await sendToThread(threadId, `Done -- I've started the group and introduced myself. Jump in there when you're ready!${missingNote}`);
+      } else {
+        // Sendblue doesn't support programmatic creation; give manual instructions.
+        const names = gcr.participantNames.join(" and ");
+        await sendToThread(
+          threadId,
+          `I can't create the group directly -- add me to a new iMessage thread with ${names || "them"} and I'll take it from there.`,
+        );
+      }
+    }
+    // Skip the LLM reply when a group creation was attempted -- the action
+    // messages above are the response.
+    return;
   }
 
   // Preference privacy enforcement: private profile fields may have silently

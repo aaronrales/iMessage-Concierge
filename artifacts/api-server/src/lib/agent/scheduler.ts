@@ -13,15 +13,18 @@ import {
 } from "./polls";
 import {
   getActivePlan,
+  getConfirmedPlansForWeatherCheck,
   getMostRecentPlanForThread,
   getPlanById,
   getStalledPlans,
   getPlansNeedingFeedbackPrompt,
+  markPlanWeatherWarned,
   setPendingFeedback,
   markPlanDone,
   setPlanVenue,
   setPlanScheduledFor,
 } from "./plans";
+import { isVenueOutdoor, lookupIndoorAlternatives } from "./venueCorpus/lookup";
 import { buildGoogleCalendarLink, describePlanSchedule, CONCIERGE_TIMEZONE } from "./calendar";
 import { getOccasionsDueForReminder, markOccasionReminded } from "./occasions";
 import {
@@ -44,6 +47,7 @@ const QUEUES = {
   serendipityScan: "serendipity-scan",
   onboardingNudge: "onboarding-nudge",
   venueRevalidationScan: "venue-revalidation-scan",
+  weatherRescueScan: "weather-rescue-scan",
 } as const;
 
 const NON_VOTER_NUDGE_DELAY_SECONDS = 4 * 60 * 60; // 4 hours after a poll opens
@@ -68,6 +72,12 @@ const ONBOARDING_STALL_THRESHOLD_MS = 24 * 60 * 60 * 1000; // 24 hours with no r
 // `venueTypeRevalidationConfigTable`) has actually elapsed -- daily is just
 // how often we check whether anything has come due, not the cadence itself.
 const VENUE_REVALIDATION_SCAN_CRON = "0 9 * * *"; // daily at 09:00 local
+// Runs daily in the morning so groups get weather warnings well before the
+// plan day. Checks all confirmed outdoor plans scheduled within the next 48
+// hours; each plan is warned at most once (guarded by `weatherRescueSentAt`).
+const WEATHER_RESCUE_SCAN_CRON = "0 8 * * *"; // daily at 08:00 local
+const WEATHER_RESCUE_WINDOW_MS = 48 * 60 * 60 * 1000; // plans in next 48 hours
+const WEATHER_RESCUE_PRECIPITATION_THRESHOLD = 60; // % probability of precipitation
 // A group has to have gone quiet for a real stretch before an unprompted
 // suggestion is worth the interruption -- this is what keeps it feeling
 // rare and well-timed instead of naggy.
@@ -357,6 +367,71 @@ export async function scheduleDayBeforeReminder(threadId: number, planId: number
   await boss.sendAfter(QUEUES.planReminder, { threadId, planId }, null, delaySeconds);
 }
 
+/**
+ * Daily scan: for every confirmed plan scheduled in the next 48 hours where
+ * the venue has a confirmed outdoor / patio attribute, checks Open-Meteo. If
+ * precipitation probability exceeds WEATHER_RESCUE_PRECIPITATION_THRESHOLD,
+ * sends a proactive message naming 2–3 indoor alternatives from the corpus
+ * and asking whether the group wants to switch. Fires at most once per plan
+ * (guarded by `weatherRescueSentAt`).
+ */
+async function handleWeatherRescueScan(): Promise<void> {
+  const plans = await getConfirmedPlansForWeatherCheck(WEATHER_RESCUE_WINDOW_MS);
+
+  for (const plan of plans) {
+    try {
+      if (!plan.venue || !plan.scheduledFor) continue;
+
+      // Only outdoor / patio venues need a weather rescue nudge.
+      const outdoor = await isVenueOutdoor(plan.venue);
+      if (!outdoor) continue;
+
+      const [threadRow] = await db
+        .select({ homeCity: threadsTable.homeCity })
+        .from(threadsTable)
+        .where(eq(threadsTable.id, plan.threadId));
+      const city = threadRow?.homeCity || DEFAULT_CITY;
+
+      const msUntilPlan = plan.scheduledFor.getTime() - Date.now();
+      const daysOut = Math.max(0, Math.round(msUntilPlan / (24 * 60 * 60 * 1000)));
+      const forecast = await getForecastForDay(city, daysOut);
+      if (!forecast) continue;
+      if (forecast.precipitationChance < WEATHER_RESCUE_PRECIPITATION_THRESHOLD) continue;
+
+      if (!(await canSendProactiveMessage(plan.threadId, "nudge"))) continue;
+
+      const alternatives = await lookupIndoorAlternatives(city, plan.venue, 3);
+      const altText =
+        alternatives.length > 0
+          ? ` A few covered options nearby: ${alternatives.map((r) => r.venue.name).join(", ")}.`
+          : "";
+
+      // Mark before send: a crash between here and the send skips the nudge
+      // for this plan rather than risking a duplicate on the next scan.
+      await markPlanWeatherWarned(plan.id);
+
+      try {
+        const dateStr = plan.scheduledFor.toLocaleDateString("en-US", {
+          weekday: "long",
+          month: "long",
+          day: "numeric",
+          timeZone: CONCIERGE_TIMEZONE,
+        });
+        await sendToThread(
+          plan.threadId,
+          `Heads up -- there's a ${forecast.precipitationChance}% chance of rain on ${dateStr} and "${plan.venue}" has outdoor seating.${altText} Want me to find a covered spot instead?`,
+        );
+        await recordProactiveSend(plan.threadId, "nudge");
+      } catch (sendError) {
+        logger.error({ sendError, planId: plan.id }, "Weather-rescue send failed after marking; nudge will not retry");
+        throw sendError;
+      }
+    } catch (error) {
+      logger.error({ error, planId: plan.id, threadId: plan.threadId }, "Failed to process weather-rescue item; continuing with rest of batch");
+    }
+  }
+}
+
 async function handleVenueRevalidationScan(): Promise<void> {
   const result = await runRevalidationScan();
   if (result.checked > 0) {
@@ -413,6 +488,9 @@ export async function initScheduler(): Promise<void> {
   await boss.work(QUEUES.venueRevalidationScan, async () => {
     await handleVenueRevalidationScan();
   });
+  await boss.work(QUEUES.weatherRescueScan, async () => {
+    await handleWeatherRescueScan();
+  });
 
   // All time-of-day crons are interpreted in CONCIERGE_TIMEZONE so reminders
   // fire at the right local time regardless of where the server is hosted.
@@ -423,6 +501,7 @@ export async function initScheduler(): Promise<void> {
   await boss.schedule(QUEUES.serendipityScan, SERENDIPITY_SCAN_CRON, {}, tzOpt);
   await boss.schedule(QUEUES.onboardingNudge, ONBOARDING_NUDGE_SCAN_CRON, {}, tzOpt);
   await boss.schedule(QUEUES.venueRevalidationScan, VENUE_REVALIDATION_SCAN_CRON, {}, tzOpt);
+  await boss.schedule(QUEUES.weatherRescueScan, WEATHER_RESCUE_SCAN_CRON, {}, tzOpt);
 
   logger.info("Proactive messaging scheduler started");
 }

@@ -1,4 +1,4 @@
-import { and, desc, eq, isNotNull, isNull, lte, ne } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, isNull, lte, ne } from "drizzle-orm";
 import {
   db,
   messagesTable,
@@ -383,6 +383,121 @@ export async function getOnboardingProgressByUserId(): Promise<
 export async function getAllGroupThreadIds(): Promise<number[]> {
   const rows = await db.select({ id: threadsTable.id }).from(threadsTable).where(eq(threadsTable.isGroup, true));
   return rows.map((row) => row.id);
+}
+
+// ─── Instant group creation — participant resolution ──────────────────────────
+
+/**
+ * Pure resolution logic (no DB): maps participant names to phones using a
+ * pre-built contact map. Exported for unit testing.
+ *
+ * Invariants:
+ * - Explicit phones are always included regardless of name-lookup outcome.
+ * - Ambiguous names (map value `null`) are never auto-resolved.
+ * - A name is only flagged `unknown` if it cannot be resolved AND the total
+ *   number of explicit phones doesn't already cover that participant (coverage
+ *   is by count, since names and phones are parallel-but-unordered).
+ */
+export function resolveParticipantsFromContacts(
+  participantNames: string[],
+  participantPhones: string[],
+  /** name.toLowerCase() → phone, or null when multiple contacts share the name */
+  contactNameToPhone: Map<string, string | null>,
+): { resolvedPhones: string[]; ambiguousNames: string[]; unknownNames: string[] } {
+  const resolvedPhones = new Set<string>(participantPhones.filter((p) => p.trim().length > 0));
+  const ambiguousNames: string[] = [];
+
+  for (const name of participantNames) {
+    const phone = contactNameToPhone.get(name.toLowerCase());
+    if (phone !== undefined && phone !== null) {
+      resolvedPhones.add(phone); // unique, unambiguous match
+    } else if (phone === null) {
+      ambiguousNames.push(name); // multiple contacts — never auto-pick
+    }
+    // phone === undefined → not in sender's contacts; may be covered by an explicit phone
+  }
+
+  // Coverage gap: participants not covered by any phone source.
+  const explicitCount = participantPhones.filter((p) => p.trim().length > 0).length;
+  const nameResolvedCount = resolvedPhones.size - explicitCount;
+  // shortfall = names that have neither an explicit phone nor a name resolution
+  const shortfall = participantNames.length - explicitCount - nameResolvedCount - ambiguousNames.length;
+
+  const unknownNames: string[] = [];
+  if (shortfall > 0) {
+    let remaining = shortfall;
+    for (const name of participantNames) {
+      if (remaining <= 0) break;
+      if (!contactNameToPhone.has(name.toLowerCase())) {
+        unknownNames.push(name);
+        remaining--;
+      }
+    }
+  }
+
+  return { resolvedPhones: [...resolvedPhones], ambiguousNames, unknownNames };
+}
+
+/**
+ * Resolves participant names to phone numbers for group creation. Scopes the
+ * display-name lookup to contacts in threads the sender already shares with
+ * others — never a global user scan — and requires an unambiguous match
+ * (duplicate display names are flagged rather than resolved arbitrarily).
+ */
+export async function resolveGroupParticipants(
+  senderUserId: number,
+  participantNames: string[],
+  participantPhones: string[],
+): Promise<{ resolvedPhones: string[]; ambiguousNames: string[]; unknownNames: string[] }> {
+  const explicitPhones = participantPhones.filter((p) => p.trim().length > 0);
+
+  // Fast path: explicit phones already cover every named participant.
+  if (explicitPhones.length >= participantNames.length) {
+    return { resolvedPhones: explicitPhones, ambiguousNames: [], unknownNames: [] };
+  }
+
+  // Scope the name lookup to threads the sender is already part of.
+  const senderThreadIds = await db
+    .select({ threadId: threadParticipantsTable.threadId })
+    .from(threadParticipantsTable)
+    .where(eq(threadParticipantsTable.userId, senderUserId))
+    .then((rows) => rows.map((r) => r.threadId));
+
+  const nameToPhone = new Map<string, string | null>();
+  if (senderThreadIds.length > 0) {
+    const contactRows = await db
+      .select({ displayName: usersTable.displayName, phoneNumber: usersTable.phoneNumber })
+      .from(threadParticipantsTable)
+      .innerJoin(usersTable, eq(threadParticipantsTable.userId, usersTable.id))
+      .where(
+        and(
+          inArray(threadParticipantsTable.threadId, senderThreadIds),
+          isNotNull(usersTable.phoneNumber),
+          isNotNull(usersTable.displayName),
+        ),
+      );
+
+    // Deduplicate by phone number (stable identity) before building the
+    // name→phone map. The same contact can appear in multiple shared threads,
+    // and naive row-iteration would mark them ambiguous on the second occurrence
+    // even though there is only one real person.
+    const uniqueContacts = new Map<string, string>(); // phone → displayName
+    for (const { displayName, phoneNumber } of contactRows) {
+      if (!displayName || !phoneNumber) continue;
+      if (!uniqueContacts.has(phoneNumber)) {
+        uniqueContacts.set(phoneNumber, displayName);
+      }
+    }
+
+    // Now build name→phone from the deduplicated set; genuine duplicate names
+    // (two different people with the same display name) remain ambiguous (null).
+    for (const [phone, name] of uniqueContacts) {
+      const key = name.toLowerCase();
+      nameToPhone.set(key, nameToPhone.has(key) ? null : phone);
+    }
+  }
+
+  return resolveParticipantsFromContacts(participantNames, explicitPhones, nameToPhone);
 }
 
 export async function getOtherParticipants(threadId: number, excludingUserId: number) {

@@ -36,6 +36,17 @@ export interface AgentTurnResult {
     date: Date;
   } | null;
   privateQuestion: string | null;
+  /**
+   * Only set in 1:1 DMs when the user asks the concierge to start a group
+   * (e.g. "start a group with Amy and Jake"). The webhook handler tries to
+   * create the Sendblue group, or falls back to manual instructions if the
+   * API doesn't support it.
+   */
+  groupCreationRequest: {
+    participantNames: string[];
+    participantPhones: string[];
+    occasion: string | null;
+  } | null;
 }
 
 const SYSTEM_PROMPT = `You are a personal AI concierge that lives inside iMessage. You help one person or a small group plan the stuff of everyday life -- dinners, weekend trips, birthdays, "where should we all meet". You are warm, concise, and text like a helpful friend, not a corporate assistant. Keep replies short enough for a text message (usually under 3 sentences) and never use emojis.
@@ -64,9 +75,11 @@ Always respond with ONLY a JSON object matching this shape, no prose outside the
   "poll": { "question": string, "options": string[], "kind": "choice" | "date", "option_dates": (string | null)[] } | null,
   "booking_draft": { "title": string, "approver_phone_number": string | null, "details": object } | null,
   "occasion": { "about_name": string | null, "kind": "birthday" | "anniversary" | "visit" | "other", "label": string, "date": string } | null,
-  "private_question": string | null
+  "private_question": string | null,
+  "group_creation_request": { "participant_names": string[], "participant_phones": string[], "occasion": string | null } | null
 }
-Set "display_name" whenever the person tells you their name and it isn't already known -- otherwise leave it null.`;
+Set "display_name" whenever the person tells you their name and it isn't already known -- otherwise leave it null.
+Set "group_creation_request" (in 1:1 threads only) when the user asks you to start or create an iMessage group with specific people, e.g. "start a group with Amy and Jake for Saturday". List any names mentioned in "participant_names" and any phone numbers explicitly given in "participant_phones". If you cannot determine all participants' contact info, still set this field and leave unknown phones as empty strings -- the system will prompt for missing numbers. Leave "occasion" null if the request doesn't specify a particular event or occasion.`;
 
 interface RawAgentResponse {
   reply?: unknown;
@@ -92,6 +105,11 @@ interface RawAgentResponse {
     date?: unknown;
   } | null;
   private_question?: unknown;
+  group_creation_request?: {
+    participant_names?: unknown;
+    participant_phones?: unknown;
+    occasion?: unknown;
+  } | null;
 }
 
 function buildTranscript(context: ThreadContext, currentUserId: number): { role: "user" | "assistant"; content: string }[] {
@@ -292,6 +310,20 @@ export async function runAgentTurn(context: ThreadContext, currentUserId: number
 
   const homeCity = typeof parsed.home_city === "string" && parsed.home_city.trim() ? parsed.home_city.trim() : null;
 
+  const gcr = parsed.group_creation_request;
+  const groupCreationRequest =
+    !isGroup && gcr && typeof gcr === "object"
+      ? {
+          participantNames: Array.isArray(gcr.participant_names)
+            ? (gcr.participant_names as unknown[]).filter((n): n is string => typeof n === "string")
+            : [],
+          participantPhones: Array.isArray(gcr.participant_phones)
+            ? (gcr.participant_phones as unknown[]).filter((p): p is string => typeof p === "string" && p.length > 0)
+            : [],
+          occasion: typeof gcr.occasion === "string" && gcr.occasion.trim() ? gcr.occasion.trim() : null,
+        }
+      : null;
+
   return {
     reply: typeof parsed.reply === "string" ? parsed.reply : "Got it.",
     displayName: typeof parsed.display_name === "string" && parsed.display_name.trim() ? parsed.display_name.trim() : null,
@@ -302,6 +334,7 @@ export async function runAgentTurn(context: ThreadContext, currentUserId: number
     bookingDraft,
     occasion,
     privateQuestion,
+    groupCreationRequest: groupCreationRequest && groupCreationRequest.participantNames.length > 0 ? groupCreationRequest : null,
   };
 }
 
