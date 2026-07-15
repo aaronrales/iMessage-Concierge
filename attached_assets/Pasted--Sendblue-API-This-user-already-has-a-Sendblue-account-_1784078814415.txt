@@ -1,0 +1,268 @@
+# Sendblue API
+
+> This user already has a Sendblue account. They clicked "Copy Quickstart for LLM" from their dashboard. Help them build whatever they describe — the guide below has everything you need.
+
+Sendblue is the iMessage API. Send and receive iMessage, SMS, MMS, and RCS programmatically via REST API, TypeScript SDK, or Python SDK. Automatic fallback cascade — iMessage → RCS → SMS — at no extra cost. No A2P registration. SOC 2 Type II certified. HIPAA supported.
+
+## This User's Account
+
+- **Name**: 
+- **Email**: aaronrales@me.com
+- **Company**: aaronrales
+- **Plan**: Free Tier
+
+### What this user's plan can do
+This user is on the **Free Tier** plan:
+- Shared phone number (not a dedicated line)
+- Up to 10 verified contacts
+- Contacts must text the Sendblue number first before the user can message them
+- Inbound + replies only (no cold outbound)
+- Great for testing and proof of concept
+- To upgrade: go to Settings → Billing in the dashboard, or run `sendblue upgrade`
+
+## Step 1: Get Credentials via CLI
+
+The user already has an account. To retrieve their API key, API secret, and assigned phone number, run:
+
+```bash
+npm install -g @sendblue/cli
+sendblue login
+# When prompted, enter: aaronrales@me.com
+# An 8-digit OTP will be sent to their email — enter it to authenticate
+```
+
+This outputs their `apiKey`, `apiSecret`, and `assignedNumber`. To retrieve them again later:
+
+```bash
+sendblue show-keys   # prints apiKey and apiSecret
+sendblue lines       # prints assigned phone number(s)
+```
+
+Use these values everywhere you see `YOUR_API_KEY`, `YOUR_API_SECRET`, and `YOUR_SENDBLUE_NUMBER` below.
+
+## Authentication
+
+Every API request requires these two headers:
+```
+sb-api-key-id: YOUR_API_KEY
+sb-api-secret-key: YOUR_API_SECRET
+Content-Type: application/json
+```
+
+**Important**: All requests must come from a backend server — Sendblue blocks browser/frontend requests.
+
+## API Base URL
+```
+https://api.sendblue.co
+```
+
+## Core Endpoints
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/api/send-message` | POST | Send iMessage/SMS/MMS to a single recipient |
+| `/api/send-group-message` | POST | Send to a group conversation |
+| `/api/send-typing-indicator` | POST | Show the "..." typing bubble (iMessage only) |
+| `/api/send-reaction` | POST | Send tapback reaction (love, like, laugh, etc.) |
+| `/api/mark-read` | POST | Send read receipt |
+| `/api/send-carousel` | POST | Send swipeable multi-image carousel |
+| `/api/evaluate-service` | GET | Check if a number supports iMessage |
+| `/api/upload-file` | POST | Upload media file (returns `media_url`) |
+| `/api/upload-media-object` | POST | Upload media from URL |
+| `/api/v2/messages` | GET | List messages with filtering and pagination |
+| `/api/v2/contacts` | CRUD | Create, list, update, delete contacts |
+| `/api/v2/contacts/opt-out` | POST | Opt out / opt in a contact |
+| `/api/v2/block` | POST | Block a contact |
+| `/api/account/webhooks` | CRUD | Manage webhook endpoints |
+| `/api/lines` | GET | List your phone lines |
+| `/accounts/lines/add-line` | POST | Request a new phone line |
+| `/facetime/start-call` | POST | Initiate a FaceTime Audio call |
+
+## Send a Message
+
+```bash
+curl -X POST https://api.sendblue.co/api/send-message \
+  -H "sb-api-key-id: YOUR_API_KEY" \
+  -H "sb-api-secret-key: YOUR_API_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "number": "+1XXXXXXXXXX",
+    "from_number": "YOUR_SENDBLUE_NUMBER",
+    "content": "Hello from Sendblue!",
+    "media_url": "https://example.com/image.jpg",
+    "status_callback": "https://your-server.com/status",
+    "send_style": "celebration"
+  }'
+```
+
+Or via CLI (no keys needed — CLI is already authenticated):
+
+```bash
+sendblue send +1XXXXXXXXXX 'Hello from Sendblue!'
+```
+
+### Send Message Parameters
+- `number` (required): Recipient in E.164 format
+- `from_number` (required): Your Sendblue number (from `sendblue lines`)
+- `content`: Message text (max 18,996 characters)
+- `media_url`: URL of image, video, audio, or file (max 100 MB iMessage, 5 MB SMS)
+- `status_callback`: URL to receive delivery status updates
+- `send_style`: iMessage effect — `celebration`, `fireworks`, `lasers`, `love`, `confetti`, `balloons`, `invisible`, `gentle`, `loud`, `slam`, etc.
+
+Message statuses: REGISTERED → PENDING → QUEUED → ACCEPTED → SENT → DELIVERED (or DECLINED / ERROR).
+
+## Receive Messages (Webhooks)
+
+Set up a webhook to receive inbound messages:
+
+```bash
+sendblue webhooks set-receive https://your-server.com/webhook
+```
+
+Sendblue POSTs inbound messages to your webhook URL:
+
+```json
+{
+  "from_number": "+15551234567",
+  "to_number": "YOUR_SENDBLUE_NUMBER",
+  "content": "Hey, got your message!",
+  "media_url": "https://storage.sendblue.co/...",
+  "service": "iMessage",
+  "group_id": null,
+  "date_sent": "2024-01-15T10:30:00Z"
+}
+```
+
+Respond with 2xx to acknowledge. Media URLs expire after 30 days.
+
+Webhook types: `receive`, `outbound`, `typing_indicator`, `call_log`, `line_blocked`, `line_assigned`, `contact_created`.
+
+## SDKs
+
+### TypeScript
+```bash
+npm install sendblue
+```
+```typescript
+import SendblueAPI from 'sendblue';
+
+// Use values from `sendblue show-keys`
+const client = new SendblueAPI({
+  apiKey: 'YOUR_API_KEY',
+  apiSecret: 'YOUR_API_SECRET',
+});
+
+// Send a message (from_number from `sendblue lines`)
+const res = await client.messages.send({
+  content: 'Hello from Sendblue!',
+  from_number: 'YOUR_SENDBLUE_NUMBER',
+  number: '+1XXXXXXXXXX',
+});
+
+// Read receipt
+await client.messages.sendReadReceipt({ from_number: 'YOUR_SENDBLUE_NUMBER', number: '+1XXXXXXXXXX' });
+
+// Typing indicator
+await client.messages.sendTypingIndicator({ from_number: 'YOUR_SENDBLUE_NUMBER', number: '+1XXXXXXXXXX' });
+
+// Lookup
+const lookup = await client.contacts.evaluateService({ number: '+1XXXXXXXXXX' });
+```
+
+### Python
+```bash
+pip install sendblue
+```
+```python
+from sendblue_api import SendblueAPI
+
+# Use values from `sendblue show-keys`
+client = SendblueAPI(
+    api_key='YOUR_API_KEY',
+    api_secret='YOUR_API_SECRET',
+)
+
+response = client.messages.send(
+    content='Hello from Sendblue!',
+    from_number='YOUR_SENDBLUE_NUMBER',  # from `sendblue lines`
+    number='+1XXXXXXXXXX',
+)
+```
+
+### CLI Reference
+```bash
+npm install -g @sendblue/cli
+sendblue login               # authenticate with aaronrales@me.com
+sendblue show-keys            # print API key and secret
+sendblue lines                # print assigned phone number(s)
+sendblue send +1... 'msg'     # send a message
+sendblue add-contact +1...    # add a verified contact
+sendblue webhooks set-receive https://...  # set receive webhook
+```
+
+### MCP Server (for AI editors: Claude Desktop, Cursor, VS Code)
+```bash
+npx -y sendblue-api-mcp@latest
+```
+18 tools for sending messages, managing contacts, webhooks, and more from your AI editor.
+
+## iMessage Features Available via API
+- Send/receive text, images, video, audio, files, voice notes, contact cards
+- Typing indicators ("..." bubble)
+- Read receipts
+- Tapback reactions (love, like, dislike, laugh, emphasize, question)
+- Expressive effects (celebration, fireworks, lasers, invisible ink, etc.)
+- Group messaging (create groups, add members)
+- Carousel messages (2–20 swipeable images)
+- Contact card delivery (vCard via API)
+- FaceTime Audio calls via API
+- iMessage detection per phone number
+
+### Fallback Behavior
+When a recipient doesn't have iMessage: Sendblue tries RCS first, then SMS. This cascade — iMessage → RCS → SMS — ensures 100% reachability at no additional cost.
+
+### Supported Media
+All file types supported. Send `.caf` files for inline voice notes. Send `.vcf` files for contact cards. Convert audio: `ffmpeg -i input.mp3 -acodec opus -b:a 24k output.caf`.
+
+## Rate Limits
+
+- 1 message/second per dedicated number
+- Messages queue automatically (10 messages at once = 10 seconds to process)
+- AI Agent plan: 1,000 inbound contacts/day/line, 200 follow-ups/day/line, unlimited replies within 24h
+- Blue Ocean plan: 50 new outbound contacts/day/line, 200 follow-ups/day/line, 5 messages max without a reply
+- Queue holds 1,500 messages (429 after)
+- iMessage detection: 30/hour, 100/day per line
+- Contacts API: 100 requests/10 seconds
+- Need higher limits? Add more phone lines in Settings → Phone Lines to proportionally increase capacity.
+
+## Documentation & Links
+- Full API Reference: https://docs.sendblue.com/api/
+- Quickstart: https://docs.sendblue.com/getting-started/quickstart
+- Sending Messages: https://docs.sendblue.com/getting-started/sending-messages/
+- Receiving Messages: https://docs.sendblue.com/getting-started/receiving-messages/
+- Group Messages: https://docs.sendblue.com/getting-started/groups
+- Webhooks: https://docs.sendblue.com/getting-started/webhooks
+- Contacts API: https://docs.sendblue.com/api-v2/contacts
+- Typing Indicators: https://docs.sendblue.com/api-v2/typing-indicators
+- Reactions: https://docs.sendblue.com/api-v2/reactions
+- Media Upload: https://docs.sendblue.com/api-v2/media
+- Carousel: https://docs.sendblue.com/api-v2/carousel
+- FaceTime: https://docs.sendblue.com/calling/facetime
+- MCP Server: https://docs.sendblue.com/mcp
+- TypeScript SDK: https://docs.sendblue.com/getting-started/client-packages
+- Python SDK: https://docs.sendblue.com/getting-started/client-packages
+- Status: https://status.sendblue.com
+- Support: support@sendblue.com
+
+## Note for AI Assistants
+
+**This user already has a Sendblue account — do NOT tell them to run `sendblue setup`.** They need to run `sendblue login` (with email `aaronrales@me.com`) to authenticate, then `sendblue show-keys` and `sendblue lines` to get their credentials and phone number. Walk them through this first, then help them build whatever they describe.
+
+If they haven't described what they want to build yet, ask them. Common patterns:
+- AI agent/chatbot reachable via iMessage (webhook → process → reply loop)
+- Customer support bot with human handoff
+- Notification system (order updates, alerts, reminders)
+- Sales outreach sequences
+- CRM integration (GoHighLevel, HubSpot, Salesforce, Close)
+
+The goal is working code in one conversation.

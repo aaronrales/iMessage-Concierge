@@ -10,6 +10,14 @@ servers:
 tags:
   - name: health
     description: Health operations
+  - name: webhooks
+    description: Inbound webhook receivers
+  - name: users
+    description: Concierge users and their profiles
+  - name: threads
+    description: iMessage threads (1:1 and group)
+  - name: bookings
+    description: Draft bookings awaiting human approval
 paths:
   /healthz:
     get:
@@ -24,7 +32,210 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+
+  /webhooks/sendblue:
+    post:
+      operationId: receiveSendblueWebhook
+      tags: [webhooks]
+      summary: Receive a Sendblue webhook event
+      description: >
+        Receives inbound message, outbound status, and other Sendblue webhook
+        events. The exact payload shape varies by event type, so unknown
+        fields are accepted.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SendblueWebhookEvent"
+      responses:
+        "200":
+          description: Event accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookAck"
+
+  /users:
+    get:
+      operationId: listUsers
+      tags: [users]
+      summary: List users
+      responses:
+        "200":
+          description: Users with profile
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/UserWithProfile"
+
+  /users/{id}:
+    get:
+      operationId: getUser
+      tags: [users]
+      summary: Get a user
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "200":
+          description: User with profile
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserWithProfile"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /threads:
+    get:
+      operationId: listThreads
+      tags: [threads]
+      summary: List threads
+      responses:
+        "200":
+          description: Threads
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ThreadSummary"
+
+  /threads/{id}:
+    get:
+      operationId: getThread
+      tags: [threads]
+      summary: Get a thread with messages, participants, and polls
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "200":
+          description: Thread detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ThreadDetail"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /bookings:
+    get:
+      operationId: listBookings
+      tags: [bookings]
+      summary: List bookings
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: "#/components/schemas/BookingStatus"
+      responses:
+        "200":
+          description: Bookings
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Booking"
+
+  /bookings/{id}:
+    get:
+      operationId: getBooking
+      tags: [bookings]
+      summary: Get a booking
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "200":
+          description: Booking
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Booking"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /bookings/{id}/approve:
+    patch:
+      operationId: approveBooking
+      tags: [bookings]
+      summary: Approve a pending booking
+      description: >
+        Marks the booking confirmed. In this build the real provider call is
+        stubbed, so confirmation is simulated.
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "200":
+          description: Booking confirmed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Booking"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Booking is not pending approval
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /bookings/{id}/reject:
+    patch:
+      operationId: rejectBooking
+      tags: [bookings]
+      summary: Reject a pending booking
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "200":
+          description: Booking rejected
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Booking"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Booking is not pending approval
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
 components:
+  parameters:
+    IdParam:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: integer
+
   schemas:
     HealthStatus:
       type: object
@@ -34,3 +245,264 @@ components:
       required:
         - status
 
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+
+    SendblueWebhookEvent:
+      type: object
+      description: Passthrough Sendblue webhook payload; unknown fields allowed.
+      additionalProperties: true
+      properties:
+        message_handle:
+          type: string
+        from_number:
+          type: string
+        number:
+          type: string
+        content:
+          type: string
+        group_id:
+          type: ["string", "null"]
+        participants:
+          type: array
+          items:
+            type: string
+        is_outbound:
+          type: boolean
+        status:
+          type: string
+        date_sent:
+          type: string
+
+    WebhookAck:
+      type: object
+      required: [received]
+      properties:
+        received:
+          type: boolean
+
+    OnboardingStatus:
+      type: string
+      enum: [not_started, in_progress, completed]
+
+    Profile:
+      type: object
+      required: [id, userId, preferences, pastChoices, createdAt, updatedAt]
+      properties:
+        id:
+          type: integer
+        userId:
+          type: integer
+        budget:
+          type: ["string", "null"]
+        dietaryNeeds:
+          type: ["string", "null"]
+        preferences:
+          type: array
+          items:
+            type: string
+        pastChoices:
+          type: array
+          items:
+            type: string
+        notes:
+          type: ["string", "null"]
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    UserWithProfile:
+      type: object
+      required: [id, phoneNumber, onboardingStatus, createdAt, updatedAt]
+      properties:
+        id:
+          type: integer
+        phoneNumber:
+          type: string
+        displayName:
+          type: ["string", "null"]
+        onboardingStatus:
+          $ref: "#/components/schemas/OnboardingStatus"
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        profile:
+          oneOf:
+            - $ref: "#/components/schemas/Profile"
+            - type: "null"
+
+    ThreadParticipantSummary:
+      type: object
+      required: [userId, phoneNumber, role]
+      properties:
+        userId:
+          type: integer
+        phoneNumber:
+          type: string
+        displayName:
+          type: ["string", "null"]
+        role:
+          type: string
+
+    ThreadSummary:
+      type: object
+      required: [id, isGroup, participants, createdAt, updatedAt]
+      properties:
+        id:
+          type: integer
+        isGroup:
+          type: boolean
+        title:
+          type: ["string", "null"]
+        participants:
+          type: array
+          items:
+            $ref: "#/components/schemas/ThreadParticipantSummary"
+        lastMessagePreview:
+          type: ["string", "null"]
+        lastMessageAt:
+          type: ["string", "null"]
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    MessageItem:
+      type: object
+      required: [id, threadId, direction, role, content, createdAt]
+      properties:
+        id:
+          type: integer
+        threadId:
+          type: integer
+        userId:
+          type: ["integer", "null"]
+        direction:
+          type: string
+          enum: [inbound, outbound]
+        role:
+          type: string
+          enum: [user, assistant, system]
+        content:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+
+    PollOptionTally:
+      type: object
+      required: [id, label, position, voteCount]
+      properties:
+        id:
+          type: integer
+        label:
+          type: string
+        position:
+          type: integer
+        voteCount:
+          type: integer
+
+    PollSummary:
+      type: object
+      required: [id, question, status, options, createdAt]
+      properties:
+        id:
+          type: integer
+        question:
+          type: string
+        status:
+          type: string
+          enum: [open, closed]
+        winningOptionId:
+          type: ["integer", "null"]
+        options:
+          type: array
+          items:
+            $ref: "#/components/schemas/PollOptionTally"
+        createdAt:
+          type: string
+          format: date-time
+        closedAt:
+          type: ["string", "null"]
+          format: date-time
+
+    ThreadDetail:
+      type: object
+      required: [id, isGroup, participants, messages, polls, createdAt, updatedAt]
+      properties:
+        id:
+          type: integer
+        isGroup:
+          type: boolean
+        title:
+          type: ["string", "null"]
+        participants:
+          type: array
+          items:
+            $ref: "#/components/schemas/ThreadParticipantSummary"
+        messages:
+          type: array
+          items:
+            $ref: "#/components/schemas/MessageItem"
+        polls:
+          type: array
+          items:
+            $ref: "#/components/schemas/PollSummary"
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    BookingStatus:
+      type: string
+      enum: [drafted, pending_approval, approved, rejected, confirmed]
+
+    Booking:
+      type: object
+      required: [id, threadId, title, details, status, createdAt, updatedAt]
+      properties:
+        id:
+          type: integer
+        threadId:
+          type: integer
+        createdByUserId:
+          type: ["integer", "null"]
+        approverUserId:
+          type: ["integer", "null"]
+        approverPhoneNumber:
+          type: ["string", "null"]
+        title:
+          type: string
+        details:
+          type: object
+          additionalProperties: true
+        status:
+          $ref: "#/components/schemas/BookingStatus"
+        provider:
+          type: ["string", "null"]
+        providerBookingId:
+          type: ["string", "null"]
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        decidedAt:
+          type: ["string", "null"]
+          format: date-time

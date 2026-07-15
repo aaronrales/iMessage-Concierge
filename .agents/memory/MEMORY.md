@@ -1,0 +1,2 @@
+- [Sendblue API basics](sendblue-api.md) — auth headers, send endpoints, and webhook event shape for iMessage-via-Sendblue integrations.
+- [LLM-driven texting agent pattern](llm-texting-agent-pattern.md) — single structured-JSON completion per inbound message, deterministic vote/approval detection before the LLM turn.
