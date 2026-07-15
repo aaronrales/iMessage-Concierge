@@ -610,6 +610,14 @@ router.post("/webhooks/sendblue/:secret", async (req, res): Promise<void> => {
         const step = getOnboardingStep(senderRow.onboardingStatus, senderRow.displayName, profileRow ?? null);
 
         if (step !== "complete") {
+          // Group-referred users (those who received the groupDm intro) should
+          // get group-contextual phrasing for all subsequent steps. Detect this
+          // by checking whether the user already belongs to any group thread --
+          // if so, they arrived via a group-referral DM, not a cold 1:1 start.
+          const userGroupThreads = await getGroupThreadsForUser(senderUserId);
+          const onboardingVariant: "directDm" | "groupDm" =
+            userGroupThreads.length > 0 ? "groupDm" : "directDm";
+
           await handleDirectOnboardingStep(
             step,
             senderUserId,
@@ -619,6 +627,7 @@ router.post("/webhooks/sendblue/:secret", async (req, res): Promise<void> => {
             profileRow ?? null,
             event.from_number,
             sendContactCardIfNeeded,
+            onboardingVariant,
           );
           res.status(200).json({ received: true });
           return;

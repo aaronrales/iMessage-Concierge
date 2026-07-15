@@ -73,6 +73,8 @@ export async function checkAndSendGroupKickoffRecap(userId: number): Promise<voi
  * @param sendContactCard Injectable dependency so the caller can provide the
  *   real implementation or a test stub without coupling this module to the
  *   Sendblue API client.
+ * @param variant Controls which message copy is used: "groupDm" for users who
+ *   arrived via a group-referral DM, "directDm" (default) for cold 1:1 starts.
  */
 export async function handleDirectOnboardingStep(
   step: 0 | 1 | 2 | 3,
@@ -83,11 +85,18 @@ export async function handleDirectOnboardingStep(
   profile: { budget: string | null | undefined; dietaryNeeds: string | null | undefined; preferences: string[] | null | undefined } | null,
   phone: string,
   sendContactCard: (userId: number, phone: string) => Promise<void>,
+  variant: "directDm" | "groupDm" = "directDm",
 ): Promise<void> {
+  const messages = ONBOARDING[variant];
+
   if (step === 0) {
     // First-ever message: send contact card then the structured intro.
     await sendContactCard(userId, phone);
-    await sendToThread(threadId, ONBOARDING.directDm.intro);
+    // directDm.intro is a plain string; groupDm.intro is a function -- handle both.
+    const introText = typeof messages.intro === "function"
+      ? (messages.intro as (ctx: string) => string)("the group")
+      : (messages.intro as string);
+    await sendToThread(threadId, introText);
     await db.update(usersTable).set({ onboardingStatus: "in_progress" }).where(eq(usersTable.id, userId));
     return;
   }
@@ -97,7 +106,7 @@ export async function handleDirectOnboardingStep(
     const name = await extractName(content);
     if (name) {
       await db.update(usersTable).set({ displayName: name }).where(eq(usersTable.id, userId));
-      await sendToThread(threadId, ONBOARDING.directDm.askPractical(name));
+      await sendToThread(threadId, messages.askPractical(name));
     } else {
       // Extraction failed (ambiguous reply) -- ask once more, gently.
       await sendToThread(threadId, "Sorry, what should I call you?");
@@ -115,7 +124,7 @@ export async function handleDirectOnboardingStep(
       });
     }
     const confirmation = buildPracticalConfirmation(budget, dietaryNeeds);
-    await sendToThread(threadId, ONBOARDING.directDm.askPersonality(confirmation));
+    await sendToThread(threadId, messages.askPersonality(confirmation));
     return;
   }
 
@@ -125,7 +134,7 @@ export async function handleDirectOnboardingStep(
     await applyProfileUpdates(userId, { preferences });
   }
   const confirmation = buildPersonalityConfirmation(preferences);
-  await sendToThread(threadId, ONBOARDING.directDm.complete(confirmation));
+  await sendToThread(threadId, messages.complete(confirmation));
   await db.update(usersTable).set({ onboardingStatus: "completed" }).where(eq(usersTable.id, userId));
   // Fire group kickoff recap in case completing this person finishes the roster.
   await checkAndSendGroupKickoffRecap(userId);
