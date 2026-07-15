@@ -468,3 +468,72 @@ export const RejectVenueResponse = zod.object({
 })
 
 
+/**
+ * Returns the 50 most recent venue population runs, ordered by createdAt DESC.
+ * @summary List recent venue population runs
+ */
+export const ListVenuePopulationRunsResponseItem = zod.object({
+  "id": zod.number(),
+  "neighborhood": zod.string(),
+  "borough": zod.string().nullish(),
+  "city": zod.string().nullish(),
+  "venueType": zod.string(),
+  "customQuery": zod.string().nullish(),
+  "limit": zod.number(),
+  "status": zod.enum(['pending', 'running', 'completed', 'failed']),
+  "candidatesFound": zod.number().nullish(),
+  "venuesWritten": zod.number().nullish(),
+  "venuesSkipped": zod.number().nullish(),
+  "errors": zod.array(zod.object({
+  "venueName": zod.string(),
+  "error": zod.string()
+})).nullish(),
+  "startedAt": zod.coerce.date().nullish(),
+  "completedAt": zod.coerce.date().nullish(),
+  "createdAt": zod.coerce.date()
+})
+export const ListVenuePopulationRunsResponse = zod.array(ListVenuePopulationRunsResponseItem)
+
+
+/**
+ * Inserts a new run record (status=running) and fires populateNeighborhood as a background task. Returns the new run immediately. Only one run may be in progress at a time; a 409 is returned if another is running.
+ * @summary Start a venue population run
+ */
+
+export const createVenuePopulationRunBodyVenueTypeDefault = `restaurant`;
+export const createVenuePopulationRunBodyLimitDefault = 20;
+export const createVenuePopulationRunBodyLimitMax = 200;
+
+
+
+export const CreateVenuePopulationRunBody = zod.object({
+  "neighborhood": zod.string().min(1),
+  "borough": zod.string().optional(),
+  "city": zod.string().optional(),
+  "venueType": zod.enum(['restaurant', 'bar']).default(createVenuePopulationRunBodyVenueTypeDefault),
+  "customQuery": zod.string().optional(),
+  "limit": zod.number().min(1).max(createVenuePopulationRunBodyLimitMax).default(createVenuePopulationRunBodyLimitDefault)
+})
+
+export const CreateVenuePopulationRunResponse = zod.object({
+  "id": zod.number(),
+  "neighborhood": zod.string(),
+  "borough": zod.string().nullish(),
+  "city": zod.string().nullish(),
+  "venueType": zod.string(),
+  "customQuery": zod.string().nullish(),
+  "limit": zod.number(),
+  "status": zod.enum(['pending', 'running', 'completed', 'failed']),
+  "candidatesFound": zod.number().nullish(),
+  "venuesWritten": zod.number().nullish(),
+  "venuesSkipped": zod.number().nullish(),
+  "errors": zod.array(zod.object({
+  "venueName": zod.string(),
+  "error": zod.string()
+})).nullish(),
+  "startedAt": zod.coerce.date().nullish(),
+  "completedAt": zod.coerce.date().nullish(),
+  "createdAt": zod.coerce.date()
+})
+
+

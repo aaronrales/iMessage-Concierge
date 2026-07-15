@@ -21,6 +21,7 @@ import type {
 
 import type {
   Booking,
+  CreateVenuePopulationRunRequest,
   ErrorResponse,
   HealthStatus,
   ListBookingsParams,
@@ -31,6 +32,7 @@ import type {
   UserWithProfile,
   Venue,
   VenueDetail,
+  VenuePopulationRun,
   WebhookAck
 } from './api.schemas';
 
@@ -1342,5 +1344,155 @@ export const useRejectVenue = <TError = ErrorType<ErrorResponse>,
         TContext
       > => {
       return useMutation(getRejectVenueMutationOptions(options));
+    }
+
+export const getListVenuePopulationRunsUrl = () => {
+
+
+
+
+  return `/api/venue-population-runs`
+}
+
+/**
+ * Returns the 50 most recent venue population runs, ordered by createdAt DESC.
+ * @summary List recent venue population runs
+ */
+export const listVenuePopulationRuns = async ( options?: RequestInit): Promise<VenuePopulationRun[]> => {
+
+  return customFetch<VenuePopulationRun[]>(getListVenuePopulationRunsUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getListVenuePopulationRunsQueryKey = () => {
+    return [
+    `/api/venue-population-runs`
+    ] as const;
+    }
+
+
+export const getListVenuePopulationRunsQueryOptions = <TData = Awaited<ReturnType<typeof listVenuePopulationRuns>>, TError = ErrorType<unknown>>( options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listVenuePopulationRuns>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getListVenuePopulationRunsQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof listVenuePopulationRuns>>> = ({ signal }) => listVenuePopulationRuns({ signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof listVenuePopulationRuns>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type ListVenuePopulationRunsQueryResult = NonNullable<Awaited<ReturnType<typeof listVenuePopulationRuns>>>
+export type ListVenuePopulationRunsQueryError = ErrorType<unknown>
+
+
+/**
+ * @summary List recent venue population runs
+ */
+
+export function useListVenuePopulationRuns<TData = Awaited<ReturnType<typeof listVenuePopulationRuns>>, TError = ErrorType<unknown>>(
+  options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listVenuePopulationRuns>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getListVenuePopulationRunsQueryOptions(options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export const getCreateVenuePopulationRunUrl = () => {
+
+
+
+
+  return `/api/venue-population-runs`
+}
+
+/**
+ * Inserts a new run record (status=running) and fires populateNeighborhood as a background task. Returns the new run immediately. Only one run may be in progress at a time; a 409 is returned if another is running.
+ * @summary Start a venue population run
+ */
+export const createVenuePopulationRun = async (createVenuePopulationRunRequest: CreateVenuePopulationRunRequest, options?: RequestInit): Promise<VenuePopulationRun> => {
+
+  return customFetch<VenuePopulationRun>(getCreateVenuePopulationRunUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(createVenuePopulationRunRequest)
+  }
+);}
+
+
+
+
+
+export const getCreateVenuePopulationRunMutationOptions = <TError = ErrorType<ErrorResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createVenuePopulationRun>>, TError,{data: BodyType<CreateVenuePopulationRunRequest>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof createVenuePopulationRun>>, TError,{data: BodyType<CreateVenuePopulationRunRequest>}, TContext> => {
+
+const mutationKey = ['createVenuePopulationRun'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof createVenuePopulationRun>>, {data: BodyType<CreateVenuePopulationRunRequest>}> = (props) => {
+          const {data} = props ?? {};
+
+          return  createVenuePopulationRun(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type CreateVenuePopulationRunMutationResult = NonNullable<Awaited<ReturnType<typeof createVenuePopulationRun>>>
+    export type CreateVenuePopulationRunMutationBody = BodyType<CreateVenuePopulationRunRequest>
+    export type CreateVenuePopulationRunMutationError = ErrorType<ErrorResponse>
+
+    /**
+ * @summary Start a venue population run
+ */
+export const useCreateVenuePopulationRun = <TError = ErrorType<ErrorResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createVenuePopulationRun>>, TError,{data: BodyType<CreateVenuePopulationRunRequest>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof createVenuePopulationRun>>,
+        TError,
+        {data: BodyType<CreateVenuePopulationRunRequest>},
+        TContext
+      > => {
+      return useMutation(getCreateVenuePopulationRunMutationOptions(options));
     }
 

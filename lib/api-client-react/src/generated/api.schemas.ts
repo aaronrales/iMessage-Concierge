@@ -293,6 +293,70 @@ export interface VenueDetail {
   attributes: VenueAttribute[];
 }
 
+export type VenuePopulationRunStatus = typeof VenuePopulationRunStatus[keyof typeof VenuePopulationRunStatus];
+
+
+export const VenuePopulationRunStatus = {
+  pending: 'pending',
+  running: 'running',
+  completed: 'completed',
+  failed: 'failed',
+} as const;
+
+export interface VenuePopulationRunError {
+  venueName: string;
+  error: string;
+}
+
+export interface VenuePopulationRun {
+  id: number;
+  neighborhood: string;
+  /** @nullable */
+  borough?: string | null;
+  /** @nullable */
+  city?: string | null;
+  venueType: string;
+  /** @nullable */
+  customQuery?: string | null;
+  limit: number;
+  status: VenuePopulationRunStatus;
+  /** @nullable */
+  candidatesFound?: number | null;
+  /** @nullable */
+  venuesWritten?: number | null;
+  /** @nullable */
+  venuesSkipped?: number | null;
+  /** @nullable */
+  errors?: VenuePopulationRunError[] | null;
+  /** @nullable */
+  startedAt?: string | null;
+  /** @nullable */
+  completedAt?: string | null;
+  createdAt: string;
+}
+
+export type CreateVenuePopulationRunRequestVenueType = typeof CreateVenuePopulationRunRequestVenueType[keyof typeof CreateVenuePopulationRunRequestVenueType];
+
+
+export const CreateVenuePopulationRunRequestVenueType = {
+  restaurant: 'restaurant',
+  bar: 'bar',
+} as const;
+
+export interface CreateVenuePopulationRunRequest {
+  /** @minLength 1 */
+  neighborhood: string;
+  borough?: string;
+  city?: string;
+  venueType?: CreateVenuePopulationRunRequestVenueType;
+  customQuery?: string;
+  /**
+     * @minimum 1
+     * @maximum 200
+     */
+  limit?: number;
+}
+
 export type ListBookingsParams = {
 status?: BookingStatus;
 };

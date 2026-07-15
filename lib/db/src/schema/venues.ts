@@ -207,3 +207,29 @@ export const insertVenueFeedbackSchema = createInsertSchema(venueFeedbackTable).
 });
 export type InsertVenueFeedback = z.infer<typeof insertVenueFeedbackSchema>;
 export type VenueFeedback = typeof venueFeedbackTable.$inferSelect;
+
+/**
+ * Tracks venue population runs triggered from the Ops Dashboard.
+ * Each row represents one invocation of `populateNeighborhood()`.
+ * Status lifecycle: pending → running → completed | failed.
+ */
+export const venuePopulationRunsTable = pgTable("venue_population_runs", {
+  id: serial("id").primaryKey(),
+  neighborhood: text("neighborhood").notNull(),
+  borough: text("borough"),
+  city: text("city"),
+  venueType: text("venue_type").notNull().default("restaurant"),
+  customQuery: text("custom_query"),
+  limit: integer("limit").notNull().default(20),
+  status: text("status").notNull().default("pending"), // pending | running | completed | failed
+  candidatesFound: integer("candidates_found"),
+  venuesWritten: integer("venues_written"),
+  venuesSkipped: integer("venues_skipped"),
+  // Per-venue errors from the extraction pass: [{ venueName, error }]
+  errors: jsonb("errors").$type<{ venueName: string; error: string }[]>().default([]),
+  startedAt: timestamp("started_at", { withTimezone: true }),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export type VenuePopulationRun = typeof venuePopulationRunsTable.$inferSelect;

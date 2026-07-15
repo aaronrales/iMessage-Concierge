@@ -401,6 +401,55 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /venue-population-runs:
+    get:
+      operationId: listVenuePopulationRuns
+      tags: [venues]
+      summary: List recent venue population runs
+      description: Returns the 50 most recent venue population runs, ordered by createdAt DESC.
+      responses:
+        "200":
+          description: Population runs
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/VenuePopulationRun"
+    post:
+      operationId: createVenuePopulationRun
+      tags: [venues]
+      summary: Start a venue population run
+      description: >
+        Inserts a new run record (status=running) and fires populateNeighborhood
+        as a background task. Returns the new run immediately. Only one run
+        may be in progress at a time; a 409 is returned if another is running.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateVenuePopulationRunRequest"
+      responses:
+        "201":
+          description: Run created and started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VenuePopulationRun"
+        "400":
+          description: Invalid request body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: A run is already in progress
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
 components:
   parameters:
     IdParam:
@@ -829,4 +878,80 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/VenueAttribute"
+
+    VenuePopulationRunStatus:
+      type: string
+      enum: [pending, running, completed, failed]
+
+    VenuePopulationRunError:
+      type: object
+      required: [venueName, error]
+      properties:
+        venueName:
+          type: string
+        error:
+          type: string
+
+    VenuePopulationRun:
+      type: object
+      required: [id, neighborhood, venueType, limit, status, createdAt]
+      properties:
+        id:
+          type: integer
+        neighborhood:
+          type: string
+        borough:
+          type: ["string", "null"]
+        city:
+          type: ["string", "null"]
+        venueType:
+          type: string
+        customQuery:
+          type: ["string", "null"]
+        limit:
+          type: integer
+        status:
+          $ref: "#/components/schemas/VenuePopulationRunStatus"
+        candidatesFound:
+          type: ["integer", "null"]
+        venuesWritten:
+          type: ["integer", "null"]
+        venuesSkipped:
+          type: ["integer", "null"]
+        errors:
+          type: ["array", "null"]
+          items:
+            $ref: "#/components/schemas/VenuePopulationRunError"
+        startedAt:
+          type: ["string", "null"]
+          format: date-time
+        completedAt:
+          type: ["string", "null"]
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+
+    CreateVenuePopulationRunRequest:
+      type: object
+      required: [neighborhood]
+      properties:
+        neighborhood:
+          type: string
+          minLength: 1
+        borough:
+          type: string
+        city:
+          type: string
+        venueType:
+          type: string
+          enum: [restaurant, bar]
+          default: restaurant
+        customQuery:
+          type: string
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 200
+          default: 20
 

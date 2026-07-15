@@ -8,6 +8,7 @@ import bookingsRouter from "./bookings";
 import venuesRouter from "./venues";
 import plansRouter from "./plans";
 import deliveryRouter from "./delivery";
+import venuePopulationRunsRouter from "./venuePopulationRuns";
 
 const router: IRouter = Router();
 
@@ -20,5 +21,6 @@ router.use(bookingsRouter);
 router.use(venuesRouter);
 router.use("/plans", plansRouter);
 router.use(deliveryRouter);
+router.use(venuePopulationRunsRouter);
 
 export default router;

@@ -5,5 +5,6 @@ pnpm install --frozen-lockfile
 # ALTER TABLE statements) run first so the column exists before the push sync.
 psql "$DATABASE_URL" -f scripts/migrations/add-venue-google-place-id.sql
 psql "$DATABASE_URL" -f scripts/migrations/add-message-delivery-log.sql
+psql "$DATABASE_URL" -f scripts/migrations/add-venue-population-runs.sql
 pnpm --filter db push
 pnpm run typecheck:libs
