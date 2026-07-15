@@ -1,6 +1,6 @@
 import { PgBoss } from "pg-boss";
 import { eq } from "drizzle-orm";
-import { db, threadParticipantsTable, threadsTable, usersTable } from "@workspace/db";
+import { db, profilesTable, threadParticipantsTable, threadsTable, usersTable } from "@workspace/db";
 import { logger } from "../logger";
 import { canSendProactiveMessage, recordProactiveSend } from "./messagingBudget";
 import { sendToThread } from "./delivery";
@@ -33,6 +33,7 @@ import {
   getStalledOnboardingUserIds,
   markOnboardingNudgeSentForUser,
 } from "./context";
+import { getOnboardingStep } from "./onboarding";
 import { DEFAULT_CITY, daysUntilNextSaturday, getForecastForDay } from "./weather";
 import { ensureRevalidationConfigSeeded, runRevalidationScan } from "./venueCorpus/revalidation";
 
@@ -401,16 +402,53 @@ export async function sendOnboardingNudge(userId: number): Promise<void> {
   const [user] = await db.select().from(usersTable).where(eq(usersTable.id, userId));
   if (!user || !user.phoneNumber || user.onboardingStatus === "completed") return;
 
+  // Load the profile so we can determine which step the user stalled on and
+  // re-ask exactly that question rather than sending a generic check-in.
+  const [profile] = await db
+    .select({ budget: profilesTable.budget, dietaryNeeds: profilesTable.dietaryNeeds, preferences: profilesTable.preferences })
+    .from(profilesTable)
+    .where(eq(profilesTable.userId, userId));
+
+  const step = getOnboardingStep(user.onboardingStatus, user.displayName, profile ?? null);
+
+  // Build a nudge message specific to the step the user went quiet on.
+  const name = user.displayName;
+  let nudgeMessage: string;
+  switch (step) {
+    case 0:
+      // not_started -- shouldn't happen here (scan only returns in_progress),
+      // but safe to handle: re-send the opener.
+      nudgeMessage = "Still there? What should I call you?";
+      break;
+    case 1:
+      // Waiting for name.
+      nudgeMessage = "Still there? What should I call you?";
+      break;
+    case 2:
+      // Have name, waiting for practical constraint.
+      nudgeMessage = name
+        ? `Still there, ${name}? Any dietary needs or budget range I should keep in mind for suggestions?`
+        : "Still there? Any dietary needs or budget range I should keep in mind for suggestions?";
+      break;
+    case 3:
+      // Have practical, waiting for personality signal.
+      nudgeMessage = name
+        ? `Still there, ${name}? Last thing -- what's your go-to cuisine or vibe when you want a good night out?`
+        : "Still there? Last thing -- what's your go-to cuisine or vibe when you want a good night out?";
+      break;
+    default:
+      // "complete" -- profile is fully filled but status wasn't marked yet.
+      // Nothing useful to nudge about; skip.
+      return;
+  }
+
   const { thread } = await findOrCreateDirectThread(user.phoneNumber);
 
   // Marked before the send: if the process crashes in between, the nudge
   // simply never goes out (fine -- it was one-time and best-effort) rather
   // than risking a duplicate on the next scan or a manual retry.
   await markOnboardingNudgeSentForUser(userId);
-  await sendToThread(
-    thread.id,
-    "No pressure at all -- whenever you get a sec, I'd love to know a bit more about you so I can plan things you'll actually enjoy. Even one quick answer helps!",
-  );
+  await sendToThread(thread.id, nudgeMessage);
 }
 
 async function handleOnboardingNudgeScan(): Promise<void> {
