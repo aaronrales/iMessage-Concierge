@@ -45,27 +45,54 @@ router.get("/turn-ratings/recent", async (_req, res): Promise<void> => {
     return;
   }
 
-  // For each agent message, find the most recent inbound user message that
-  // came just before it in the same thread (the triggering message).
-  // We batch this into one query using a lateral-style approach: for each
-  // agent message id, get the max inbound message id that is less than it.
-  const precedingRows = await Promise.all(
-    agentMessages.map(async (msg) => {
-      const [preceding] = await db
-        .select({ id: messagesTable.id, content: messagesTable.content, userId: messagesTable.userId })
-        .from(messagesTable)
-        .where(
-          and(
-            eq(messagesTable.threadId, msg.threadId),
-            eq(messagesTable.direction, "inbound"),
-            lt(messagesTable.id, msg.id),
-          ),
-        )
-        .orderBy(desc(messagesTable.id))
-        .limit(1);
-      return { agentMessageId: msg.id, preceding: preceding ?? null };
-    }),
-  );
+  // For each agent message, fetch:
+  //   (a) the immediately preceding inbound user message (the trigger), and
+  //   (b) up to the 10 messages before this one in the same thread — the
+  //       context window the agent actually had when generating this reply.
+  const [precedingRows, contextRows] = await Promise.all([
+    Promise.all(
+      agentMessages.map(async (msg) => {
+        const [preceding] = await db
+          .select({ id: messagesTable.id, content: messagesTable.content, userId: messagesTable.userId })
+          .from(messagesTable)
+          .where(
+            and(
+              eq(messagesTable.threadId, msg.threadId),
+              eq(messagesTable.direction, "inbound"),
+              lt(messagesTable.id, msg.id),
+            ),
+          )
+          .orderBy(desc(messagesTable.id))
+          .limit(1);
+        return { agentMessageId: msg.id, preceding: preceding ?? null };
+      }),
+    ),
+    Promise.all(
+      agentMessages.map(async (msg) => {
+        // Fetch the last 10 messages (any role/direction) that came before this
+        // agent reply. These are the messages the agent saw in its context.
+        const ctx = await db
+          .select({
+            id: messagesTable.id,
+            role: messagesTable.role,
+            direction: messagesTable.direction,
+            content: messagesTable.content,
+            createdAt: messagesTable.createdAt,
+          })
+          .from(messagesTable)
+          .where(
+            and(
+              eq(messagesTable.threadId, msg.threadId),
+              lt(messagesTable.id, msg.id),
+            ),
+          )
+          .orderBy(desc(messagesTable.id))
+          .limit(10);
+        // Reverse so oldest-first for display (chronological order).
+        return { agentMessageId: msg.id, context: ctx.reverse() };
+      }),
+    ),
+  ]);
 
   // Fetch all existing ratings for these message ids in one query.
   const messageIds = agentMessages.map((m) => m.id);
@@ -79,16 +106,25 @@ router.get("/turn-ratings/recent", async (_req, res): Promise<void> => {
 
   const ratingByMessageId = new Map(ratings.map((r) => [r.messageId, r]));
   const precedingByAgentId = new Map(precedingRows.map((r) => [r.agentMessageId, r.preceding]));
+  const contextByAgentId = new Map(contextRows.map((r) => [r.agentMessageId, r.context]));
 
   const turns = agentMessages.map((msg) => {
     const rating = ratingByMessageId.get(msg.id);
     const preceding = precedingByAgentId.get(msg.id);
+    const context = contextByAgentId.get(msg.id) ?? [];
     return {
       messageId: msg.id,
       threadId: msg.threadId,
       agentContent: msg.content,
       agentCreatedAt: msg.createdAt,
       precedingUserContent: preceding?.content ?? null,
+      contextMessages: context.map((m) => ({
+        id: m.id,
+        role: m.role,
+        direction: m.direction,
+        content: m.content,
+        createdAt: m.createdAt,
+      })),
       rating: rating?.rating ?? null,
       failureTag: rating?.failureTag ?? null,
       notes: rating?.notes ?? null,

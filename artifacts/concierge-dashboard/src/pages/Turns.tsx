@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { format, formatDistanceToNow } from "date-fns";
-import { ThumbsUp, ThumbsDown, Bot, User, ExternalLink, RefreshCw } from "lucide-react";
+import { ThumbsUp, ThumbsDown, Bot, User, ExternalLink, RefreshCw, ChevronDown, ChevronUp } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
@@ -15,8 +15,16 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { toast } from "sonner";
-import { Link } from "wouter";
+import { Link, useLocation } from "wouter";
 import { ErrorState } from "@/components/ErrorState";
+
+interface ContextMessage {
+  id: number;
+  role: string;
+  direction: string;
+  content: string;
+  createdAt: string;
+}
 
 interface Turn {
   messageId: number;
@@ -24,6 +32,7 @@ interface Turn {
   agentContent: string;
   agentCreatedAt: string;
   precedingUserContent: string | null;
+  contextMessages: ContextMessage[];
   rating: "thumbs_up" | "thumbs_down" | null;
   failureTag: string | null;
   notes: string | null;
@@ -68,12 +77,14 @@ async function submitRating(payload: {
 
 function TurnCard({ turn }: { turn: Turn }) {
   const qc = useQueryClient();
+  const [, navigate] = useLocation();
   const [pendingRating, setPendingRating] = useState<"thumbs_up" | "thumbs_down" | null>(
     turn.rating,
   );
   const [failureTag, setFailureTag] = useState<string>(turn.failureTag ?? "");
   const [notes, setNotes] = useState(turn.notes ?? "");
   const [expanded, setExpanded] = useState(false);
+  const [showContext, setShowContext] = useState(false);
 
   const mutation = useMutation({
     mutationFn: submitRating,
@@ -134,10 +145,59 @@ function TurnCard({ turn }: { turn: Turn }) {
           <span className="opacity-50">·</span>
           <span>{format(new Date(turn.agentCreatedAt), "MMM d, h:mm a")}</span>
         </div>
-        <Link href={`/threads`} className="text-xs text-muted-foreground hover:text-primary flex items-center gap-1 transition-colors">
+        <button
+          onClick={() => navigate(`/threads?thread=${turn.threadId}`)}
+          className="text-xs text-muted-foreground hover:text-primary flex items-center gap-1 transition-colors"
+        >
           View thread <ExternalLink className="h-3 w-3" />
-        </Link>
+        </button>
       </div>
+
+      {/* Expandable context window */}
+      {turn.contextMessages.length > 0 && (
+        <div className="mb-3">
+          <button
+            onClick={() => setShowContext((v) => !v)}
+            className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+          >
+            {showContext ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+            {showContext ? "Hide" : "Show"} context
+            <span className="opacity-60">({turn.contextMessages.length} messages)</span>
+          </button>
+
+          {showContext && (
+            <div className="mt-2 p-3 bg-muted/30 rounded-lg border border-border/60 space-y-2.5">
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-2">
+                Context window — what the agent saw
+              </p>
+              {turn.contextMessages.map((msg) => {
+                const isAgent = msg.role === "assistant";
+                return (
+                  <div key={msg.id} className={`flex items-start gap-2 ${isAgent ? "opacity-50" : ""}`}>
+                    <div
+                      className={`h-5 w-5 rounded-full flex items-center justify-center shrink-0 mt-0.5 ${
+                        isAgent ? "bg-primary/10" : "bg-card border border-border"
+                      }`}
+                    >
+                      {isAgent ? (
+                        <Bot className="h-3 w-3 text-primary" />
+                      ) : (
+                        <User className="h-3 w-3 text-muted-foreground" />
+                      )}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs leading-relaxed text-foreground break-words">{msg.content}</p>
+                      <span className="text-[10px] text-muted-foreground/60">
+                        {format(new Date(msg.createdAt), "h:mm a")}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* User trigger message */}
       {turn.precedingUserContent && (

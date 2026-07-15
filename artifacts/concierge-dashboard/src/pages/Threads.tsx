@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { useListThreads, useGetThread, getListThreadsQueryKey } from "@workspace/api-client-react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useSearch } from "wouter";
 import { format } from "date-fns";
 import { Search, Users as UsersIcon, MessageSquare, Bot, User, ShieldAlert, BarChart3, Trash2, StickyNote, Save } from "lucide-react";
 import { Input } from "@/components/ui/input";
@@ -16,7 +17,11 @@ import { toast } from "sonner";
 export function ThreadsPage() {
   const { data: threads, isLoading: isLoadingList, isError: isErrorList, refetch: refetchList } = useListThreads();
   const [search, setSearch] = useState("");
-  const [selectedThreadId, setSelectedThreadId] = useState<number | null>(null);
+
+  // Support deep-linking from Turn Review: ?thread=ID pre-selects a thread.
+  const searchString = useSearch();
+  const threadFromUrl = searchString ? parseInt(new URLSearchParams(searchString).get("thread") ?? "", 10) || null : null;
+  const [selectedThreadId, setSelectedThreadId] = useState<number | null>(threadFromUrl);
   const [adminNotes, setAdminNotes] = useState("");
   const [isSavingNotes, setIsSavingNotes] = useState(false);
   const [confirmDeleteThreadId, setConfirmDeleteThreadId] = useState<number | null>(null);
