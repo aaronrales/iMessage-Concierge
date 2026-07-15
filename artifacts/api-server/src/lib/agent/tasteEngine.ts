@@ -32,6 +32,90 @@ export function buildGroupConstraintSummary(context: ThreadContext): string | nu
 }
 
 /**
+ * Structured group constraints extracted from participant profiles for use
+ * in corpus filtering and boosting. Separate from the text summary injected
+ * into the LLM prompt -- this is the machine-readable form that lets
+ * `lookupCorpusVenues` do real filtering rather than hoping the LLM picks
+ * the right venue from a text hint.
+ */
+export interface GroupConstraints {
+  /** All dietary needs across group members, lowercased (e.g. ["vegan", "gluten-free"]). */
+  dietaryNeeds: string[];
+  /**
+   * All budget tier strings expressed by members (e.g. ["$", "$$"]).
+   * The cheapest tier is used as a ceiling when filtering.
+   */
+  budgetTiers: string[];
+  /** All preference keywords across members, lowercased (e.g. ["outdoor seating", "quiet"]). */
+  preferences: string[];
+  /** Number of participants -- used to assess group-friendliness relevance. */
+  partySize: number;
+}
+
+/** Budget tier → numeric level for ceiling comparisons (higher = more expensive). */
+const BUDGET_TIER_LEVEL: Record<string, number> = {
+  "$": 1,
+  "$$": 2,
+  "$$$": 3,
+  "$$$$": 4,
+};
+
+/**
+ * Returns the numeric price ceiling from the tightest budget in the group
+ * (the smallest tier level present). Returns `Infinity` if no budgets are
+ * known, meaning no ceiling is applied.
+ */
+export function groupBudgetCeiling(budgetTiers: string[]): number {
+  if (budgetTiers.length === 0) return Infinity;
+  const levels = budgetTiers.map((t) => BUDGET_TIER_LEVEL[t] ?? 2);
+  return Math.min(...levels);
+}
+
+/**
+ * Extracts structured group constraints directly from participant profiles
+ * for passing into the corpus lookup layer. Returns `null` for 1:1 threads
+ * or when no member has any known constraint -- no-op for lookup.
+ */
+export function extractGroupConstraints(context: ThreadContext): GroupConstraints | null {
+  if (!context.thread.isGroup) return null;
+
+  const dietaryNeeds = new Set<string>();
+  const budgetTiers = new Set<string>();
+  const preferences = new Set<string>();
+
+  for (const { profile } of context.participants) {
+    if (!profile) continue;
+    if (profile.dietaryNeeds) {
+      // Split on commas/semicolons in case multiple needs are in one field.
+      for (const need of profile.dietaryNeeds.split(/[,;]\s*/)) {
+        const normalized = need.trim().toLowerCase();
+        if (normalized) dietaryNeeds.add(normalized);
+      }
+    }
+    if (profile.budget) {
+      budgetTiers.add(profile.budget.trim());
+    }
+    for (const pref of profile.preferences) {
+      const normalized = pref.trim().toLowerCase();
+      if (normalized) preferences.add(normalized);
+    }
+  }
+
+  const partySize = context.participants.length;
+
+  if (dietaryNeeds.size === 0 && budgetTiers.size === 0 && preferences.size === 0 && partySize < 2) {
+    return null;
+  }
+
+  return {
+    dietaryNeeds: [...dietaryNeeds],
+    budgetTiers: [...budgetTiers],
+    preferences: [...preferences],
+    partySize,
+  };
+}
+
+/**
  * Cross-thread memory: a one-line callout for a participant the concierge
  * already has real history with (from other threads), so a first turn in a
  * *new* group with them can use that context immediately instead of

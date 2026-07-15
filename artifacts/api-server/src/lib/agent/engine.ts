@@ -5,7 +5,7 @@ import type { ThreadContext } from "./context";
 import { logger } from "../logger";
 import { AGENT_TOOLS, executeAgentTool } from "./tools";
 import { showTypingIndicator } from "./delivery";
-import { buildGroupConstraintSummary, describeReturningMember } from "./tasteEngine";
+import { buildGroupConstraintSummary, describeReturningMember, extractGroupConstraints, type GroupConstraints } from "./tasteEngine";
 import type OpenAI from "openai";
 
 /** Safety valve against a runaway tool-call loop; one turn should need at most a couple of round trips. */
@@ -124,13 +124,19 @@ function buildProfileSummary(context: ThreadContext): string {
 /**
  * Runs the completion loop, executing any tool calls the model makes along
  * the way, until it returns a final (non-tool-call) message. This is the
- * Phase 0 "agent turn may include tool calls" architecture -- the fast
- * single-call path for chitchat still lands here too, it just resolves after
- * one iteration since the model has no reason to call a tool.
+ * tool-calling loop architecture -- the fast single-call path for chitchat
+ * still lands here too, it just resolves after one iteration since the model
+ * has no reason to call a tool.
+ *
+ * `groupConstraints` (when provided) is passed through to `executeAgentTool`
+ * so that corpus venue lookups can filter and boost by the group's dietary
+ * needs, budget, and party size -- not just rely on the LLM reading a text
+ * summary and hoping the right venues surfaced.
  */
 async function runTurnWithTools(
   messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[],
   threadId: number,
+  groupConstraints?: GroupConstraints,
 ): Promise<string> {
   for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
     const completion = await openai.chat.completions.create({
@@ -150,7 +156,7 @@ async function runTurnWithTools(
       messages.push(message);
       for (const toolCall of message.tool_calls) {
         if (toolCall.type !== "function") continue;
-        const result = await executeAgentTool(toolCall.function.name, toolCall.function.arguments, threadId);
+        const result = await executeAgentTool(toolCall.function.name, toolCall.function.arguments, threadId, groupConstraints);
         messages.push({
           role: "tool",
           tool_call_id: toolCall.id,
@@ -172,6 +178,7 @@ export async function runAgentTurn(context: ThreadContext, currentUserId: number
   const isGroup = context.thread.isGroup;
 
   const groupConstraints = isGroup ? buildGroupConstraintSummary(context) : null;
+  const structuredConstraints = isGroup ? extractGroupConstraints(context) : undefined;
   const returningMemberNotes = isGroup
     ? context.participants.map(describeReturningMember).filter((note): note is string => Boolean(note))
     : [];
@@ -200,7 +207,7 @@ export async function runAgentTurn(context: ThreadContext, currentUserId: number
     await showTypingIndicator(context.thread.id);
   }
 
-  const raw = await runTurnWithTools(messages, context.thread.id);
+  const raw = await runTurnWithTools(messages, context.thread.id, structuredConstraints ?? undefined);
 
   let parsed: RawAgentResponse;
   try {
