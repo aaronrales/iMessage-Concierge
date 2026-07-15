@@ -24,6 +24,24 @@ interface SendGroupMessageOptions {
   sendStyle?: string;
 }
 
+/**
+ * Returns the URL Sendblue should POST delivery-status events to, built from
+ * `SENDBLUE_STATUS_CALLBACK_BASE_URL` (set by ops to the server's public base
+ * URL, e.g. `https://your-app.replit.app/api`). Falls back to the Replit dev
+ * domain in development. Returns `undefined` when neither is set, in which case
+ * the `status_callback` parameter is omitted from sends (fire-and-forget mode).
+ */
+function getStatusCallbackUrl(): string | undefined {
+  const secret = process.env["SENDBLUE_WEBHOOK_SECRET"];
+  if (!secret) return undefined;
+
+  const base =
+    process.env["SENDBLUE_STATUS_CALLBACK_BASE_URL"] ??
+    (process.env["REPLIT_DEV_DOMAIN"] ? `https://${process.env["REPLIT_DEV_DOMAIN"]}/api` : undefined);
+
+  return base ? `${base}/webhooks/sendblue-status/${secret}` : undefined;
+}
+
 /** Valid tapback reaction types accepted by Sendblue's `/api/send-reaction`. */
 export type TapbackReaction = "love" | "like" | "dislike" | "laugh" | "emphasize" | "question";
 
@@ -81,12 +99,14 @@ async function post(path: string, body: Record<string, unknown>): Promise<unknow
 /** Send a 1:1 iMessage/SMS. Returns the Sendblue message handle if available. */
 export async function sendDirectMessage({ to, content, mediaUrl, sendStyle }: SendMessageOptions): Promise<string | null> {
   const credentials = getCredentials();
+  const statusCallback = getStatusCallbackUrl();
   const data = (await post("/api/send-message", {
     content,
     number: to,
     from_number: credentials?.fromNumber,
     ...(mediaUrl ? { media_url: mediaUrl } : {}),
     ...(sendStyle ? { send_style: sendStyle } : {}),
+    ...(statusCallback ? { status_callback: statusCallback } : {}),
   })) as { message_handle?: string } | null;
 
   return data?.message_handle ?? null;
@@ -100,12 +120,14 @@ export async function sendGroupMessage({
   sendStyle,
 }: SendGroupMessageOptions): Promise<string | null> {
   const credentials = getCredentials();
+  const statusCallback = getStatusCallbackUrl();
   const data = (await post("/api/send-group-message", {
     content,
     group_id: groupId,
     from_number: credentials?.fromNumber,
     ...(mediaUrl ? { media_url: mediaUrl } : {}),
     ...(sendStyle ? { send_style: sendStyle } : {}),
+    ...(statusCallback ? { status_callback: statusCallback } : {}),
   })) as { message_handle?: string } | null;
 
   return data?.message_handle ?? null;

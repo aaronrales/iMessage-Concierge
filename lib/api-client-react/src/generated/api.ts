@@ -139,6 +139,79 @@ export function useHealthCheck<TData = Awaited<ReturnType<typeof healthCheck>>, 
 
 
 
+export const getReceiveSendblueStatusWebhookUrl = (secret: string,) => {
+
+
+
+
+  return `/api/webhooks/sendblue-status/${secret}`
+}
+
+/**
+ * Handles outbound delivery status updates (ERROR, DELIVERED, etc.) and compliance events (line_blocked). Auth uses the same shared-secret-in-URL scheme as the inbound webhook. Responds 200 immediately; side-effects (DB writes, mute operations) happen inline.
+ * @summary Receive Sendblue delivery-status and compliance events
+ */
+export const receiveSendblueStatusWebhook = async (secret: string,
+    sendblueWebhookEvent: SendblueWebhookEvent, options?: RequestInit): Promise<WebhookAck> => {
+
+  return customFetch<WebhookAck>(getReceiveSendblueStatusWebhookUrl(secret),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(sendblueWebhookEvent)
+  }
+);}
+
+
+
+
+
+export const getReceiveSendblueStatusWebhookMutationOptions = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof receiveSendblueStatusWebhook>>, TError,{secret: string;data: BodyType<SendblueWebhookEvent>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof receiveSendblueStatusWebhook>>, TError,{secret: string;data: BodyType<SendblueWebhookEvent>}, TContext> => {
+
+const mutationKey = ['receiveSendblueStatusWebhook'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof receiveSendblueStatusWebhook>>, {secret: string;data: BodyType<SendblueWebhookEvent>}> = (props) => {
+          const {secret,data} = props ?? {};
+
+          return  receiveSendblueStatusWebhook(secret,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type ReceiveSendblueStatusWebhookMutationResult = NonNullable<Awaited<ReturnType<typeof receiveSendblueStatusWebhook>>>
+    export type ReceiveSendblueStatusWebhookMutationBody = BodyType<SendblueWebhookEvent>
+    export type ReceiveSendblueStatusWebhookMutationError = ErrorType<unknown>
+
+    /**
+ * @summary Receive Sendblue delivery-status and compliance events
+ */
+export const useReceiveSendblueStatusWebhook = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof receiveSendblueStatusWebhook>>, TError,{secret: string;data: BodyType<SendblueWebhookEvent>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof receiveSendblueStatusWebhook>>,
+        TError,
+        {secret: string;data: BodyType<SendblueWebhookEvent>},
+        TContext
+      > => {
+      return useMutation(getReceiveSendblueStatusWebhookMutationOptions(options));
+    }
+
 export const getReceiveSendblueWebhookUrl = (secret: string,) => {
 
 

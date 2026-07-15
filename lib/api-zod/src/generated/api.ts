@@ -18,6 +18,32 @@ export const HealthCheckResponse = zod.object({
 
 
 /**
+ * Handles outbound delivery status updates (ERROR, DELIVERED, etc.) and compliance events (line_blocked). Auth uses the same shared-secret-in-URL scheme as the inbound webhook. Responds 200 immediately; side-effects (DB writes, mute operations) happen inline.
+ * @summary Receive Sendblue delivery-status and compliance events
+ */
+export const ReceiveSendblueStatusWebhookParams = zod.object({
+  "secret": zod.coerce.string()
+})
+
+export const ReceiveSendblueStatusWebhookBody = zod.object({
+  "message_handle": zod.string().optional(),
+  "from_number": zod.string().optional(),
+  "number": zod.string().optional(),
+  "content": zod.string().optional(),
+  "group_id": zod.string().nullish(),
+  "participants": zod.array(zod.string()).optional(),
+  "is_outbound": zod.boolean().optional(),
+  "is_spam": zod.boolean().optional().describe('Set by Sendblue when recipient replied with STOP\/UNSUBSCRIBE'),
+  "status": zod.string().optional(),
+  "date_sent": zod.string().optional()
+}).describe('Passthrough Sendblue webhook payload; unknown fields allowed.')
+
+export const ReceiveSendblueStatusWebhookResponse = zod.object({
+  "received": zod.boolean()
+})
+
+
+/**
  * Receives inbound message, outbound status, and other Sendblue webhook events. The exact payload shape varies by event type, so unknown fields are accepted. The `secret` path segment is a shared secret (SENDBLUE_WEBHOOK_SECRET) that must match before the event is processed -- this is what this URL should be configured on Sendblue's side, and it is the only authenticity check available since Sendblue does not sign webhook payloads.
  * @summary Receive a Sendblue webhook event
  */
@@ -33,6 +59,7 @@ export const ReceiveSendblueWebhookBody = zod.object({
   "group_id": zod.string().nullish(),
   "participants": zod.array(zod.string()).optional(),
   "is_outbound": zod.boolean().optional(),
+  "is_spam": zod.boolean().optional().describe('Set by Sendblue when recipient replied with STOP\/UNSUBSCRIBE'),
   "status": zod.string().optional(),
   "date_sent": zod.string().optional()
 }).describe('Passthrough Sendblue webhook payload; unknown fields allowed.')

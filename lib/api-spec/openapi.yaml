@@ -33,6 +33,36 @@ paths:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
 
+  /webhooks/sendblue-status/{secret}:
+    post:
+      operationId: receiveSendblueStatusWebhook
+      tags: [webhooks]
+      summary: Receive Sendblue delivery-status and compliance events
+      description: >
+        Handles outbound delivery status updates (ERROR, DELIVERED, etc.) and
+        compliance events (line_blocked). Auth uses the same shared-secret-in-URL
+        scheme as the inbound webhook. Responds 200 immediately; side-effects
+        (DB writes, mute operations) happen inline.
+      parameters:
+        - name: secret
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SendblueWebhookEvent"
+      responses:
+        "200":
+          description: Event accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookAck"
+
   /webhooks/sendblue/{secret}:
     post:
       operationId: receiveSendblueWebhook
@@ -396,6 +426,27 @@ components:
         error:
           type: string
 
+    MessageDeliveryLog:
+      type: object
+      required: [id, status, createdAt]
+      properties:
+        id:
+          type: integer
+        messageHandle:
+          type: ["string", "null"]
+        recipientPhone:
+          type: ["string", "null"]
+        status:
+          type: string
+          description: ERROR, FAILED, DELIVERED, SENT, QUEUED, or BLOCKED
+        errorCode:
+          type: ["string", "null"]
+        threadId:
+          type: ["integer", "null"]
+        createdAt:
+          type: string
+          format: date-time
+
     SendblueWebhookEvent:
       type: object
       description: Passthrough Sendblue webhook payload; unknown fields allowed.
@@ -417,6 +468,9 @@ components:
             type: string
         is_outbound:
           type: boolean
+        is_spam:
+          type: boolean
+          description: Set by Sendblue when recipient replied with STOP/UNSUBSCRIBE
         status:
           type: string
         date_sent:

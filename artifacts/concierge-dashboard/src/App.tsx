@@ -8,6 +8,7 @@ import { UsersPage } from '@/pages/Users';
 import { ThreadsPage } from '@/pages/Threads';
 import { ApprovalsPage } from '@/pages/Approvals';
 import { VenuesPage } from '@/pages/Venues';
+import { DeliveryPage } from '@/pages/Delivery';
 import { Redirect } from 'wouter';
 
 const queryClient = new QueryClient();
@@ -21,6 +22,7 @@ function Router() {
         <Route path="/threads" component={ThreadsPage} />
         <Route path="/approvals" component={ApprovalsPage} />
         <Route path="/venues" component={VenuesPage} />
+        <Route path="/delivery" component={DeliveryPage} />
         <Route component={NotFound} />
       </Switch>
     </Layout>

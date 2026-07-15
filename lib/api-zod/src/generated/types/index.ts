@@ -13,6 +13,7 @@ export * from './errorResponse';
 export * from './healthStatus';
 export * from './listBookingsParams';
 export * from './listVenuesParams';
+export * from './messageDeliveryLog';
 export * from './messageItem';
 export * from './messageItemDirection';
 export * from './messageItemRole';

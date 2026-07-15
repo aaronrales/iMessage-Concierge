@@ -401,6 +401,25 @@ router.post("/webhooks/sendblue/:secret", async (req, res): Promise<void> => {
     return;
   }
 
+  // Opt-out compliance: Sendblue sets `is_spam: true` when the recipient
+  // replies with a standard STOP/UNSUBSCRIBE keyword. Mute them in all their
+  // threads and skip agent processing -- do not reply to an opt-out message.
+  const rawBody = req.body as Record<string, unknown>;
+  if (rawBody["is_spam"] === true) {
+    req.log.warn({ fromNumber: event.from_number }, "Sendblue is_spam opt-out received; muting sender");
+    try {
+      const { user, thread } = await findOrCreateDirectThread(event.from_number);
+      await setParticipantMuted(thread.id, user.id, true);
+      // Also mute in any group threads this user participates in.
+      const groupRows = await getGroupThreadsForUser(user.id);
+      await Promise.all(groupRows.map(({ id }) => setParticipantMuted(id, user.id, true)));
+    } catch (err) {
+      req.log.error({ err, fromNumber: event.from_number }, "Failed to mute opted-out sender");
+    }
+    res.status(200).json({ received: true });
+    return;
+  }
+
   // Cheap pre-check: Sendblue retries webhook deliveries on any
   // non-2xx/timeout response, and this handler can take a while (LLM turn,
   // multiple sends) -- so the same inbound message can arrive more than

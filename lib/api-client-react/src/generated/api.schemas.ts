@@ -13,6 +13,21 @@ export interface ErrorResponse {
   error: string;
 }
 
+export interface MessageDeliveryLog {
+  id: number;
+  /** @nullable */
+  messageHandle?: string | null;
+  /** @nullable */
+  recipientPhone?: string | null;
+  /** ERROR, FAILED, DELIVERED, SENT, QUEUED, or BLOCKED */
+  status: string;
+  /** @nullable */
+  errorCode?: string | null;
+  /** @nullable */
+  threadId?: number | null;
+  createdAt: string;
+}
+
 /**
  * Passthrough Sendblue webhook payload; unknown fields allowed.
  */
@@ -25,6 +40,8 @@ export interface SendblueWebhookEvent {
   group_id?: string | null;
   participants?: string[];
   is_outbound?: boolean;
+  /** Set by Sendblue when recipient replied with STOP/UNSUBSCRIBE */
+  is_spam?: boolean;
   status?: string;
   date_sent?: string;
   [key: string]: unknown;
