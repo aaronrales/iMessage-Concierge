@@ -1,10 +1,11 @@
 import type OpenAI from "openai";
+import { logger } from "../logger";
 
 /**
- * Tool contract for venue/activity lookups. The Phase 0 implementation below
- * is a placeholder so the tool-calling round trip exists end-to-end; Phase 1
- * swaps the body for a real Yelp Fusion (or Google Places) call without
- * needing to touch the calling convention in `engine.ts`.
+ * Tool contract for venue/activity lookups. Phase 1 backs this with a real
+ * Yelp Fusion API call (see `searchVenuesViaYelp` below); the shape returned
+ * to the model is unchanged from the Phase 0 stub so the calling convention
+ * in `engine.ts` never needed to change.
  */
 export const AGENT_TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
   {
@@ -31,7 +32,7 @@ export const AGENT_TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
   },
 ];
 
-interface StubVenueResult {
+interface VenueResult {
   name: string;
   category: string;
   priceLevel: string;
@@ -39,23 +40,73 @@ interface StubVenueResult {
   link: string;
 }
 
+const YELP_BASE_URL = "https://api.yelp.com/v3/businesses/search";
+const YELP_PRICE_SYMBOLS = ["", "$", "$", "$$", "$$"];
+
+interface YelpBusiness {
+  name: string;
+  url: string;
+  price?: string;
+  categories?: { title: string }[];
+  hours?: { open?: { start: string; end: string; day: number }[]; is_open_now?: boolean }[];
+}
+
+interface YelpSearchResponse {
+  businesses?: YelpBusiness[];
+}
+
+function summarizeYelpHours(business: YelpBusiness): string {
+  const hoursBlock = business.hours?.[0];
+  if (!hoursBlock) return "hours unknown";
+  if (hoursBlock.is_open_now) return "open now";
+  if (!hoursBlock.open?.length) return "hours unknown";
+  return "see link for hours";
+}
+
 /**
- * Placeholder tool implementation. Returns clearly-labeled synthetic results
- * so nothing downstream mistakes these for real venue data -- Phase 1
- * ("Real venue/activity recommendations") replaces this with an actual Yelp
- * Fusion API call and should keep the same input/output shape.
+ * Calls the Yelp Fusion business search API. Returns `null` (rather than
+ * throwing) whenever the key is missing, the request fails, or Yelp returns
+ * zero results, so a lookup miss degrades to a clear "nothing found" message
+ * instead of breaking the agent turn.
  */
-function searchVenuesStub(args: { query: string; location?: string }): StubVenueResult[] {
-  const locationSuffix = args.location ? ` near ${args.location}` : "";
-  return [
-    {
-      name: `[placeholder result for "${args.query}"${locationSuffix}]`,
-      category: "unknown -- real lookup not wired up yet",
-      priceLevel: "unknown",
-      hours: "unknown",
-      link: "https://example.com/placeholder",
-    },
-  ];
+async function searchVenuesViaYelp(args: { query: string; location?: string }): Promise<VenueResult[] | null> {
+  const apiKey = process.env["YELP_API_KEY"];
+  if (!apiKey) {
+    logger.warn("YELP_API_KEY is not configured; venue lookups are unavailable");
+    return null;
+  }
+
+  const url = new URL(YELP_BASE_URL);
+  url.searchParams.set("term", args.query);
+  url.searchParams.set("location", args.location?.trim() || "United States");
+  url.searchParams.set("limit", "5");
+
+  try {
+    const response = await fetch(url, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+
+    if (!response.ok) {
+      const body = await response.text().catch(() => "");
+      logger.error({ status: response.status, body }, "Yelp Fusion API request failed");
+      return null;
+    }
+
+    const data = (await response.json()) as YelpSearchResponse;
+    const businesses = data.businesses ?? [];
+    if (businesses.length === 0) return null;
+
+    return businesses.map((business) => ({
+      name: business.name,
+      category: business.categories?.map((c) => c.title).join(", ") || "unknown",
+      priceLevel: business.price ?? (YELP_PRICE_SYMBOLS[0] as string),
+      hours: summarizeYelpHours(business),
+      link: business.url,
+    }));
+  } catch (error) {
+    logger.error({ error }, "Yelp Fusion API request threw an error");
+    return null;
+  }
 }
 
 export async function executeAgentTool(name: string, rawArgs: string): Promise<unknown> {
@@ -70,7 +121,14 @@ export async function executeAgentTool(name: string, rawArgs: string): Promise<u
     case "search_venues": {
       const query = typeof args["query"] === "string" ? (args["query"] as string) : "";
       const location = typeof args["location"] === "string" ? (args["location"] as string) : undefined;
-      return { results: searchVenuesStub({ query, location }) };
+      const results = await searchVenuesViaYelp({ query, location });
+      if (!results) {
+        return {
+          results: [],
+          note: "No real venue data available for this query (Yelp lookup returned nothing or is not configured). Do not invent a specific venue -- speak generally instead, or ask the person for more detail.",
+        };
+      }
+      return { results };
     }
     default:
       return { error: `Unknown tool: ${name}` };

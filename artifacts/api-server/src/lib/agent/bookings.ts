@@ -3,6 +3,7 @@ import { db, bookingsTable, type Booking } from "@workspace/db";
 
 export interface DraftBookingInput {
   threadId: number;
+  planId?: number | null;
   createdByUserId: number;
   approverUserId: number;
   title: string;
@@ -15,6 +16,7 @@ export async function draftBooking(input: DraftBookingInput): Promise<Booking> {
     .insert(bookingsTable)
     .values({
       threadId: input.threadId,
+      planId: input.planId ?? null,
       createdByUserId: input.createdByUserId,
       approverUserId: input.approverUserId,
       title: input.title,

@@ -166,6 +166,45 @@ export async function recordMessage(params: {
   return message;
 }
 
+/** Sets the mute flag for one participant's row on a thread. Deterministic command, never LLM-driven. */
+export async function setParticipantMuted(threadId: number, userId: number, isMuted: boolean): Promise<void> {
+  await db
+    .update(threadParticipantsTable)
+    .set({ isMuted })
+    .where(and(eq(threadParticipantsTable.threadId, threadId), eq(threadParticipantsTable.userId, userId)));
+}
+
+export async function isParticipantMuted(threadId: number, userId: number): Promise<boolean> {
+  const [row] = await db
+    .select({ isMuted: threadParticipantsTable.isMuted })
+    .from(threadParticipantsTable)
+    .where(and(eq(threadParticipantsTable.threadId, threadId), eq(threadParticipantsTable.userId, userId)));
+  return row?.isMuted ?? false;
+}
+
+/**
+ * Participants in a group thread who have never received the onboarding
+ * disclosure line. Callers should send the disclosure and then call
+ * `markDisclosureSent` for each -- kept as two steps so the DB write only
+ * happens after the send is attempted.
+ */
+export async function getParticipantsNeedingDisclosure(threadId: number): Promise<User[]> {
+  const rows = await db
+    .select({ user: usersTable, disclosureSentAt: threadParticipantsTable.disclosureSentAt })
+    .from(threadParticipantsTable)
+    .innerJoin(usersTable, eq(threadParticipantsTable.userId, usersTable.id))
+    .where(eq(threadParticipantsTable.threadId, threadId));
+
+  return rows.filter((row) => !row.disclosureSentAt).map((row) => row.user);
+}
+
+export async function markDisclosureSent(threadId: number, userId: number): Promise<void> {
+  await db
+    .update(threadParticipantsTable)
+    .set({ disclosureSentAt: new Date() })
+    .where(and(eq(threadParticipantsTable.threadId, threadId), eq(threadParticipantsTable.userId, userId)));
+}
+
 export async function getOtherParticipants(threadId: number, excludingUserId: number) {
   return db
     .select({ user: usersTable, role: threadParticipantsTable.role })

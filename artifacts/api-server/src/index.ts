@@ -1,5 +1,6 @@
 import app from "./app";
 import { logger } from "./lib/logger";
+import { initScheduler } from "./lib/agent/scheduler";
 
 const rawPort = process.env["PORT"];
 
@@ -22,4 +23,8 @@ app.listen(port, (err) => {
   }
 
   logger.info({ port }, "Server listening");
+});
+
+initScheduler().catch((error) => {
+  logger.error({ error }, "Failed to start proactive messaging scheduler");
 });

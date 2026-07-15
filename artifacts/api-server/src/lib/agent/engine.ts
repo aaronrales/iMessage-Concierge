@@ -19,7 +19,7 @@ export interface AgentTurnResult {
     notes?: string;
   } | null;
   onboardingComplete: boolean | null;
-  poll: { question: string; options: string[] } | null;
+  poll: { question: string; options: string[]; kind: "choice" | "date"; optionDates: (Date | null)[] } | null;
   bookingDraft: {
     title: string;
     approverPhoneNumber: string | null;
@@ -32,7 +32,8 @@ const SYSTEM_PROMPT = `You are a personal AI concierge that lives inside iMessag
 You have these capabilities, which you can trigger by filling in the matching field in your JSON response:
 - Updating what you know about a person (their budget, dietary needs, general preferences, or freeform notes) as you learn it naturally through conversation.
 - Marking a person's onboarding complete once you've learned their name and at least one or two real preferences. Onboarding does not need to be exhaustive -- a couple of natural questions is enough.
-- Starting a group poll when a group needs to choose between a few concrete options (e.g. restaurant choices, dates). Only do this in group threads, and only when there are genuinely multiple options to choose between.
+- Starting a group poll when a group needs to choose between a few concrete options (e.g. restaurant choices). Only do this in group threads, and only when there are genuinely multiple options to choose between.
+- Starting a date/time coordination poll (a "date" kind poll) when a group needs to agree on when to do something and there are multiple candidate dates/times on the table. Give each option as a clear label (e.g. "Friday 7pm") AND, when you know the actual calendar date, an ISO 8601 date-time string for it. People may say several dates work for them -- that's expected and handled outside your JSON response.
 - Drafting a booking when a concrete plan has been decided (e.g. "let's book Sushi Place for 7pm Saturday, party of 4") and it needs a human to confirm before it's considered real. Always require a human approval step for bookings -- never claim a booking is confirmed yourself. If you don't know who should approve, default to the person who is currently talking to you.
 
 You can also call the search_venues tool whenever you're about to suggest a specific place, so you never invent a venue that doesn't exist.
@@ -43,7 +44,7 @@ Always respond with ONLY a JSON object matching this shape, no prose outside the
   "display_name": string | null,
   "profile_updates": { "budget"?: string, "dietary_needs"?: string, "preferences"?: string[], "notes"?: string } | null,
   "onboarding_complete": boolean | null,
-  "poll": { "question": string, "options": string[] } | null,
+  "poll": { "question": string, "options": string[], "kind": "choice" | "date", "option_dates": (string | null)[] } | null,
   "booking_draft": { "title": string, "approver_phone_number": string | null, "details": object } | null
 }
 Set "display_name" whenever the person tells you their name and it isn't already known -- otherwise leave it null.`;
@@ -58,7 +59,7 @@ interface RawAgentResponse {
     notes?: unknown;
   } | null;
   onboarding_complete?: unknown;
-  poll?: { question?: unknown; options?: unknown } | null;
+  poll?: { question?: unknown; options?: unknown; kind?: unknown; option_dates?: unknown } | null;
   booking_draft?: {
     title?: unknown;
     approver_phone_number?: unknown;
@@ -188,6 +189,14 @@ export async function runAgentTurn(context: ThreadContext, currentUserId: number
       ? {
           question: parsed.poll.question,
           options: (parsed.poll.options as unknown[]).filter((o): o is string => typeof o === "string"),
+          kind: parsed.poll.kind === "date" ? ("date" as const) : ("choice" as const),
+          optionDates: Array.isArray(parsed.poll.option_dates)
+            ? (parsed.poll.option_dates as unknown[]).map((d) => {
+                if (typeof d !== "string") return null;
+                const parsedDate = new Date(d);
+                return Number.isNaN(parsedDate.getTime()) ? null : parsedDate;
+              })
+            : [],
         }
       : null;
 

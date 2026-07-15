@@ -6,6 +6,13 @@ import { plansTable } from "./plans";
 
 export const pollStatusEnum = pgEnum("poll_status", ["open", "closed"]);
 
+// "choice" is the original single-pick poll (e.g. restaurant options).
+// "date" is a date/time coordination poll: voters can select multiple
+// options that work for them, and the winner is computed by intersection
+// (see `computeDatePollWinner` in the agent's polls module) rather than a
+// simple plurality.
+export const pollKindEnum = pgEnum("poll_kind", ["choice", "date"]);
+
 export const pollsTable = pgTable("polls", {
   id: serial("id").primaryKey(),
   threadId: integer("thread_id")
@@ -15,6 +22,7 @@ export const pollsTable = pgTable("polls", {
   // the plans table), but new plan-driven polls should set this.
   planId: integer("plan_id").references(() => plansTable.id, { onDelete: "set null" }),
   question: text("question").notNull(),
+  kind: pollKindEnum("kind").notNull().default("choice"),
   status: pollStatusEnum("status").notNull().default("open"),
   winningOptionId: integer("winning_option_id"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

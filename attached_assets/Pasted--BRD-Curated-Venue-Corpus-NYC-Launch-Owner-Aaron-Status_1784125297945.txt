@@ -1,0 +1,42 @@
+# BRD: Curated Venue Corpus — NYC Launch
+ 
+**Owner:** Aaron · **Status:** Draft v1 · **Repo:** iMessage-Concierge
+ 
+## Objective
+ 
+Replace commodity place data with a proprietary, quality-validated corpus of NYC venues that powers the concierge's recommendations (roadmap feature #6). The corpus combines a **cross-signal validation graph** (Path 1) with an **LLM-extracted attribute layer** (Path 2), architected so that **first-party outcome data** (Path 3) progressively takes over ranking as usage grows.
+ 
+## Scope
+ 
+- **Launch market:** NYC only (all boroughs; Manhattan + Brooklyn first). Target ~500 fully-validated venues at launch; design the pipeline as a repeatable "city bring-up" playbook.
+- **Venue types:** restaurants and bars first; events/activities as a fast follow (schema should accommodate both from day one).
+- **Out of scope for v1:** real-time availability, booking APIs, non-NYC data.
+## Architecture (three layers)
+ 
+**1. Signal graph.** For each venue, store *facts about external quality signals* — never third-party editorial content or prose. Initial signal set: Google rating + review count, Infatuation-featured (boolean + guide name), Eater 38 / heatmap presence, Michelin distinction, Resy/OpenTable bookability, Reddit mention frequency. Compute a **weighted composite score** (not hard AND-filters) and assign tiers: **Tier 1 (validated)** → confident recommendations; **Tier 2 (provisional)** → hedged language in agent replies; **untiered** → never recommended.
+ 
+**2. Attribute layer.** LLM pipeline extracts a structured schema from public review text per venue. First-pass dimensions (expect to evolve; version the schema): noise level, group-friendliness (big tables, split checks), reservation reality (walk-in vs. book-ahead, typical wait), vibe (date / friends / family / celebration), price honesty (stated tier vs. actual entree range), dietary breadth (veg/vegan/GF viability), outdoor seating, bar-while-waiting. Each extracted attribute stores a confidence score and source count; low-confidence attributes are excluded from agent context. Budget for a human spot-check pass on all Tier 1 venues pre-launch.
+ 
+**3. First-party groundwork (build the tables now, rank with them later).** Every recommendation event logs: venue shown → picked / ignored / rejected; post-plan rating (feedback loop, roadmap #11); repeat visits per group. Ranking function must accept a first-party weight parameter (0 at launch, increases with data volume).
+ 
+## Freshness & Revalidation
+ 
+- **Restaurants/bars:** monthly re-validation (signals re-pulled, closure check, score recompute).
+- **Events/time-sensitive:** weekly.
+- Cadence is a per-venue-type config, not hardcoded. A venue failing closure checks is suppressed immediately — stale "that place closed" recommendations are a critical trust failure, so closure detection is P0 within this workstream.
+- Per-source collection method must be reviewed individually (official APIs where they exist; respect ToS; store facts/derived data, not content).
+## Data Model (sketch — developer to finalize)
+ 
+`venues` (identity, location, type, tier, composite_score) · `venue_signals` (venue_id, source, signal_type, value, pulled_at) · `venue_attributes` (venue_id, dimension, value, confidence, source_count, schema_version) · `recommendation_events` (venue_id, thread_id, plan_id, outcome) · `venue_feedback` (venue_id, user_id, plan_id, rating, freeform).
+ 
+## Success Criteria
+ 
+- ≥500 Tier 1 NYC venues with ≥5 populated attributes each at launch.
+- Re-validation pipeline runs unattended on schedule; zero recommendations of closed venues.
+- Recommendation events + feedback logging live from day one (even while ranking ignores them).
+- Agent responses measurably differentiated from raw Google Places output in side-by-side testing.
+## Open Questions
+ 
+1. Signal weights: hand-tuned at launch, or fit against a small hand-labeled "great venue" set?
+2. Attribute schema governance: who approves dimension changes, and how do we backfill on schema bumps?
+3. Infatuation/Chase partnership exploration — pursue in parallel or defer post-launch?

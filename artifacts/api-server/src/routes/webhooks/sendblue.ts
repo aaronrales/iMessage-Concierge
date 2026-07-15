@@ -1,24 +1,32 @@
 import { Router, type IRouter } from "express";
 import { ReceiveSendblueWebhookBody, ReceiveSendblueWebhookParams } from "@workspace/api-zod";
-import { logger } from "../../lib/logger";
-import { sendDirectMessage, sendGroupMessage } from "../../lib/sendblue";
 import {
   findOrCreateDirectThread,
   findOrCreateGroupThread,
   findOrCreateUser,
+  getParticipantsNeedingDisclosure,
+  isParticipantMuted,
   loadThreadContext,
+  markDisclosureSent,
   recordMessage,
+  setParticipantMuted,
 } from "../../lib/agent/context";
 import { applyProfileUpdates, runAgentTurn } from "../../lib/agent/engine";
 import { scheduleAgentTurn } from "../../lib/agent/debounce";
 import { scrubPrivateProfileLeaks } from "../../lib/agent/privacy";
+import { sendToThread } from "../../lib/agent/delivery";
+import { detectKnowledgeCommand, handleKnowledgeCommand } from "../../lib/agent/knowledge";
+import { detectMuteCommand, shouldRespondInGroup } from "../../lib/agent/etiquette";
 import {
   closePollWithWinner,
+  computeDatePollWinner,
   countDistinctVoters,
   createPoll,
   getOpenPoll,
   matchOption,
+  matchOptions,
   recordVote,
+  recordVotes,
   tallyPoll,
 } from "../../lib/agent/polls";
 import {
@@ -28,35 +36,13 @@ import {
   findPendingBookingForApprover,
   rejectBookingRecord,
 } from "../../lib/agent/bookings";
-import { db, threadParticipantsTable, threadsTable, usersTable } from "@workspace/db";
+import { confirmPlan, getOrCreateActivePlan, setPlanScheduledFor, setPlanVenue, setPendingFeedback } from "../../lib/agent/plans";
+import { buildGoogleCalendarLink, describePlanSchedule } from "../../lib/agent/calendar";
+import { scheduleDayBeforeReminder, scheduleNonVoterNudge } from "../../lib/agent/scheduler";
+import { feedbackTable, db, threadParticipantsTable, threadsTable, usersTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 
 const router: IRouter = Router();
-
-/**
- * Sends a message into a thread. The transport (group vs direct, and which
- * phone/group id to use) is always looked up from the target thread's own DB
- * record, never taken from the caller -- a booking approval reply can arrive
- * on a different thread than the one it needs to notify, so the two must
- * never be conflated.
- */
-async function sendToThread(threadId: number, content: string): Promise<void> {
-  const [thread] = await db.select().from(threadsTable).where(eq(threadsTable.id, threadId));
-
-  try {
-    if (thread?.isGroup && thread.sendblueGroupId) {
-      await sendGroupMessage({ groupId: thread.sendblueGroupId, content });
-    } else if (thread?.primaryPhoneNumber) {
-      await sendDirectMessage({ to: thread.primaryPhoneNumber, content });
-    } else {
-      logger.warn({ threadId }, "Cannot send outbound message: thread has no known transport");
-    }
-  } catch (error) {
-    logger.error({ error, threadId }, "Failed to send outbound Sendblue message");
-  }
-
-  await recordMessage({ threadId, userId: null, direction: "outbound", role: "assistant", content });
-}
 
 /**
  * Runs the main conversation engine for a thread and delivers the result.
@@ -87,14 +73,24 @@ async function processAgentTurn(threadId: number, senderUserId: number): Promise
   }
 
   if (result.poll && isGroup) {
-    await createPoll(threadId, result.poll.question, result.poll.options);
+    const plan = await getOrCreateActivePlan(threadId, result.poll.question);
+    const { poll } = await createPoll(threadId, result.poll.question, result.poll.options, {
+      kind: result.poll.kind,
+      planId: plan.id,
+      optionDates: result.poll.optionDates,
+    });
+    if (result.poll.kind === "date") {
+      await scheduleNonVoterNudge(threadId, poll.id);
+    }
   }
 
   if (result.bookingDraft) {
     const approverPhone = result.bookingDraft.approverPhoneNumber;
     const approver = approverPhone ? await findOrCreateUser(approverPhone) : { id: senderUserId };
+    const plan = await getOrCreateActivePlan(threadId, result.bookingDraft.title);
     const booking = await draftBooking({
       threadId,
+      planId: plan.id,
       createdByUserId: senderUserId,
       approverUserId: approver.id,
       title: result.bookingDraft.title,
@@ -159,18 +155,27 @@ router.post("/webhooks/sendblue/:secret", async (req, res): Promise<void> => {
 
     let threadId: number;
     let senderUserId: number;
-    let groupId: string | null = null;
-    let directPhoneNumber: string | null = null;
 
     if (isGroup && event.group_id) {
-      groupId = event.group_id;
+      const groupId = event.group_id;
       const participantNumbers = event.participants?.length ? event.participants : [event.from_number];
       const { thread, participants } = await findOrCreateGroupThread(groupId, participantNumbers);
       threadId = thread.id;
       const sender = participants.find((p) => p.phoneNumber === event.from_number) ?? (await findOrCreateUser(event.from_number));
       senderUserId = sender.id;
+
+      // One-time onboarding disclosure for any participant who has never
+      // seen it -- sent into the group so everyone present sees it, not just
+      // the new member.
+      const needingDisclosure = await getParticipantsNeedingDisclosure(threadId);
+      for (const person of needingDisclosure) {
+        await sendToThread(
+          threadId,
+          `Hi ${person.displayName ?? "there"} -- I'm this group's AI concierge. I help plan things here (polls, bookings, reminders). Say "what do you know about me?" any time to see what I've learned, or "mute you" to have me stay quiet.`,
+        );
+        await markDisclosureSent(threadId, person.id);
+      }
     } else {
-      directPhoneNumber = event.from_number;
       const { thread, user } = await findOrCreateDirectThread(event.from_number);
       threadId = thread.id;
       senderUserId = user.id;
@@ -186,52 +191,144 @@ router.post("/webhooks/sendblue/:secret", async (req, res): Promise<void> => {
       rawPayload: event,
     });
 
-    // 1. If there's an open poll on this thread, check whether this message is a vote.
+    // 1. Deterministic commands that must always work regardless of mute
+    // state or LLM behavior: mute/unmute and "what do you know about me".
+    const muteCommand = detectMuteCommand(event.content);
+    if (muteCommand) {
+      await setParticipantMuted(threadId, senderUserId, muteCommand === "mute");
+      await sendToThread(
+        threadId,
+        muteCommand === "mute" ? "Got it, I'll stay quiet in here until you unmute me." : "I'm back -- happy to help again.",
+      );
+      res.status(200).json({ received: true });
+      return;
+    }
+
+    const knowledgeCommand = detectKnowledgeCommand(event.content);
+    if (knowledgeCommand) {
+      const reply = await handleKnowledgeCommand(senderUserId, knowledgeCommand);
+      await sendToThread(threadId, reply);
+      res.status(200).json({ received: true });
+      return;
+    }
+
+    // 2. A pending post-plan feedback prompt takes priority over everything
+    // else conversational -- if we just asked "how was it?", this reply is
+    // almost certainly the answer.
+    const [threadRow] = await db.select().from(threadsTable).where(eq(threadsTable.id, threadId));
+    if (threadRow?.pendingFeedbackPlanId) {
+      const ratingMatch = event.content.trim().match(/^([1-5])\b/);
+      const value = ratingMatch
+        ? { rating: Number.parseInt(ratingMatch[1] as string, 10) }
+        : { text: event.content.trim() };
+      await db.insert(feedbackTable).values({
+        threadId,
+        planId: threadRow.pendingFeedbackPlanId,
+        userId: senderUserId,
+        kind: ratingMatch ? "rating" : "free_text",
+        value,
+      });
+      await setPendingFeedback(threadId, null);
+      await sendToThread(threadId, "Thanks for the feedback -- noted for next time!");
+      res.status(200).json({ received: true });
+      return;
+    }
+
+    // 3. If there's an open poll on this thread, check whether this message is a vote.
     const openPoll = await getOpenPoll(threadId);
     if (openPoll) {
-      const matched = matchOption(event.content, openPoll.options);
-      if (matched) {
-        await recordVote(openPoll.poll.id, matched.id, senderUserId);
-        const tally = await tallyPoll(openPoll.poll.id, openPoll.options);
-        const voterCount = await countDistinctVoters(openPoll.poll.id);
-        const participantRows = await db
-          .select()
-          .from(threadParticipantsTable)
-          .where(eq(threadParticipantsTable.threadId, threadId));
+      if (openPoll.poll.kind === "date") {
+        const matched = matchOptions(event.content, openPoll.options);
+        if (matched.length > 0) {
+          await recordVotes(openPoll.poll.id, matched.map((m) => m.id), senderUserId);
+          const participantRows = await db
+            .select()
+            .from(threadParticipantsTable)
+            .where(eq(threadParticipantsTable.threadId, threadId));
+          // isFullIntersection is judged against the whole thread's expected
+          // participant count, not just current voters -- otherwise the
+          // very first vote would trivially "intersect with itself" and
+          // close the poll before anyone else weighs in.
+          const winner = await computeDatePollWinner(openPoll.poll.id, openPoll.options, participantRows.length);
+          const voterCount = await countDistinctVoters(openPoll.poll.id);
 
-        const tallyLine = tally.map((t) => `${t.option.label}: ${t.voteCount}`).join(", ");
-
-        if (voterCount >= participantRows.length) {
-          const winner = [...tally].sort((a, b) => b.voteCount - a.voteCount)[0];
-          if (winner) {
+          if (winner && (winner.isFullIntersection || voterCount >= participantRows.length)) {
             await closePollWithWinner(openPoll.poll.id, winner.option.id);
+            if (openPoll.poll.planId) {
+              const winningOption = openPoll.options.find((o) => o.id === winner.option.id);
+              if (winningOption?.optionDate) {
+                await setPlanScheduledFor(openPoll.poll.planId, winningOption.optionDate);
+              }
+            }
             await sendToThread(
               threadId,
-              `Everyone's voted! We're going with "${winner.option.label}" (${tallyLine}).`,
+              winner.isFullIntersection
+                ? `Everyone's free "${winner.option.label}" -- let's lock that in.`
+                : `We didn't get a date that works for literally everyone, so going with the best overlap: "${winner.option.label}".`,
+            );
+          } else {
+            await sendToThread(
+              threadId,
+              `Got it -- noted (${voterCount}/${participantRows.length} have responded so far).`,
             );
           }
-        } else {
-          await sendToThread(
-            threadId,
-            `Got it. Current tally (${voterCount}/${participantRows.length} voted) -- ${tallyLine}`,
-          );
+          res.status(200).json({ received: true });
+          return;
         }
+      } else {
+        const matched = matchOption(event.content, openPoll.options);
+        if (matched) {
+          await recordVote(openPoll.poll.id, matched.id, senderUserId);
+          const tally = await tallyPoll(openPoll.poll.id, openPoll.options);
+          const voterCount = await countDistinctVoters(openPoll.poll.id);
+          const participantRows = await db
+            .select()
+            .from(threadParticipantsTable)
+            .where(eq(threadParticipantsTable.threadId, threadId));
 
-        res.status(200).json({ received: true });
-        return;
+          const tallyLine = tally.map((t) => `${t.option.label}: ${t.voteCount}`).join(", ");
+
+          if (voterCount >= participantRows.length) {
+            const winnerTally = [...tally].sort((a, b) => b.voteCount - a.voteCount)[0];
+            if (winnerTally) {
+              await closePollWithWinner(openPoll.poll.id, winnerTally.option.id);
+              if (openPoll.poll.planId) {
+                await setPlanVenue(openPoll.poll.planId, winnerTally.option.label);
+              }
+              await sendToThread(
+                threadId,
+                `Everyone's voted! We're going with "${winnerTally.option.label}" (${tallyLine}).`,
+              );
+            }
+          } else {
+            await sendToThread(
+              threadId,
+              `Got it. Current tally (${voterCount}/${participantRows.length} voted) -- ${tallyLine}`,
+            );
+          }
+
+          res.status(200).json({ received: true });
+          return;
+        }
       }
     }
 
-    // 2. If this sender is the designated approver for a pending booking, check for an approval/rejection.
+    // 4. If this sender is the designated approver for a pending booking, check for an approval/rejection.
     const pendingBooking = await findPendingBookingForApprover(senderUserId);
     if (pendingBooking) {
       const intent = detectApprovalIntent(event.content);
       if (intent === "approve") {
         const booking = await confirmBooking(pendingBooking.id);
-        await sendToThread(
-          booking.threadId,
-          `Confirmed: "${booking.title}". I'll follow up here once it's actually locked in with the venue.`,
-        );
+        let confirmationSuffix = "";
+        if (booking.planId) {
+          const plan = await confirmPlan(booking.planId);
+          const link = buildGoogleCalendarLink(plan);
+          confirmationSuffix = ` ${describePlanSchedule(plan)}.${link ? ` Add it to your calendar: ${link}` : ""}`;
+          if (plan.scheduledFor) {
+            await scheduleDayBeforeReminder(booking.threadId, plan.id, plan.scheduledFor);
+          }
+        }
+        await sendToThread(booking.threadId, `Confirmed: "${booking.title}".${confirmationSuffix}`);
         if (booking.threadId !== threadId) {
           await sendToThread(threadId, `Thanks -- approved "${booking.title}".`);
         }
@@ -252,7 +349,22 @@ router.post("/webhooks/sendblue/:secret", async (req, res): Promise<void> => {
       }
     }
 
-    // 3. Otherwise, hand off to the (debounced) main conversation engine and
+    // 5. Group-chat etiquette: stay silent if this thread is muted for this
+    // person, or if the message isn't addressed to the concierge and has no
+    // clear planning intent -- a busy group shouldn't get a reply to every
+    // message just because the concierge is present.
+    if (isGroup) {
+      if (await isParticipantMuted(threadId, senderUserId)) {
+        res.status(200).json({ received: true });
+        return;
+      }
+      if (!shouldRespondInGroup(event.content)) {
+        res.status(200).json({ received: true });
+        return;
+      }
+    }
+
+    // 6. Otherwise, hand off to the (debounced) main conversation engine and
     // ack immediately -- the reply is delivered asynchronously once the
     // debounce window closes, so a burst of messages only triggers one turn.
     scheduleAgentTurn(threadId, senderUserId, event.content, processAgentTurn);

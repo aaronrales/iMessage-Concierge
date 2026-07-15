@@ -20,7 +20,12 @@ export const pollVotesTable = pgTable(
       .references(() => usersTable.id, { onDelete: "cascade" }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (table) => [unique().on(table.pollId, table.userId)],
+  // "choice" polls always have exactly one row per (pollId, userId), enforced
+  // in application code (recordVote deletes-then-inserts). "date" polls allow
+  // several rows per (pollId, userId) -- one per date the voter says works --
+  // so the unique constraint is on the full triple to prevent exact dupes
+  // while still allowing multi-select.
+  (table) => [unique().on(table.pollId, table.userId, table.optionId)],
 );
 
 export const insertPollVoteSchema = createInsertSchema(pollVotesTable).omit({
