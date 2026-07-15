@@ -9,6 +9,9 @@ import venuesRouter from "./venues";
 import plansRouter from "./plans";
 import deliveryRouter from "./delivery";
 import venuePopulationRunsRouter from "./venuePopulationRuns";
+import turnsRouter from "./turns";
+import agentConfigRouter from "./agent-config";
+import conciergeVcfRouter from "./conciergeVcf";
 
 const router: IRouter = Router();
 
@@ -22,5 +25,8 @@ router.use(venuesRouter);
 router.use("/plans", plansRouter);
 router.use(deliveryRouter);
 router.use(venuePopulationRunsRouter);
+router.use(turnsRouter);
+router.use(agentConfigRouter);
+router.use(conciergeVcfRouter);
 
 export default router;

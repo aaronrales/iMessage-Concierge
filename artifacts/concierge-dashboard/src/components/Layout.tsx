@@ -1,5 +1,5 @@
 import { Link, useLocation } from "wouter";
-import { Users, MessageSquare, CheckSquare, ConciergeBell, UtensilsCrossed, AlertTriangle, Database } from "lucide-react";
+import { Users, MessageSquare, CheckSquare, ConciergeBell, UtensilsCrossed, AlertTriangle, Database, ThumbsUp, Settings } from "lucide-react";
 import { 
   Sidebar, 
   SidebarContent, 
@@ -73,6 +73,22 @@ export function Layout({ children }: { children: React.ReactNode }) {
                 <Link href="/populate">
                   <Database />
                   <span>Populate</span>
+                </Link>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+            <SidebarMenuItem>
+              <SidebarMenuButton asChild isActive={location.startsWith("/turns")}>
+                <Link href="/turns">
+                  <ThumbsUp />
+                  <span>Turn Review</span>
+                </Link>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+            <SidebarMenuItem>
+              <SidebarMenuButton asChild isActive={location.startsWith("/settings")}>
+                <Link href="/settings">
+                  <Settings />
+                  <span>Settings</span>
                 </Link>
               </SidebarMenuButton>
             </SidebarMenuItem>

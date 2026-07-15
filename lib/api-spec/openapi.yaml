@@ -707,6 +707,9 @@ components:
           type: boolean
         title:
           type: ["string", "null"]
+        adminNotes:
+          type: ["string", "null"]
+          description: Ops-only steering notes injected into the agent system prompt for this thread.
         participants:
           type: array
           items:

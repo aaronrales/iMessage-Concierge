@@ -1,6 +1,7 @@
 import { Router, type IRouter } from "express";
 import { eq } from "drizzle-orm";
-import { db, profilesTable, usersTable } from "@workspace/db";
+import { z } from "zod/v4";
+import { db, profilesTable, usersTable, threadParticipantsTable, messagesTable } from "@workspace/db";
 import { GetUserParams, GetUserResponse, ListUsersResponse, SendOnboardingNudgeParams } from "@workspace/api-zod";
 import { getOnboardingProgressByUserId } from "../lib/agent/context";
 import { sendOnboardingNudge } from "../lib/agent/scheduler";
@@ -79,6 +80,35 @@ router.post("/users/:id/onboarding-nudge", async (req, res): Promise<void> => {
   // person.
   await sendOnboardingNudge(user.id);
   res.json({ received: true });
+});
+
+const DeleteUserParams = z.object({ id: z.coerce.number().int() });
+
+/**
+ * Hard-deletes a user and their associated records. Cascades to
+ * thread_participants (on delete cascade) and messages sent by this user
+ * where cascade is configured. This is a destructive, irreversible action.
+ */
+router.delete("/users/:id", async (req, res): Promise<void> => {
+  const params = DeleteUserParams.safeParse(req.params);
+  if (!params.success) {
+    res.status(400).json({ error: "Invalid user id" });
+    return;
+  }
+
+  const [user] = await db.select({ id: usersTable.id }).from(usersTable).where(eq(usersTable.id, params.data.id));
+  if (!user) {
+    res.status(404).json({ error: "User not found" });
+    return;
+  }
+
+  // Remove thread participation first (FK constraint) then the user row.
+  await db.delete(threadParticipantsTable).where(eq(threadParticipantsTable.userId, params.data.id));
+  await db.delete(messagesTable).where(eq(messagesTable.userId, params.data.id));
+  await db.delete(profilesTable).where(eq(profilesTable.userId, params.data.id));
+  await db.delete(usersTable).where(eq(usersTable.id, params.data.id));
+
+  res.json({ deleted: true });
 });
 
 export default router;

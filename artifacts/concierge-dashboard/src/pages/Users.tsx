@@ -3,7 +3,7 @@ import { useListUsers, useSendOnboardingNudge, getListUsersQueryKey } from "@wor
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { format, formatDistanceToNow } from "date-fns";
-import { Search, User, CreditCard, Apple, FileText, CheckCircle2, Clock, CircleDashed, BellRing, AlertCircle } from "lucide-react";
+import { Search, User, CreditCard, Apple, FileText, CheckCircle2, Clock, CircleDashed, BellRing, AlertCircle, Trash2 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
@@ -21,6 +21,28 @@ export function UsersPage() {
 
   const queryClient = useQueryClient();
   const nudgeMutation = useSendOnboardingNudge();
+  const [confirmDeleteUserId, setConfirmDeleteUserId] = useState<number | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+
+  const handleDeleteUser = async (userId: number) => {
+    if (confirmDeleteUserId !== userId) {
+      setConfirmDeleteUserId(userId);
+      return;
+    }
+    setIsDeleting(true);
+    try {
+      const res = await fetch(`/api/users/${userId}`, { method: "DELETE" });
+      if (!res.ok) throw new Error("Delete failed");
+      toast.success("User deleted.");
+      setSelectedUserId(null);
+      setConfirmDeleteUserId(null);
+      queryClient.invalidateQueries({ queryKey: getListUsersQueryKey() });
+    } catch {
+      toast.error("Couldn't delete user. Try again.");
+    } finally {
+      setIsDeleting(false);
+    }
+  };
 
   const isStalled = (user: NonNullable<typeof users>[number]) =>
     user.onboardingStatus !== "completed" && Boolean(user.onboardingDisclosedAt);
@@ -185,6 +207,26 @@ export function UsersPage() {
                 <div className="text-right text-sm text-muted-foreground space-y-2">
                   <div>Joined {format(new Date(selectedUser.createdAt), "MMM d, yyyy")}</div>
                   <div>ID: #{selectedUser.id}</div>
+                  <div className="flex flex-col items-end gap-1 pt-1">
+                    <Button
+                      size="sm"
+                      variant={confirmDeleteUserId === selectedUser.id ? "destructive" : "outline"}
+                      disabled={isDeleting}
+                      onClick={() => handleDeleteUser(selectedUser.id)}
+                      data-testid="button-delete-user"
+                    >
+                      <Trash2 className="h-3.5 w-3.5 mr-1.5" />
+                      {confirmDeleteUserId === selectedUser.id ? "Confirm delete" : "Delete user"}
+                    </Button>
+                    {confirmDeleteUserId === selectedUser.id && (
+                      <button
+                        onClick={() => setConfirmDeleteUserId(null)}
+                        className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+                      >
+                        Cancel
+                      </button>
+                    )}
+                  </div>
                   {selectedUser.onboardingStatus !== "completed" && selectedUser.onboardingDisclosedAt && (
                     <div className="flex flex-col items-end gap-1 pt-1">
                       <Button

@@ -1,8 +1,11 @@
 import { Router, type IRouter } from "express";
 import { desc, eq, inArray } from "drizzle-orm";
+import { z } from "zod/v4";
 import {
   db,
+  bookingsTable,
   messagesTable,
+  plansTable,
   pollOptionsTable,
   pollVotesTable,
   pollsTable,
@@ -152,6 +155,7 @@ router.get("/threads/:id", async (req, res): Promise<void> => {
       id: thread.id,
       isGroup: thread.isGroup,
       title: thread.title,
+      adminNotes: thread.adminNotes,
       participants: participantsByThreadId.get(thread.id) ?? [],
       messages,
       polls: pollSummaries,
@@ -159,6 +163,74 @@ router.get("/threads/:id", async (req, res): Promise<void> => {
       updatedAt: thread.updatedAt,
     }),
   );
+});
+
+const ThreadIdParam = z.object({ id: z.coerce.number().int() });
+const PatchAdminNotesBody = z.object({ adminNotes: z.string() });
+
+/**
+ * Updates the admin steering notes for a thread. These notes are injected
+ * into the agent's system prompt on every future turn for this thread, giving
+ * ops a per-thread lever for corrections that don't require a code change.
+ */
+router.patch("/threads/:id/admin-notes", async (req, res): Promise<void> => {
+  const params = ThreadIdParam.safeParse(req.params);
+  if (!params.success) {
+    res.status(400).json({ error: "Invalid thread id" });
+    return;
+  }
+  const body = PatchAdminNotesBody.safeParse(req.body);
+  if (!body.success) {
+    res.status(400).json({ error: body.error.message });
+    return;
+  }
+
+  const [updated] = await db
+    .update(threadsTable)
+    .set({ adminNotes: body.data.adminNotes || null })
+    .where(eq(threadsTable.id, params.data.id))
+    .returning({ id: threadsTable.id });
+
+  if (!updated) {
+    res.status(404).json({ error: "Thread not found" });
+    return;
+  }
+
+  res.json({ ok: true });
+});
+
+/**
+ * Hard-deletes a thread and all associated records (participants, messages,
+ * polls, plans, bookings). This is a destructive, irreversible action.
+ */
+router.delete("/threads/:id", async (req, res): Promise<void> => {
+  const params = ThreadIdParam.safeParse(req.params);
+  if (!params.success) {
+    res.status(400).json({ error: "Invalid thread id" });
+    return;
+  }
+
+  const [thread] = await db.select({ id: threadsTable.id }).from(threadsTable).where(eq(threadsTable.id, params.data.id));
+  if (!thread) {
+    res.status(404).json({ error: "Thread not found" });
+    return;
+  }
+
+  // Delete in dependency order: votes → options → polls, then other FK rows.
+  const polls = await db.select({ id: pollsTable.id }).from(pollsTable).where(eq(pollsTable.threadId, params.data.id));
+  if (polls.length > 0) {
+    const pollIds = polls.map((p) => p.id);
+    await db.delete(pollVotesTable).where(inArray(pollVotesTable.pollId, pollIds));
+    await db.delete(pollOptionsTable).where(inArray(pollOptionsTable.pollId, pollIds));
+    await db.delete(pollsTable).where(eq(pollsTable.threadId, params.data.id));
+  }
+  await db.delete(bookingsTable).where(eq(bookingsTable.threadId, params.data.id));
+  await db.delete(plansTable).where(eq(plansTable.threadId, params.data.id));
+  await db.delete(messagesTable).where(eq(messagesTable.threadId, params.data.id));
+  await db.delete(threadParticipantsTable).where(eq(threadParticipantsTable.threadId, params.data.id));
+  await db.delete(threadsTable).where(eq(threadsTable.id, params.data.id));
+
+  res.json({ deleted: true });
 });
 
 export default router;

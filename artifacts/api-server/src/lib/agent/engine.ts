@@ -1,5 +1,5 @@
 import { openai, CHAT_MODEL } from "../openaiClient";
-import { db, profilesTable } from "@workspace/db";
+import { agentConfigTable, db, profilesTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import type { ThreadContext } from "./context";
 import { logger } from "../logger";
@@ -10,6 +10,26 @@ import type OpenAI from "openai";
 
 /** Safety valve against a runaway tool-call loop; one turn should need at most a couple of round trips. */
 const MAX_TOOL_ITERATIONS = 3;
+
+/**
+ * Fetches the `globalGuidance` ops instruction block from `agent_config`. This
+ * text is prepended to every agent system prompt when non-empty, giving ops a
+ * real-time lever for cross-cutting corrections without a code deploy.
+ *
+ * Returns null (not throwing) on any DB error so a config hiccup can never
+ * break normal message processing.
+ */
+async function getGlobalGuidance(): Promise<string | null> {
+  try {
+    const [row] = await db
+      .select({ value: agentConfigTable.value })
+      .from(agentConfigTable)
+      .where(eq(agentConfigTable.key, "globalGuidance"));
+    return row?.value?.trim() || null;
+  } catch {
+    return null;
+  }
+}
 
 export interface AgentTurnResult {
   reply: string;
@@ -239,9 +259,17 @@ export async function runAgentTurn(context: ThreadContext, currentUserId: number
     ...(returningMemberNotes.length > 0 ? [returningMemberNotes.join("\n")] : []),
   ].join("\n\n");
 
+  const globalGuidance = await getGlobalGuidance();
+
   const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
     { role: "system", content: SYSTEM_PROMPT },
+    // Ops-authored cross-cutting guidance injected when non-empty.
+    ...(globalGuidance ? [{ role: "system" as const, content: `Ops guidance (apply to all threads):\n${globalGuidance}` }] : []),
     { role: "system", content: situational },
+    // Thread-specific steering notes from the ops dashboard.
+    ...(context.thread.adminNotes
+      ? [{ role: "system" as const, content: `Thread-specific instructions from ops:\n${context.thread.adminNotes}` }]
+      : []),
     ...buildTranscript(context, currentUserId),
   ];
 

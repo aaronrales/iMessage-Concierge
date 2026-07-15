@@ -1,22 +1,76 @@
-import React, { useState } from "react";
-import { useListThreads, useGetThread } from "@workspace/api-client-react";
+import React, { useState, useEffect } from "react";
+import { useListThreads, useGetThread, getListThreadsQueryKey } from "@workspace/api-client-react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { format } from "date-fns";
-import { Search, Users as UsersIcon, MessageSquare, Bot, User, ShieldAlert, BarChart3 } from "lucide-react";
+import { Search, Users as UsersIcon, MessageSquare, Bot, User, ShieldAlert, BarChart3, Trash2, StickyNote, Save } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
 import { Empty, EmptyMedia, EmptyHeader, EmptyTitle, EmptyDescription } from "@/components/ui/empty";
 import { ErrorState } from "@/components/ErrorState";
+import { toast } from "sonner";
 
 export function ThreadsPage() {
   const { data: threads, isLoading: isLoadingList, isError: isErrorList, refetch: refetchList } = useListThreads();
   const [search, setSearch] = useState("");
   const [selectedThreadId, setSelectedThreadId] = useState<number | null>(null);
+  const [adminNotes, setAdminNotes] = useState("");
+  const [isSavingNotes, setIsSavingNotes] = useState(false);
+  const [confirmDeleteThreadId, setConfirmDeleteThreadId] = useState<number | null>(null);
+  const [isDeletingThread, setIsDeletingThread] = useState(false);
+  const qc = useQueryClient();
 
   const { data: threadDetail, isLoading: isLoadingDetail, isError: isErrorDetail, refetch: refetchDetail } = useGetThread(selectedThreadId || 0, { 
     query: { enabled: !!selectedThreadId, queryKey: ['thread', selectedThreadId] } 
   });
+
+  useEffect(() => {
+    if (threadDetail) {
+      setAdminNotes(threadDetail.adminNotes ?? "");
+    }
+  }, [threadDetail]);
+
+  const handleSaveNotes = async () => {
+    if (!selectedThreadId) return;
+    setIsSavingNotes(true);
+    try {
+      const res = await fetch(`/api/threads/${selectedThreadId}/admin-notes`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ adminNotes }),
+      });
+      if (!res.ok) throw new Error("Save failed");
+      toast.success("Thread notes saved.");
+      refetchDetail();
+    } catch {
+      toast.error("Couldn't save notes. Try again.");
+    } finally {
+      setIsSavingNotes(false);
+    }
+  };
+
+  const handleDeleteThread = async (threadId: number) => {
+    if (confirmDeleteThreadId !== threadId) {
+      setConfirmDeleteThreadId(threadId);
+      return;
+    }
+    setIsDeletingThread(true);
+    try {
+      const res = await fetch(`/api/threads/${threadId}`, { method: "DELETE" });
+      if (!res.ok) throw new Error("Delete failed");
+      toast.success("Thread deleted.");
+      setSelectedThreadId(null);
+      setConfirmDeleteThreadId(null);
+      qc.invalidateQueries({ queryKey: getListThreadsQueryKey() });
+    } catch {
+      toast.error("Couldn't delete thread. Try again.");
+    } finally {
+      setIsDeletingThread(false);
+    }
+  };
 
   const filteredThreads = threads?.filter(thread => 
     (thread.title && thread.title.toLowerCase().includes(search.toLowerCase())) ||
@@ -120,18 +174,62 @@ export function ThreadsPage() {
         ) : threadDetail ? (
           <>
             {/* Header */}
-            <div className="h-16 px-6 border-b border-border bg-card flex items-center justify-between shrink-0 shadow-sm z-10 relative">
-              <div>
-                <h2 className="font-bold text-lg">
+            <div className="px-6 py-3 border-b border-border bg-card flex items-center justify-between shrink-0 shadow-sm z-10 relative gap-4">
+              <div className="min-w-0">
+                <h2 className="font-bold text-lg truncate">
                   {threadDetail.title || (threadDetail.isGroup ? "Group Chat" : threadDetail.participants.find(p => p.role === 'user')?.displayName || threadDetail.participants[0]?.phoneNumber)}
                 </h2>
-                <div className="text-xs text-muted-foreground font-medium">
+                <div className="text-xs text-muted-foreground font-medium truncate">
                   {threadDetail.participants.map(p => p.displayName || p.phoneNumber).join(", ")}
                 </div>
               </div>
-              <Badge variant="outline" className="bg-background">
-                ID: {threadDetail.id}
-              </Badge>
+              <div className="flex items-center gap-2 shrink-0">
+                <Badge variant="outline" className="bg-background">
+                  ID: {threadDetail.id}
+                </Badge>
+                <Button
+                  size="sm"
+                  variant={confirmDeleteThreadId === threadDetail.id ? "destructive" : "outline"}
+                  disabled={isDeletingThread}
+                  onClick={() => handleDeleteThread(threadDetail.id)}
+                >
+                  <Trash2 className="h-3.5 w-3.5 mr-1" />
+                  {confirmDeleteThreadId === threadDetail.id ? "Confirm" : "Delete"}
+                </Button>
+                {confirmDeleteThreadId === threadDetail.id && (
+                  <button
+                    onClick={() => setConfirmDeleteThreadId(null)}
+                    className="text-xs text-muted-foreground hover:text-foreground"
+                  >
+                    Cancel
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Admin steering notes */}
+            <div className="px-6 py-3 border-b border-border bg-muted/30 shrink-0">
+              <div className="flex items-start gap-3 max-w-2xl">
+                <StickyNote className="h-4 w-4 text-muted-foreground mt-2 shrink-0" />
+                <div className="flex-1 flex gap-2">
+                  <Textarea
+                    value={adminNotes}
+                    onChange={(e) => setAdminNotes(e.target.value)}
+                    placeholder="Thread steering notes — injected into the agent system prompt for this thread (e.g. 'This group prefers Brooklyn venues' or 'Always confirm allergy-free options first')"
+                    rows={2}
+                    className="text-xs resize-none flex-1 bg-background"
+                  />
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={isSavingNotes}
+                    onClick={handleSaveNotes}
+                    className="self-start mt-0.5"
+                  >
+                    <Save className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
+              </div>
             </div>
 
             <div className="flex-1 flex overflow-hidden">

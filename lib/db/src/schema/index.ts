@@ -14,3 +14,5 @@ export * from "./occasions";
 export * from "./privateInput";
 export * from "./venues";
 export * from "./messageDeliveryLog";
+export * from "./turnRatings";
+export * from "./agentConfig";

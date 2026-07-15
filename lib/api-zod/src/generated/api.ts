@@ -171,6 +171,7 @@ export const GetThreadResponse = zod.object({
   "id": zod.number(),
   "isGroup": zod.boolean(),
   "title": zod.string().nullish(),
+  "adminNotes": zod.string().nullish().describe('Ops-only steering notes injected into the agent system prompt for this thread.'),
   "participants": zod.array(zod.object({
   "userId": zod.number(),
   "phoneNumber": zod.string(),

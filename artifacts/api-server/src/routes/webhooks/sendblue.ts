@@ -66,7 +66,8 @@ import {
 } from "../../lib/agent/privateInput";
 import { feedbackTable, db, plansTable, threadParticipantsTable, threadsTable, usersTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
-import { createGroupWithNumbers, sendCarousel, sendReaction, uploadMediaToSendblue } from "../../lib/sendblue";
+import { createGroupWithNumbers, sendCarousel, sendDirectMessage, sendGroupMessage, sendReaction, uploadMediaToSendblue } from "../../lib/sendblue";
+import { generateGroupIntroMessage } from "../../lib/agent/groupIntro";
 import { fetchGooglePlacesPhotos, findGooglePlaceIdByName, type VenueCarouselEntry } from "../../lib/agent/tools";
 import { logger } from "../../lib/logger";
 
@@ -82,61 +83,111 @@ const OBJECTION_PATTERN = /\b(no|nope|wait|hold on|object|objection|don'?t lock|
  * site: they arrive as a follow-on burst of photos, the way a person might
  * text "here are some pics" right after a recommendation.
  */
+/**
+ * Sends contact card to a user on their very first outbound DM. This lets
+ * them save the number as "Concierge" so future messages feel personal.
+ * Marks-before-send so a crash fails toward under-sending, not double-sending.
+ */
+async function sendContactCardIfNeeded(userId: number, phone: string): Promise<void> {
+  const [user] = await db.select({ contactCardSent: usersTable.contactCardSent }).from(usersTable).where(eq(usersTable.id, userId));
+  if (!user || user.contactCardSent) return;
+
+  const base =
+    process.env["PUBLIC_API_URL"] ??
+    (process.env["REPLIT_DEV_DOMAIN"] ? `https://${process.env["REPLIT_DEV_DOMAIN"]}/api-server` : null);
+
+  if (!base) return; // no public URL configured; skip silently
+
+  const vcfUrl = `${base.replace(/\/$/, "")}/concierge.vcf`;
+
+  await db.update(usersTable).set({ contactCardSent: true }).where(eq(usersTable.id, userId));
+  try {
+    await sendDirectMessage({ to: phone, content: "", mediaUrl: vcfUrl });
+  } catch (error) {
+    logger.warn({ error, userId }, "Failed to send contact card; resetting flag");
+    await db.update(usersTable).set({ contactCardSent: false }).where(eq(usersTable.id, userId));
+  }
+}
+
 async function sendVenueCarousels(threadId: number, entries: VenueCarouselEntry[]): Promise<void> {
   try {
-  const [thread] = await db.select().from(threadsTable).where(eq(threadsTable.id, threadId));
-  if (!thread) return;
+    const [thread] = await db.select().from(threadsTable).where(eq(threadsTable.id, threadId));
+    if (!thread) return;
 
-  for (const entry of entries) {
-    try {
-      // Prefer the stored Google Place ID; fall back to a text search when the
-      // venue was added to the corpus before the field was populated.
-      let placeId = entry.googlePlaceId;
-      if (!placeId) {
-        placeId = await findGooglePlaceIdByName(entry.venueName);
+    // Photo-first voting: when there is an active poll, send each venue as an
+    // individual photo bubble whose content is the venue name. A tapback
+    // ("Loved "Lilia"") on that bubble is then picked up by parseTapback →
+    // matchOption and registered as a vote — no separate voting UI needed.
+    // When there is no active poll, fall back to the original multi-image carousel.
+    const activePoll = await getOpenPoll(threadId);
+
+    for (const entry of entries) {
+      try {
+        // Prefer the stored Google Place ID; fall back to a text search when the
+        // venue was added to the corpus before the field was populated.
+        let placeId = entry.googlePlaceId;
         if (!placeId) {
-          logger.debug({ venueName: entry.venueName }, "No Google Place ID found; skipping carousel for this venue");
+          placeId = await findGooglePlaceIdByName(entry.venueName);
+          if (!placeId) {
+            logger.debug({ venueName: entry.venueName }, "No Google Place ID found; skipping photo for this venue");
+            continue;
+          }
+        }
+
+        // Voting mode only needs 1 photo; carousel mode needs ≥ 2.
+        const neededPhotos = activePoll ? 1 : 2;
+        const photoUrls = await fetchGooglePlacesPhotos(placeId, 4);
+
+        if (photoUrls.length < 1) {
+          logger.debug({ venueName: entry.venueName }, "No photos returned; skipping this venue");
           continue;
         }
-      }
 
-      const photoUrls = await fetchGooglePlacesPhotos(placeId, 4);
-      if (photoUrls.length < 2) {
-        // Carousels require at least 2 images; skip sparse venues rather than
-        // sending a broken/single-item carousel.
-        logger.debug({ venueName: entry.venueName, photoCount: photoUrls.length }, "Insufficient photos for carousel");
-        continue;
-      }
+        // Google Places photo URIs are short-lived and Google-hosted. Sendblue
+        // requires its own CDN-hosted URLs, so we download and upload each.
+        // Stop uploading once we have enough for the chosen send mode.
+        const uploadedUrls: string[] = [];
+        for (const photoUrl of photoUrls) {
+          const imgResp = await fetch(photoUrl);
+          if (!imgResp.ok) continue;
+          const buffer = Buffer.from(await imgResp.arrayBuffer());
+          const contentType = imgResp.headers.get("content-type") ?? "image/jpeg";
+          const ext = contentType.includes("png") ? "png" : "jpg";
+          const safeName = entry.venueName.replace(/[^a-z0-9]/gi, "-").toLowerCase();
+          const uploaded = await uploadMediaToSendblue(buffer, `${safeName}-${uploadedUrls.length}.${ext}`, contentType);
+          if (uploaded) {
+            uploadedUrls.push(uploaded);
+            if (uploadedUrls.length >= neededPhotos) break;
+          }
+        }
 
-      // Google Places photo URIs are short-lived and Google-hosted. Sendblue
-      // requires its own CDN-hosted URLs, so we download each image and
-      // upload it to Sendblue before sending the carousel.
-      const uploadedUrls: string[] = [];
-      for (const photoUrl of photoUrls) {
-        const imgResp = await fetch(photoUrl);
-        if (!imgResp.ok) continue;
-        const buffer = Buffer.from(await imgResp.arrayBuffer());
-        const contentType = imgResp.headers.get("content-type") ?? "image/jpeg";
-        const ext = contentType.includes("png") ? "png" : "jpg";
-        const safeName = entry.venueName.replace(/[^a-z0-9]/gi, "-").toLowerCase();
-        const uploaded = await uploadMediaToSendblue(buffer, `${safeName}-${uploadedUrls.length}.${ext}`, contentType);
-        if (uploaded) uploadedUrls.push(uploaded);
-      }
+        if (uploadedUrls.length < 1) {
+          logger.debug({ venueName: entry.venueName }, "No photos uploaded; skipping this venue");
+          continue;
+        }
 
-      if (uploadedUrls.length < 2) {
-        logger.debug({ venueName: entry.venueName }, "Not enough photos uploaded; skipping carousel");
-        continue;
+        if (activePoll) {
+          // Individual bubble per venue: tapback on it = vote for that venue.
+          if (thread.isGroup && thread.sendblueGroupId) {
+            await sendGroupMessage({ groupId: thread.sendblueGroupId, content: entry.venueName, mediaUrl: uploadedUrls[0] });
+          } else if (thread.primaryPhoneNumber) {
+            await sendDirectMessage({ to: thread.primaryPhoneNumber, content: entry.venueName, mediaUrl: uploadedUrls[0] });
+          }
+        } else {
+          if (uploadedUrls.length < 2) {
+            logger.debug({ venueName: entry.venueName }, "Insufficient photos for carousel; skipping");
+            continue;
+          }
+          if (thread.isGroup && thread.sendblueGroupId) {
+            await sendCarousel({ groupId: thread.sendblueGroupId, mediaUrls: uploadedUrls });
+          } else if (thread.primaryPhoneNumber) {
+            await sendCarousel({ to: thread.primaryPhoneNumber, mediaUrls: uploadedUrls });
+          }
+        }
+      } catch (error) {
+        logger.warn({ error, venueName: entry.venueName }, "Failed to send venue photo; continuing with remaining venues");
       }
-
-      if (thread.isGroup && thread.sendblueGroupId) {
-        await sendCarousel({ groupId: thread.sendblueGroupId, mediaUrls: uploadedUrls });
-      } else if (thread.primaryPhoneNumber) {
-        await sendCarousel({ to: thread.primaryPhoneNumber, mediaUrls: uploadedUrls });
-      }
-    } catch (error) {
-      logger.warn({ error, venueName: entry.venueName }, "Failed to send venue photo carousel; continuing with remaining venues");
     }
-  }
   } catch (error) {
     // Outer guard: thread lookup or setup failure must never surface as an
     // unhandled rejection since this function is always called fire-and-forget.
@@ -356,6 +407,13 @@ async function processAgentTurn(threadId: number, senderUserId: number): Promise
   // text. 1:1 threads skip this -- there's nothing to leak the info to.
   const outgoingReply = isGroup ? scrubPrivateProfileLeaks(result.reply, context.participants) : result.reply;
 
+  // Send the concierge contact card as a media attachment on the very first
+  // outbound 1:1 DM so the user can save the number. 1:1 only — group threads
+  // don't need it and Sendblue may reject contact cards on group sends.
+  if (!isGroup && context.thread.primaryPhoneNumber) {
+    await sendContactCardIfNeeded(senderUserId, context.thread.primaryPhoneNumber);
+  }
+
   await sendToThread(threadId, outgoingReply);
 
   // Photo carousels follow the text recommendation as a burst of swipeable
@@ -491,10 +549,11 @@ router.post("/webhooks/sendblue/:secret", async (req, res): Promise<void> => {
       // new group -- said once, ever, regardless of how many people later
       // join. Distinct from the per-person welcome below.
       if (!(await hasGroupBeenIntroduced(threadId))) {
-        await sendToThread(
-          threadId,
-          `Hi all -- I'm this group's AI concierge. I help plan things here (polls, bookings, reminders). Say "what do you know about me?" any time to see what I've learned, or "mute you" to have me stay quiet.`,
-        );
+        // Context-aware intro: if the group already has messages (the concierge
+        // was added mid-flight), read the room and open with something specific.
+        // Falls back to the static boilerplate when there's nothing to read.
+        const introMessage = await generateGroupIntroMessage(threadId);
+        await sendToThread(threadId, introMessage);
         await markGroupIntroduced(threadId);
       }
 

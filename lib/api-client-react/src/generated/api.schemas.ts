@@ -178,6 +178,11 @@ export interface ThreadDetail {
   isGroup: boolean;
   /** @nullable */
   title?: string | null;
+  /**
+     * Ops-only steering notes injected into the agent system prompt for this thread.
+     * @nullable
+     */
+  adminNotes?: string | null;
   participants: ThreadParticipantSummary[];
   messages: MessageItem[];
   polls: PollSummary[];

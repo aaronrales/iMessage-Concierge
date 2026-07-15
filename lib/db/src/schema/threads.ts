@@ -29,6 +29,13 @@ export const threadsTable = pgTable("threads", {
   // for this group, so it fires exactly once when the last member completes
   // onboarding rather than once per person.
   onboardingRecapSentAt: timestamp("onboarding_recap_sent_at", { withTimezone: true }),
+  /**
+   * Admin-authored free-text instructions for this specific thread. Injected
+   * into the agent's system prompt on every future turn so ops can steer
+   * poorly-performing threads without editing code. E.g. "this group hates
+   * loud venues" or "always suggest places in Brooklyn".
+   */
+  adminNotes: text("admin_notes"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true })
     .notNull()

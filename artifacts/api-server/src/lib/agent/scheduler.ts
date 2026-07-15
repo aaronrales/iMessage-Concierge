@@ -83,6 +83,66 @@ const WEATHER_RESCUE_PRECIPITATION_THRESHOLD = 60; // % probability of precipita
 // rare and well-timed instead of naggy.
 const SERENDIPITY_MIN_DAYS_SINCE_LAST_PLAN = 21;
 
+// ── Quiet-hours helpers ────────────────────────────────────────────────────
+// Delayed messages (poll nudge, tiebreak, day-before reminder) should not
+// arrive at 3am. Any target time that falls in the quiet window (10pm–8am
+// in CONCIERGE_TIMEZONE) is pushed forward to 9am the next morning.
+
+const QUIET_HOURS_START = 22; // 10pm local — no sends after this
+const QUIET_HOURS_END = 8; // 8am local — no sends before this
+const QUIET_CLAMP_HOUR = 9; // push to 9am when outside the window
+
+/**
+ * If `target` falls outside the 8am–10pm window in `timezone`, returns the
+ * next 9am in that timezone. Otherwise returns `target` unchanged.
+ */
+export function clampToQuietHours(target: Date, timezone: string): Date {
+  const hour = parseInt(
+    new Intl.DateTimeFormat("en-US", {
+      timeZone: timezone,
+      hour: "numeric",
+      hour12: false,
+    }).format(target),
+    10,
+  );
+
+  if (hour >= QUIET_HOURS_END && hour < QUIET_HOURS_START) return target;
+
+  // Get the local date components so we can build a "9am on the right day".
+  const localParts = new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(target);
+
+  const year = parseInt(localParts.find((p) => p.type === "year")!.value, 10);
+  const month = parseInt(localParts.find((p) => p.type === "month")!.value, 10);
+  const day = parseInt(localParts.find((p) => p.type === "day")!.value, 10);
+
+  // After 10pm → next morning. Before 8am → same morning.
+  const dayOffset = hour >= QUIET_HOURS_START ? 1 : 0;
+
+  // Build the UTC timestamp that corresponds to QUIET_CLAMP_HOUR:00 local time
+  // on the target day using a round-trip technique (handles DST correctly to
+  // within the nearest hour, which is more than precise enough here).
+  const naiveUtc = new Date(Date.UTC(year, month - 1, day + dayOffset, QUIET_CLAMP_HOUR, 0, 0));
+  const naiveLocal = new Date(naiveUtc.toLocaleString("en-US", { timeZone: timezone }));
+  const offsetMs = naiveUtc.getTime() - naiveLocal.getTime();
+  return new Date(naiveUtc.getTime() + offsetMs);
+}
+
+/**
+ * Converts a relative `delaySeconds` value into a quiet-hours-safe delay.
+ * Computes the absolute target time, clamps it if needed, and returns the
+ * new delay in seconds (always ≥ 0).
+ */
+function clampedDelaySeconds(delaySeconds: number): number {
+  const target = new Date(Date.now() + delaySeconds * 1000);
+  const clamped = clampToQuietHours(target, CONCIERGE_TIMEZONE);
+  return Math.max(0, Math.round((clamped.getTime() - Date.now()) / 1000));
+}
+
 let boss: PgBoss | null = null;
 
 interface PollNudgeJobData {
@@ -127,7 +187,7 @@ async function handlePollNudge({ data }: { data: PollNudgeJobData }): Promise<vo
       QUEUES.pollTiebreakAnnounce,
       { threadId: data.threadId, pollId: data.pollId },
       null,
-      TIEBREAK_ANNOUNCE_DELAY_SECONDS,
+      clampedDelaySeconds(TIEBREAK_ANNOUNCE_DELAY_SECONDS),
     );
   }
 }
@@ -157,7 +217,7 @@ async function handlePollTiebreakAnnounce({ data }: { data: PollTiebreakJobData 
       QUEUES.pollTiebreakLock,
       { threadId: data.threadId, pollId: data.pollId },
       null,
-      TIEBREAK_OBJECTION_WINDOW_SECONDS,
+      clampedDelaySeconds(TIEBREAK_OBJECTION_WINDOW_SECONDS),
     );
   }
 }
@@ -366,13 +426,16 @@ async function handleOnboardingNudgeScan(): Promise<void> {
 
 export async function scheduleNonVoterNudge(threadId: number, pollId: number): Promise<void> {
   if (!boss) return;
-  await boss.sendAfter(QUEUES.pollNudge, { threadId, pollId }, null, NON_VOTER_NUDGE_DELAY_SECONDS);
+  await boss.sendAfter(QUEUES.pollNudge, { threadId, pollId }, null, clampedDelaySeconds(NON_VOTER_NUDGE_DELAY_SECONDS));
 }
 
 /** Schedules the day-before reminder for a newly-confirmed plan with a known date. */
 export async function scheduleDayBeforeReminder(threadId: number, planId: number, scheduledFor: Date): Promise<void> {
   if (!boss) return;
-  const reminderAt = new Date(scheduledFor.getTime() - 24 * 60 * 60 * 1000);
+  const reminderAt = clampToQuietHours(
+    new Date(scheduledFor.getTime() - 24 * 60 * 60 * 1000),
+    CONCIERGE_TIMEZONE,
+  );
   const delaySeconds = Math.max(0, Math.round((reminderAt.getTime() - Date.now()) / 1000));
   await boss.sendAfter(QUEUES.planReminder, { threadId, planId }, null, delaySeconds);
 }
