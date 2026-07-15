@@ -696,6 +696,9 @@ components:
           type: boolean
         candidateSourceRef:
           type: ["string", "null"]
+        googlePlaceId:
+          type: ["string", "null"]
+          description: Google Place ID, used to fetch photo carousels at recommendation time. Populated by ops reviewers via the admin dashboard.
         lastValidatedAt:
           type: ["string", "null"]
           format: date-time
@@ -772,3 +775,4 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/VenueAttribute"
+

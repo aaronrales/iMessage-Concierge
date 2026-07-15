@@ -46,6 +46,9 @@ export const venuesTable = pgTable(
     closureSuspected: boolean("closure_suspected").notNull().default(false),
     // Best-effort provenance for where this candidate came from (e.g. a Yelp business id/url), for traceability during review.
     candidateSourceRef: text("candidate_source_ref"),
+    // Google Places ID (e.g. "ChIJ..."). Populated by ops reviewers via the
+    // admin dashboard; used at recommendation time to fetch photo carousels.
+    googlePlaceId: text("google_place_id"),
     lastValidatedAt: timestamp("last_validated_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true })

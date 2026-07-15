@@ -178,6 +178,49 @@ export async function createGroupWithNumbers(numbers: string[], content: string)
   }
 }
 
+interface SendCarouselOptions {
+  /** 1:1 thread recipient phone number. Provide exactly one of `to` or `groupId`. */
+  to?: string;
+  /** Existing Sendblue group ID. Provide exactly one of `to` or `groupId`. */
+  groupId?: string;
+  /** Between 2 and 20 HTTPS image URLs (Sendblue CDN or public). */
+  mediaUrls: string[];
+}
+
+/**
+ * Sends a swipeable photo carousel via Sendblue's `POST /api/send-carousel`.
+ * iMessage only — returns `null` on 4xx so callers can skip gracefully for
+ * SMS threads or unsupported plans. Requires 2–20 images; single-image or
+ * empty calls are skipped before hitting the API.
+ */
+export async function sendCarousel({ to, groupId, mediaUrls }: SendCarouselOptions): Promise<string | null> {
+  const credentials = getCredentials();
+  if (!credentials) {
+    logger.warn("Sendblue credentials not configured; skipping carousel send");
+    return null;
+  }
+  if (mediaUrls.length < 2) {
+    logger.warn({ mediaCount: mediaUrls.length }, "Carousel requires at least 2 images; skipping");
+    return null;
+  }
+
+  try {
+    const body: Record<string, unknown> = {
+      from_number: credentials.fromNumber,
+      media_urls: mediaUrls.slice(0, 20), // API accepts 2–20
+    };
+    if (groupId) body["group_id"] = groupId;
+    else if (to) body["number"] = to;
+
+    const data = (await post("/api/send-carousel", body)) as { message_handle?: string } | null;
+    return data?.message_handle ?? null;
+  } catch (error) {
+    // 4xx is expected for SMS threads and plans without carousel support.
+    logger.warn({ error, hasGroupId: !!groupId, mediaCount: mediaUrls.length }, "Carousel send failed (SMS or plan limit); falling back to text-only");
+    return null;
+  }
+}
+
 /**
  * Sends an animated "..." typing indicator to a single recipient. Sendblue
  * does not support this for group chats, so callers should only invoke this

@@ -12,6 +12,7 @@ import {
   RejectVenueParams,
   RejectVenueResponse,
 } from "@workspace/api-zod";
+import { z } from "zod";
 import { approveVenueToTier1, downgradeVenueToTier2, getVenueReviewDetail, listVenuesByTier, rejectVenueToUntiered } from "../lib/agent/venueCorpus/review";
 import { db, venuesTable } from "@workspace/db";
 
@@ -95,6 +96,43 @@ router.patch("/venues/:id/reject", async (req, res): Promise<void> => {
 
   const venue = await rejectVenueToUntiered(params.data.id);
   res.json(RejectVenueResponse.parse(venue));
+});
+
+/** Inline schema — not part of the public API-spec codegen; kept here to avoid extra spec paths. */
+const UpdateVenueParamsSchema = z.object({ id: z.coerce.number().int() });
+const UpdateVenueBodySchema = z.object({
+  /** Google Places ID for photo carousel fetching. Pass null to clear. */
+  googlePlaceId: z.string().nullable().optional(),
+});
+
+router.patch("/venues/:id", async (req, res): Promise<void> => {
+  const params = UpdateVenueParamsSchema.safeParse(req.params);
+  if (!params.success) {
+    res.status(400).json({ error: params.error.message });
+    return;
+  }
+
+  const body = UpdateVenueBodySchema.safeParse(req.body);
+  if (!body.success) {
+    res.status(400).json({ error: body.error.message });
+    return;
+  }
+
+  const [existing] = await db.select().from(venuesTable).where(eq(venuesTable.id, params.data.id));
+  if (!existing) {
+    res.status(404).json({ error: "Venue not found" });
+    return;
+  }
+
+  const [updated] = await db
+    .update(venuesTable)
+    .set({
+      ...(body.data.googlePlaceId !== undefined ? { googlePlaceId: body.data.googlePlaceId } : {}),
+    })
+    .where(eq(venuesTable.id, params.data.id))
+    .returning();
+
+  res.json(updated);
 });
 
 export default router;

@@ -8,7 +8,7 @@ import {
   getListVenuesQueryKey,
 } from "@workspace/api-client-react";
 import { format } from "date-fns";
-import { Check, ArrowDownCircle, X, MapPin, Link as LinkIcon, ChevronDown, ChevronUp, UtensilsCrossed } from "lucide-react";
+import { Check, ArrowDownCircle, X, MapPin, Link as LinkIcon, ChevronDown, ChevronUp, UtensilsCrossed, Image } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -34,7 +34,59 @@ function ConfidenceBadge({ confidence }: { confidence: string }) {
   );
 }
 
-function VenueDetailPanel({ venueId }: { venueId: number }) {
+function GooglePlaceIdEditor({ venueId, initialPlaceId }: { venueId: number; initialPlaceId?: string | null }) {
+  const [value, setValue] = useState(initialPlaceId ?? "");
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleSave = async () => {
+    setSaving(true);
+    setError(null);
+    setSaved(false);
+    try {
+      const resp = await fetch(`/api/venues/${venueId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ googlePlaceId: value.trim() || null }),
+      });
+      if (!resp.ok) {
+        const body = (await resp.json().catch(() => ({}))) as { error?: string };
+        setError(body.error ?? "Save failed");
+      } else {
+        setSaved(true);
+        setTimeout(() => setSaved(false), 2000);
+      }
+    } catch {
+      setError("Network error");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="flex items-center gap-2 mt-3">
+      <Image className="h-4 w-4 text-muted-foreground shrink-0" />
+      <input
+        type="text"
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        placeholder="Google Place ID (ChIJ…)"
+        className="flex-1 h-8 text-xs rounded-md border border-border bg-background px-2.5 py-1 text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring font-mono"
+      />
+      <button
+        onClick={handleSave}
+        disabled={saving}
+        className="h-8 px-3 text-xs rounded-md bg-secondary text-secondary-foreground hover:bg-secondary/80 disabled:opacity-50 whitespace-nowrap"
+      >
+        {saving ? "Saving…" : saved ? "Saved ✓" : "Save Place ID"}
+      </button>
+      {error && <span className="text-xs text-destructive">{error}</span>}
+    </div>
+  );
+}
+
+function VenueDetailPanel({ venueId, googlePlaceId }: { venueId: number; googlePlaceId?: string | null }) {
   const { data: detail, isLoading } = useGetVenue(venueId);
 
   if (isLoading) {
@@ -92,6 +144,7 @@ function VenueDetailPanel({ venueId }: { venueId: number }) {
           ))}
         </div>
       </div>
+      <GooglePlaceIdEditor venueId={venueId} initialPlaceId={googlePlaceId} />
     </div>
   );
 }
@@ -227,7 +280,7 @@ export function VenuesPage() {
                               {isExpanded ? "Hide signals & attributes" : "View extracted signals & attributes"}
                             </button>
 
-                            {isExpanded && <VenueDetailPanel venueId={venue.id} />}
+                            {isExpanded && <VenueDetailPanel venueId={venue.id} googlePlaceId={venue.googlePlaceId} />}
                           </div>
 
                           <div className="flex md:flex-col gap-3 justify-center md:border-l md:border-border md:pl-6 md:min-w-[160px]">

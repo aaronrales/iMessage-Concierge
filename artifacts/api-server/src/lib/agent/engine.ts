@@ -3,7 +3,7 @@ import { db, profilesTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import type { ThreadContext } from "./context";
 import { logger } from "../logger";
-import { AGENT_TOOLS, executeAgentTool } from "./tools";
+import { AGENT_TOOLS, executeAgentTool, type VenueCarouselEntry } from "./tools";
 import { showTypingIndicator } from "./delivery";
 import { buildGroupConstraintSummary, describeReturningMember, extractGroupConstraints, type GroupConstraints } from "./tasteEngine";
 import type OpenAI from "openai";
@@ -47,6 +47,13 @@ export interface AgentTurnResult {
     participantPhones: string[];
     occasion: string | null;
   } | null;
+  /**
+   * Corpus venues returned by `search_venues` during this turn. Populated
+   * only when the model called the tool (not for plain chitchat). The
+   * delivery layer uses these to send photo carousels alongside the reply.
+   * Null when no venue search was performed this turn.
+   */
+  venueCarousels: VenueCarouselEntry[] | null;
 }
 
 const SYSTEM_PROMPT = `You are a personal AI concierge that lives inside iMessage. You help one person or a small group plan the stuff of everyday life -- dinners, weekend trips, birthdays, "where should we all meet". You are warm, concise, and text like a helpful friend, not a corporate assistant. Keep replies short enough for a text message (usually under 3 sentences) and never use emojis.
@@ -155,7 +162,13 @@ async function runTurnWithTools(
   messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[],
   threadId: number,
   groupConstraints?: GroupConstraints,
-): Promise<string> {
+): Promise<{ raw: string; venueCarousels: VenueCarouselEntry[] }> {
+  // Accumulates venue metadata from every search_venues tool call this turn.
+  // De-duplicated by venueId so multiple searches for the same venue don't
+  // queue up two identical carousels.
+  const carouselAccumulator: VenueCarouselEntry[] = [];
+  const seenVenueIds = new Set<number>();
+
   for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
     const completion = await openai.chat.completions.create({
       model: CHAT_MODEL,
@@ -167,28 +180,42 @@ async function runTurnWithTools(
 
     const message = completion.choices[0]?.message;
     if (!message) {
-      return "{}";
+      return { raw: "{}", venueCarousels: carouselAccumulator };
     }
 
     if (message.tool_calls && message.tool_calls.length > 0) {
       messages.push(message);
+      const iterAccumulator: VenueCarouselEntry[] = [];
       for (const toolCall of message.tool_calls) {
         if (toolCall.type !== "function") continue;
-        const result = await executeAgentTool(toolCall.function.name, toolCall.function.arguments, threadId, groupConstraints);
+        const result = await executeAgentTool(
+          toolCall.function.name,
+          toolCall.function.arguments,
+          threadId,
+          groupConstraints,
+          iterAccumulator,
+        );
         messages.push({
           role: "tool",
           tool_call_id: toolCall.id,
           content: JSON.stringify(result),
         });
       }
+      // Merge deduplicated entries into the turn-level accumulator.
+      for (const entry of iterAccumulator) {
+        if (!seenVenueIds.has(entry.venueId)) {
+          seenVenueIds.add(entry.venueId);
+          carouselAccumulator.push(entry);
+        }
+      }
       continue;
     }
 
-    return message.content ?? "{}";
+    return { raw: message.content ?? "{}", venueCarousels: carouselAccumulator };
   }
 
   logger.warn("Agent turn exceeded max tool-call iterations without a final response");
-  return "{}";
+  return { raw: "{}", venueCarousels: carouselAccumulator };
 }
 
 export async function runAgentTurn(context: ThreadContext, currentUserId: number): Promise<AgentTurnResult> {
@@ -225,7 +252,7 @@ export async function runAgentTurn(context: ThreadContext, currentUserId: number
     await showTypingIndicator(context.thread.id);
   }
 
-  const raw = await runTurnWithTools(messages, context.thread.id, structuredConstraints ?? undefined);
+  const { raw, venueCarousels: venueCarouselData } = await runTurnWithTools(messages, context.thread.id, structuredConstraints ?? undefined);
 
   let parsed: RawAgentResponse;
   try {
@@ -335,6 +362,7 @@ export async function runAgentTurn(context: ThreadContext, currentUserId: number
     occasion,
     privateQuestion,
     groupCreationRequest: groupCreationRequest && groupCreationRequest.participantNames.length > 0 ? groupCreationRequest : null,
+    venueCarousels: venueCarouselData.length > 0 ? venueCarouselData : null,
   };
 }
 

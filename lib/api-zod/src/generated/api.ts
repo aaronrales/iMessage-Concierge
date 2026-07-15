@@ -298,6 +298,7 @@ export const ListVenuesResponseItem = zod.object({
   "firstPartyWeight": zod.string(),
   "closureSuspected": zod.boolean(),
   "candidateSourceRef": zod.string().nullish(),
+  "googlePlaceId": zod.string().nullish().describe('Google Place ID, used to fetch photo carousels at recommendation time. Populated by ops reviewers via the admin dashboard.'),
   "lastValidatedAt": zod.coerce.date().nullish(),
   "createdAt": zod.coerce.date(),
   "updatedAt": zod.coerce.date()
@@ -327,6 +328,7 @@ export const GetVenueResponse = zod.object({
   "firstPartyWeight": zod.string(),
   "closureSuspected": zod.boolean(),
   "candidateSourceRef": zod.string().nullish(),
+  "googlePlaceId": zod.string().nullish().describe('Google Place ID, used to fetch photo carousels at recommendation time. Populated by ops reviewers via the admin dashboard.'),
   "lastValidatedAt": zod.coerce.date().nullish(),
   "createdAt": zod.coerce.date(),
   "updatedAt": zod.coerce.date()
@@ -376,6 +378,7 @@ export const ApproveVenueResponse = zod.object({
   "firstPartyWeight": zod.string(),
   "closureSuspected": zod.boolean(),
   "candidateSourceRef": zod.string().nullish(),
+  "googlePlaceId": zod.string().nullish().describe('Google Place ID, used to fetch photo carousels at recommendation time. Populated by ops reviewers via the admin dashboard.'),
   "lastValidatedAt": zod.coerce.date().nullish(),
   "createdAt": zod.coerce.date(),
   "updatedAt": zod.coerce.date()
@@ -403,6 +406,7 @@ export const DowngradeVenueResponse = zod.object({
   "firstPartyWeight": zod.string(),
   "closureSuspected": zod.boolean(),
   "candidateSourceRef": zod.string().nullish(),
+  "googlePlaceId": zod.string().nullish().describe('Google Place ID, used to fetch photo carousels at recommendation time. Populated by ops reviewers via the admin dashboard.'),
   "lastValidatedAt": zod.coerce.date().nullish(),
   "createdAt": zod.coerce.date(),
   "updatedAt": zod.coerce.date()
@@ -430,6 +434,7 @@ export const RejectVenueResponse = zod.object({
   "firstPartyWeight": zod.string(),
   "closureSuspected": zod.boolean(),
   "candidateSourceRef": zod.string().nullish(),
+  "googlePlaceId": zod.string().nullish().describe('Google Place ID, used to fetch photo carousels at recommendation time. Populated by ops reviewers via the admin dashboard.'),
   "lastValidatedAt": zod.coerce.date().nullish(),
   "createdAt": zod.coerce.date(),
   "updatedAt": zod.coerce.date()

@@ -5,6 +5,96 @@ import { logRecommendationEvent } from "./venueCorpus/recommendationLog";
 import type { GroupConstraints } from "./tasteEngine";
 
 /**
+ * Metadata collected for each corpus venue returned by `search_venues` so
+ * the delivery layer can send photo carousels alongside the text reply.
+ */
+export interface VenueCarouselEntry {
+  venueId: number;
+  venueName: string;
+  /** Null when the venue has no stored Google Place ID; delivery falls back to a text-search lookup. */
+  googlePlaceId: string | null;
+}
+
+// ─── Google Places Photo fetch ────────────────────────────────────────────────
+
+/**
+ * Fetches up to `maxPhotos` HTTPS photo URLs for a Google Place by its ID.
+ * Uses the Places New API: first retrieves photo references from the place
+ * detail endpoint, then resolves each to a hosted media URI via
+ * `skipHttpRedirect=true` so we get a JSON response instead of a redirect.
+ * Returns an empty array on any failure so callers can skip carousels safely.
+ */
+export async function fetchGooglePlacesPhotos(placeId: string, maxPhotos = 4): Promise<string[]> {
+  const apiKey = process.env["GOOGLE_PLACES_API_KEY"];
+  if (!apiKey) return [];
+
+  try {
+    // Step 1: Get photo name references for this place.
+    const detailResp = await fetch(`https://places.googleapis.com/v1/places/${encodeURIComponent(placeId)}`, {
+      headers: {
+        "X-Goog-Api-Key": apiKey,
+        "X-Goog-FieldMask": "photos",
+      },
+    });
+    if (!detailResp.ok) {
+      logger.warn({ placeId, status: detailResp.status }, "Google Places detail fetch failed");
+      return [];
+    }
+
+    const detail = (await detailResp.json()) as { photos?: { name: string }[] };
+    const photoRefs = (detail.photos ?? []).slice(0, maxPhotos);
+    if (photoRefs.length === 0) return [];
+
+    // Step 2: Resolve each photo reference to a hosted URI.
+    const urls: string[] = [];
+    for (const photo of photoRefs) {
+      try {
+        const mediaResp = await fetch(
+          `https://places.googleapis.com/v1/${photo.name}/media?maxWidthPx=1200&skipHttpRedirect=true&key=${apiKey}`,
+        );
+        if (!mediaResp.ok) continue;
+        const mediaData = (await mediaResp.json()) as { photoUri?: string };
+        if (mediaData.photoUri) urls.push(mediaData.photoUri);
+      } catch {
+        // Skip individual photo failures; surface what we have.
+      }
+    }
+    return urls;
+  } catch (error) {
+    logger.warn({ error, placeId }, "Google Places photo fetch threw an error");
+    return [];
+  }
+}
+
+/**
+ * Resolves a venue name (and optional neighborhood) to a Google Place ID via
+ * a text search. Used as a fallback when a corpus venue has no stored
+ * `googlePlaceId`. Returns null on any failure.
+ */
+export async function findGooglePlaceIdByName(venueName: string, neighborhood?: string): Promise<string | null> {
+  const apiKey = process.env["GOOGLE_PLACES_API_KEY"];
+  if (!apiKey) return null;
+
+  const textQuery = neighborhood ? `${venueName} ${neighborhood}` : venueName;
+  try {
+    const response = await fetch(PLACES_TEXT_SEARCH_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": apiKey,
+        "X-Goog-FieldMask": "places.id",
+      },
+      body: JSON.stringify({ textQuery, maxResultCount: 1 }),
+    });
+    if (!response.ok) return null;
+    const data = (await response.json()) as { places?: { id?: string }[] };
+    return data.places?.[0]?.id ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Tool contract for venue/activity lookups. Backed by the curated corpus
  * first; falls back to a live Google Places Text Search when the corpus has
  * nothing for a given query/market. The shape returned to the model is
@@ -206,11 +296,23 @@ export async function listVenueCandidates(query: string, location: string, limit
  * are filtered and boosted by the group's dietary needs, budget, and party
  * size before being returned to the model.
  */
+/**
+ * Executes a tool call. `threadId` is optional context (not something the
+ * model provides) used to log recommendation events for the venue corpus.
+ * `groupConstraints` is also optional context -- when provided, corpus results
+ * are filtered and boosted by the group's dietary needs, budget, and party
+ * size before being returned to the model.
+ *
+ * `venueCarouselAccumulator`, when provided, is populated with corpus venues
+ * returned by `search_venues` so the delivery layer can follow up the text
+ * reply with per-venue photo carousels.
+ */
 export async function executeAgentTool(
   name: string,
   rawArgs: string,
   threadId?: number,
   groupConstraints?: GroupConstraints,
+  venueCarouselAccumulator?: VenueCarouselEntry[],
 ): Promise<unknown> {
   let args: Record<string, unknown> = {};
   try {
@@ -242,6 +344,20 @@ export async function executeAgentTool(
             ),
           );
         }
+
+        // Populate the carousel accumulator so the delivery layer can send
+        // photo carousels alongside the text recommendation (best-effort;
+        // only corpus venues have the IDs needed for photo lookup).
+        if (venueCarouselAccumulator) {
+          for (const match of corpusMatches) {
+            venueCarouselAccumulator.push({
+              venueId: match.venue.id,
+              venueName: match.venue.name,
+              googlePlaceId: match.venue.googlePlaceId ?? null,
+            });
+          }
+        }
+
         return {
           results: corpusMatches.map((match) => ({
             name: match.venue.name,

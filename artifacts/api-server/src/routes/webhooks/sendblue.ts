@@ -66,10 +66,83 @@ import {
 } from "../../lib/agent/privateInput";
 import { feedbackTable, db, plansTable, threadParticipantsTable, threadsTable, usersTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
-import { createGroupWithNumbers, sendReaction } from "../../lib/sendblue";
+import { createGroupWithNumbers, sendCarousel, sendReaction, uploadMediaToSendblue } from "../../lib/sendblue";
+import { fetchGooglePlacesPhotos, findGooglePlaceIdByName, type VenueCarouselEntry } from "../../lib/agent/tools";
+import { logger } from "../../lib/logger";
 
 /** iMessage tapback text on this poll's own announcement bubbles counts as a vote (Phase 2 texting UX polish). */
 const OBJECTION_PATTERN = /\b(no|nope|wait|hold on|object|objection|don'?t lock|actually)\b/i;
+
+/**
+ * Sends a photo carousel for each shortlisted venue after the text reply.
+ * Best-effort: any failure for an individual venue is logged and skipped —
+ * a broken photo fetch must never delay or block the main reply flow.
+ *
+ * The carousels are intentionally fire-and-forget (`void`) from the call
+ * site: they arrive as a follow-on burst of photos, the way a person might
+ * text "here are some pics" right after a recommendation.
+ */
+async function sendVenueCarousels(threadId: number, entries: VenueCarouselEntry[]): Promise<void> {
+  try {
+  const [thread] = await db.select().from(threadsTable).where(eq(threadsTable.id, threadId));
+  if (!thread) return;
+
+  for (const entry of entries) {
+    try {
+      // Prefer the stored Google Place ID; fall back to a text search when the
+      // venue was added to the corpus before the field was populated.
+      let placeId = entry.googlePlaceId;
+      if (!placeId) {
+        placeId = await findGooglePlaceIdByName(entry.venueName);
+        if (!placeId) {
+          logger.debug({ venueName: entry.venueName }, "No Google Place ID found; skipping carousel for this venue");
+          continue;
+        }
+      }
+
+      const photoUrls = await fetchGooglePlacesPhotos(placeId, 4);
+      if (photoUrls.length < 2) {
+        // Carousels require at least 2 images; skip sparse venues rather than
+        // sending a broken/single-item carousel.
+        logger.debug({ venueName: entry.venueName, photoCount: photoUrls.length }, "Insufficient photos for carousel");
+        continue;
+      }
+
+      // Google Places photo URIs are short-lived and Google-hosted. Sendblue
+      // requires its own CDN-hosted URLs, so we download each image and
+      // upload it to Sendblue before sending the carousel.
+      const uploadedUrls: string[] = [];
+      for (const photoUrl of photoUrls) {
+        const imgResp = await fetch(photoUrl);
+        if (!imgResp.ok) continue;
+        const buffer = Buffer.from(await imgResp.arrayBuffer());
+        const contentType = imgResp.headers.get("content-type") ?? "image/jpeg";
+        const ext = contentType.includes("png") ? "png" : "jpg";
+        const safeName = entry.venueName.replace(/[^a-z0-9]/gi, "-").toLowerCase();
+        const uploaded = await uploadMediaToSendblue(buffer, `${safeName}-${uploadedUrls.length}.${ext}`, contentType);
+        if (uploaded) uploadedUrls.push(uploaded);
+      }
+
+      if (uploadedUrls.length < 2) {
+        logger.debug({ venueName: entry.venueName }, "Not enough photos uploaded; skipping carousel");
+        continue;
+      }
+
+      if (thread.isGroup && thread.sendblueGroupId) {
+        await sendCarousel({ groupId: thread.sendblueGroupId, mediaUrls: uploadedUrls });
+      } else if (thread.primaryPhoneNumber) {
+        await sendCarousel({ to: thread.primaryPhoneNumber, mediaUrls: uploadedUrls });
+      }
+    } catch (error) {
+      logger.warn({ error, venueName: entry.venueName }, "Failed to send venue photo carousel; continuing with remaining venues");
+    }
+  }
+  } catch (error) {
+    // Outer guard: thread lookup or setup failure must never surface as an
+    // unhandled rejection since this function is always called fire-and-forget.
+    logger.warn({ error, threadId }, "sendVenueCarousels failed during setup; skipping all carousels for this turn");
+  }
+}
 
 const router: IRouter = Router();
 
@@ -284,6 +357,12 @@ async function processAgentTurn(threadId: number, senderUserId: number): Promise
   const outgoingReply = isGroup ? scrubPrivateProfileLeaks(result.reply, context.participants) : result.reply;
 
   await sendToThread(threadId, outgoingReply);
+
+  // Photo carousels follow the text recommendation as a burst of swipeable
+  // images. Fire-and-forget: a photo hiccup must never delay the text reply.
+  if (result.venueCarousels?.length) {
+    void sendVenueCarousels(threadId, result.venueCarousels);
+  }
 }
 
 router.post("/webhooks/sendblue/:secret", async (req, res): Promise<void> => {

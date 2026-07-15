@@ -26,6 +26,11 @@ export interface Venue {
   closureSuspected: boolean;
   /** @nullable */
   candidateSourceRef?: string | null;
+  /**
+     * Google Place ID, used to fetch photo carousels at recommendation time. Populated by ops reviewers via the admin dashboard.
+     * @nullable
+     */
+  googlePlaceId?: string | null;
   /** @nullable */
   lastValidatedAt?: Date | null;
   createdAt: Date;
