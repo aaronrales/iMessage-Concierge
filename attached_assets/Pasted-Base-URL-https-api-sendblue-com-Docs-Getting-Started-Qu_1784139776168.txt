@@ -1,0 +1,69 @@
+Base URL: `https://api.sendblue.com`
+
+## Docs
+
+### Getting Started
+
+- [Quickstart](https://docs.sendblue.com/getting-started/quickstart): Install the CLI, create an account, send your first iMessage in under 2 minutes. Three paths to build: TextMe (AI chatbot via iMessage), OpenClaw plugin (open-source AI agent framework), or raw API with curl.
+- [Introduction](https://docs.sendblue.com/getting-started): Overview of Sendblue setup via CLI (`sendblue setup`) or dashboard. Explains free-plan contact verification and how to retrieve API keys.
+- [Credentials](https://docs.sendblue.com/getting-started/credentials): API authentication using `sb-api-key-id` and `sb-api-secret-key` headers. Keys available via CLI or dashboard. Frontend requests blocked for security.
+- [Client Packages](https://docs.sendblue.com/getting-started/client-packages): Official SDKs for Node.js/TypeScript (`sendblue` on npm) and Python (`sendblue` on PyPI). AI and chat packages include the Chat SDK adapter and MCP server. Community SDKs for Go, Rust, and Ruby.
+- [Sending Messages](https://docs.sendblue.com/getting-started/sending-messages): Send iMessage/SMS/MMS via `POST /api/send-message`. Requires `number` (E.164), `from_number` (your Sendblue number), and `content` or `media_url`. Max 18,996 characters. File limit: 100 MB iMessage, 5 MB SMS. Auto-falls back from iMessage to SMS at no extra cost. `.caf` files render as voice memos. 8 message statuses: REGISTERED, PENDING, DECLINED, QUEUED, ACCEPTED, SENT, DELIVERED, ERROR. Status callbacks via `status_callback` URL.
+- [Receiving Messages](https://docs.sendblue.com/getting-started/receiving-messages): Inbound messages delivered as POST to your `receive` webhook. Payload includes `from_number`, `content`, `media_url` (expires after 30 days), `service`, `group_id`. Must respond with 2xx to avoid duplicate deliveries.
+- [Group Messages](https://docs.sendblue.com/getting-started/groups): Send group iMessage/SMS/MMS via `POST /api/send-group-message`. Available on select plans. `group_id` in response is the only way to correlate sent/received group messages. Adding members via `/api/modify-group`. Removing members, changing names, leaving groups not yet supported.
+- [Webhooks](https://docs.sendblue.com/getting-started/webhooks): 7 webhook types: receive, outbound, typing_indicator, call_log, line_blocked, line_assigned, contact_created. `call_log` only fires for outbound calls placed from the dashboard; inbound calls are not logged to the call-log pipeline and do not trigger it. Managed via CRUD on `/api/account/webhooks`. Supports per-webhook and global signing secrets. 3 retries on 5xx, 45-second timeout. Return 410 to auto-remove webhook. Account-level only (all lines share webhooks).
+
+### API v2 Reference
+
+- [API v2 Overview](https://docs.sendblue.com/api-v2): Full endpoint listing. Base URL: `https://api.sendblue.com`. Covers messaging, media upload, reactions, carousels, read receipts, typing indicators, RCS, contacts, contact sharing, line provisioning, webhooks, and account endpoints.
+- [Messages](https://docs.sendblue.com/api-v2/messages): List messages (`GET /api/v2/messages`) with filtering by status, service, is_outbound, phone number, date ranges, group_id. Max 100 per page. Get single message by ID. Soft-delete by message_handle (does not unsend from recipient). Pagination includes `total`, `limit`, `offset`.
+- [Contacts](https://docs.sendblue.com/api-v2/contacts): Full CRUD at `/api/v2/contacts`. Create, list, get by phone number, update, delete, bulk create, bulk delete. Opt-out/opt-in via `POST /api/v2/contacts/opt-out`. Custom variables (key-value pairs, auto-created). Tags replaced on update; custom variables merged. Rate limit: 100 req/10s. Phone numbers must be E.164; URL-encode `+` as `%2B` in path params.
+- [Typing Indicators](https://docs.sendblue.com/api-v2/typing-indicators): Send the "..." bubble via `POST /api/send-typing-indicator` with `number` and `from_number`. iMessage only. Requires existing conversation. Best-effort delivery. Receive typing indicators via `typing_indicator` webhook (payload: `number`, `is_typing`, `from_number`, `timestamp`).
+- [Reactions](https://docs.sendblue.com/api-v2/reactions): Send tapback reactions via `POST /api/send-reaction` with `from_number`, `message_handle` (Apple GUID from inbound webhook), and `reaction`. Types: love, like, dislike, laugh, emphasize, question. iMessage only. `part_index` for multi-part messages.
+- [Read Receipts](https://docs.sendblue.com/api-v2/read-receipts): Mark conversations as read via `POST /api/mark-read` with `number` and `from_number`. Must be enabled by Sendblue engineering team (contact support@sendblue.com). iMessage only. Best-effort delivery.
+- [Media](https://docs.sendblue.com/api-v2/media): Two upload methods. Direct file: `POST /api/upload-file` (multipart, returns `media_url`). From URL: `POST /api/upload-media-object` (JSON body, returns `mediaObjectId`). Max 100 MB. All file types supported (images, video, audio, documents). Use returned `media_url` in `/api/send-message`.
+- [Contact Sharing](https://docs.sendblue.com/api-v2/contact-sharing): Configure Name & Photo Sharing on Sendblue numbers. GET state, POST create/update profile (firstName, lastName, photoUrl required), DELETE profile. Photo must be publicly accessible JPEG/PNG.
+- [RCS](https://docs.sendblue.com/api-v2/rcs): Rich Communication Services for Android. V2 lines only. Service type auto-detected per recipient. Supports media, read receipts, typing indicators. Falls back to SMS when `allow_sms: true`. Filter messages by `?service=RCS`.
+- [Carousel](https://docs.sendblue.com/api-v2/carousel): Send swipeable multi-image carousels via `POST /api/send-carousel`. V2 (Mac Mini) lines only. 2-20 HTTPS image URLs in `media_urls` array. Single images should use `/api/send-message` instead.
+- [Line Provisioning](https://docs.sendblue.com/api-v2/line-provisioning): Credential-based inbound-only line purchasing for `inbound_only` / Agent plan accounts. Preview with `POST /accounts/lines/provision-preview` to receive a 10-minute `preview_token`, then confirm with `POST /accounts/lines/provision-confirm` to charge the card on file and provision the inbound-only line. Defaults: 3 lines/day and 10 lines/month, visible via `GET /accounts/limits`. The old `POST /accounts/lines/add-line` ticket flow is deprecated for direct line purchases.
+
+### Calling
+
+- [Calling Overview](https://docs.sendblue.com/calling): Two voice options: Twilio (traditional PSTN voice with verified caller ID) and FaceTime (programmatic WebRTC via Agora SDK). Outbound dashboard calls trigger the `call_log` webhook with `disposition` and `transcript` fields when available. Inbound calls are not logged to the call-log pipeline and do not trigger `call_log`.
+- [FaceTime](https://docs.sendblue.com/calling/facetime): Programmatic FaceTime calls via `POST /facetime/start-call`. Returns Agora WebRTC credentials (appId, channelName, token, uid). Requires purchased FaceTime line. Use Agora Voice SDK to join and stream audio.
+- [Twilio Integration](https://docs.sendblue.com/calling/twilio): Use Twilio for outbound voice calls from your Sendblue number via Verified Caller ID flow. Twilio handles voice only; iMessage/SMS/RCS remain on Sendblue. Inbound call forwarding configurable in Sendblue settings.
+
+### Integrations
+
+- [MCP Server](https://docs.sendblue.com/mcp): Connect AI editors and agents to Sendblue via Model Context Protocol. Install: `npx -y sendblue-api-mcp@latest`. Auth via `SENDBLUE_API_API_KEY` and `SENDBLUE_API_API_SECRET` env vars. Setup guides for Claude Desktop, Claude Code, Cursor, VS Code. 18 tools covering messages, groups, media, number lookup, typing indicators, contacts. Tool filtering and dynamic discovery mode available.
+- [Chat SDK Adapter](https://docs.sendblue.com/guides/chat-sdk-adapter): Connect Vercel Chat SDK bots to Sendblue iMessage, SMS, and RCS. Install: `npm install chat chat-adapter-sendblue @chat-adapter/state-memory` for local development; use a persistent Chat SDK state adapter in production. Auth via `SENDBLUE_API_KEY`, `SENDBLUE_API_SECRET`, and `SENDBLUE_FROM_NUMBER`. Webhook secret default header: `sb-signing-secret`. Supports inbound/outbound messages, delivery callbacks, typing indicators, tapback reactions, message history, and direct access to the official Sendblue TypeScript SDK for advanced API features. Sendblue is committed to maintaining the adapter integration path as Chat SDK and the Sendblue API evolve.
+- [Zapier](https://docs.sendblue.com/guides/zapier): No-code iMessage automation. Batch send to up to 29 comma-separated numbers per action. Each number counts as a separate message against rate limits.
+
+### Guides
+
+- [Check iMessage Support](https://docs.sendblue.com/guides/check-imessage-support): Use `GET /api/evaluate-service?number={E.164}` to check if a number supports iMessage. Separate rate limits: 30/hour, 100/day per line (up to 400/day on request). Does not count against message limits.
+- [Typing Indicator Guide](https://docs.sendblue.com/guides/typing-indicator): Send the "..." bubble before responding for natural conversation flow. Requires existing chat. Not supported in group chats. Best-effort delivery.
+- [Expressive Messages](https://docs.sendblue.com/guides/expressive-messages): Add `send_style` to `/api/send-message` for bubble and screen effects. 13 styles: celebration, shooting_star, fireworks, lasers, love, confetti, balloons, spotlight, echo, invisible, gentle, loud, slam. iMessage only.
+- [Voice Notes](https://docs.sendblue.com/guides/voice-notes): Send `.caf` (Core Audio Format) files via `media_url` to render as inline voice notes in iMessage. Convert with: `ffmpeg -i input.mp3 -acodec opus -b:a 24k output.caf`.
+- [Contact Cards](https://docs.sendblue.com/guides/contact-card): Send VCF contact cards via `media_url` ending in `.vcf`. Having recipients add you as a contact expands link previews and increases rate limits. V2 lines can use the more native Contact Sharing API instead.
+
+### Platform
+
+- [Rate Limits](https://docs.sendblue.com/limits): Blue Ocean plan: 50 new contacts/day/line, 15 new contacts/hour/line, 10 messages/second/line burst limit; new contacts are contacts with no inbound or outbound conversation in the last 30 days. AI Agent plan: inbound-first, 1,000 inbound contacts/day/line (rolling 24h), unlimited replies within the 24-hour window, 200 follow-ups/day/line after the window expires. Requests above burst limits are rejected; accepted messages can queue up to 1,500 messages (429 after). Number pooling with sticky sending for higher throughput.
+- [Security](https://docs.sendblue.com/security): SOC 2 Type 2, HIPAA (dedicated instance required), TCPA compliant. TLS everywhere, HTTPS enforced for webhooks. Built-in opt-out detection (stop, unsubscribe, cancel, opt out, revoke, end, quit). Webhook signing secrets. Block contacts via `POST /api/v2/block`. Enterprise features: dedicated numbers, custom rate limits, priority support, custom SLAs.
+- [FAQ](https://docs.sendblue.com/faq): Dedicated numbers priced by country/area code/use-case with bulk discounts. Non-iMessage recipients get automatic SMS fallback at no extra cost. Sandbox available at dashboard.sendblue.com/company-signup. Status page: status.sendblue.com. Can receive from iCloud email addresses.
+
+## API Reference
+
+- [Full API Reference](https://docs.sendblue.com/api): OpenAPI-generated interactive endpoint reference with request/response schemas for all endpoints.
+
+## Key Facts for AI Agents
+
+- To send an iMessage: `POST https://api.sendblue.com/api/send-message` with headers `sb-api-key-id` and `sb-api-secret-key`, body `{"number": "+1...", "from_number": "+1...", "content": "..."}`.
+- `from_number` is **required** and must be a Sendblue number on your account. Get your numbers via `GET /api/lines` or `sendblue lines`.
+- Phone numbers must be E.164 format (e.g., `+15551234567`).
+- Free plan: contacts must be verified before messaging. Verification = contact texts your Sendblue number once.
+- The CLI (`@sendblue/cli` on npm) handles account creation, credential management, messaging, contacts, webhooks, and more — all from the terminal.
+- Official SDKs: Node.js/TypeScript (`sendblue` on npm), Python (`sendblue` on PyPI).
+- Chat SDK adapter: `npm install chat chat-adapter-sendblue @chat-adapter/state-memory` to connect Vercel Chat SDK bots to Sendblue iMessage, SMS, and RCS in local development. Use persistent Chat SDK state in production.
+- MCP server: `npx -y sendblue-api-mcp@latest` for AI editor integration.
