@@ -9,18 +9,16 @@ import {
   getParticipantsNeedingDisclosure,
   hasGroupBeenIntroduced,
   hasMessageWithHandle,
-  hasOnboardingRecapBeenSent,
-  isGroupFullyOnboarded,
   isParticipantMuted,
   loadThreadContext,
   markDisclosureSent,
   markGroupIntroduced,
-  markOnboardingRecapSent,
   recordMessage,
   resolveGroupParticipants,
   setParticipantMuted,
   setThreadHomeCityIfUnset,
 } from "../../lib/agent/context";
+import { checkAndSendGroupKickoffRecap, handleDirectOnboardingStep } from "../../lib/agent/onboardingFlow";
 import { applyProfileUpdates, runAgentTurn } from "../../lib/agent/engine";
 import { scheduleAgentTurn } from "../../lib/agent/debounce";
 import { scrubPrivateProfileLeaks } from "../../lib/agent/privacy";
@@ -205,39 +203,6 @@ async function sendVenueCarousels(threadId: number, entries: VenueCarouselEntry[
 }
 
 const router: IRouter = Router();
-
-/**
- * Checks whether every group this user belongs to is now fully onboarded and,
- * if so, sends the one-time "everyone's set up" kickoff recap to each such
- * group. Extracted from `processAgentTurn` so the structured onboarding path
- * can also trigger it without going through the LLM turn.
- */
-async function checkAndSendGroupKickoffRecap(userId: number): Promise<void> {
-  const groupThreads = await getGroupThreadsForUser(userId);
-  for (const groupThread of groupThreads) {
-    if (await hasOnboardingRecapBeenSent(groupThread.id)) continue;
-    if (!(await isGroupFullyOnboarded(groupThread.id))) continue;
-
-    const recapContext = await loadThreadContext(groupThread.id);
-    const recapLines = recapContext.participants
-      .map(({ user, profile }) => {
-        // Only ever surface public-visibility fields in a group-bound message --
-        // same rule `scrubPrivateProfileLeaks` enforces for LLM replies.
-        const bits = [
-          profile?.preferencesVisibility === "public" && profile.preferences.length
-            ? profile.preferences.join(", ")
-            : null,
-        ].filter((bit): bit is string => Boolean(bit));
-        return `${user.displayName ?? "someone"}${bits.length ? ` (${bits.join("; ")})` : ""}`;
-      })
-      .join(", ");
-    await sendToThread(
-      groupThread.id,
-      `Everyone's set up now -- here's who I know: ${recapLines}. I'll factor all of that in when I plan things for this group.`,
-    );
-    await markOnboardingRecapSent(groupThread.id);
-  }
-}
 
 /**
  * Runs the main conversation engine for a thread and delivers the result.
@@ -432,72 +397,6 @@ async function processAgentTurn(threadId: number, senderUserId: number): Promise
   if (result.venueCarousels?.length) {
     void sendVenueCarousels(threadId, result.venueCarousels);
   }
-}
-
-/**
- * Handles one step of the structured onboarding exchange for a 1:1 thread.
- * Returns without calling scheduleAgentTurn — the caller must return early
- * after invoking this so the LLM turn never fires during onboarding.
- *
- * Step 0 (not_started): Send contact card + intro message, mark in_progress.
- * Step 1 (no displayName): Extract name, send practical-constraint question.
- * Step 2 (no practical):   Extract budget/dietary, send personality question.
- * Step 3 (no personality): Extract signal, send completion, mark complete.
- */
-async function handleDirectOnboardingStep(
-  step: 0 | 1 | 2 | 3,
-  userId: number,
-  threadId: number,
-  content: string,
-  displayName: string | null | undefined,
-  profile: { budget: string | null | undefined; dietaryNeeds: string | null | undefined; preferences: string[] | null | undefined } | null,
-  phone: string,
-): Promise<void> {
-  if (step === 0) {
-    // First-ever message: send contact card then the structured intro.
-    await sendContactCardIfNeeded(userId, phone);
-    await sendToThread(threadId, ONBOARDING.directDm.intro);
-    await db.update(usersTable).set({ onboardingStatus: "in_progress" }).where(eq(usersTable.id, userId));
-    return;
-  }
-
-  if (step === 1) {
-    // Waiting for name.
-    const name = await extractName(content);
-    if (name) {
-      await db.update(usersTable).set({ displayName: name }).where(eq(usersTable.id, userId));
-      await sendToThread(threadId, ONBOARDING.directDm.askPractical(name));
-    } else {
-      // Extraction failed (ambiguous reply) -- ask once more, gently.
-      await sendToThread(threadId, "Sorry, what should I call you?");
-    }
-    return;
-  }
-
-  if (step === 2) {
-    // Waiting for budget/dietary.
-    const { budget, dietaryNeeds } = await extractPractical(content);
-    if (budget ?? dietaryNeeds) {
-      await applyProfileUpdates(userId, {
-        ...(budget ? { budget } : {}),
-        ...(dietaryNeeds ? { dietaryNeeds } : {}),
-      });
-    }
-    const confirmation = buildPracticalConfirmation(budget, dietaryNeeds);
-    await sendToThread(threadId, ONBOARDING.directDm.askPersonality(confirmation));
-    return;
-  }
-
-  // step === 3: waiting for personality signal.
-  const preferences = await extractPersonality(content);
-  if (preferences.length) {
-    await applyProfileUpdates(userId, { preferences });
-  }
-  const confirmation = buildPersonalityConfirmation(preferences);
-  await sendToThread(threadId, ONBOARDING.directDm.complete(confirmation));
-  await db.update(usersTable).set({ onboardingStatus: "completed" }).where(eq(usersTable.id, userId));
-  // Fire group kickoff recap in case completing this person finishes the roster.
-  await checkAndSendGroupKickoffRecap(userId);
 }
 
 router.post("/webhooks/sendblue/:secret", async (req, res): Promise<void> => {
@@ -719,6 +618,7 @@ router.post("/webhooks/sendblue/:secret", async (req, res): Promise<void> => {
             senderRow.displayName,
             profileRow ?? null,
             event.from_number,
+            sendContactCardIfNeeded,
           );
           res.status(200).json({ received: true });
           return;

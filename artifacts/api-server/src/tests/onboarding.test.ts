@@ -56,19 +56,17 @@ import {
   extractName,
   extractPractical,
   extractPersonality,
+  ONBOARDING,
 } from "../lib/agent/onboarding";
+import { handleDirectOnboardingStep } from "../lib/agent/onboardingFlow";
 
 // Import after mocks are established.
 import { detectMuteCommand } from "../lib/agent/etiquette";
 import { detectKnowledgeCommand } from "../lib/agent/knowledge";
 
-// handleDirectOnboardingStep is not exported; test it via a thin re-export
-// we create inline. The function lives at the bottom of sendblue.ts and its
-// logic is observable through sendToThread + db.update spy calls.
-// Instead, we import the function directly using a dynamic workaround:
-// The cleanest approach for coverage is to test the building blocks
-// (getOnboardingStep, extract*) and verify the bypass ordering separately.
-// For the full step-routing path we use the exported pieces + spies.
+// handleDirectOnboardingStep is now exported from onboardingFlow.ts (extracted
+// from sendblue.ts for testability). It accepts sendContactCard as an injected
+// dependency so tests can stub it without touching the Sendblue API client.
 
 // ============================================================================
 // getOnboardingStep
@@ -336,5 +334,169 @@ describe("Mute / knowledge bypass preconditions", () => {
     // "My name is Alice" should not be detected as a mute or knowledge command.
     expect(detectMuteCommand("My name is Alice")).toBeNull();
     expect(detectKnowledgeCommand("My name is Alice")).toBeNull();
+  });
+});
+
+// ============================================================================
+// handleDirectOnboardingStep — step-routing integration tests
+//
+// The function is extracted to onboardingFlow.ts so it can be imported and
+// tested here without pulling in the full sendblue.ts dependency graph.
+// sendContactCard is injected as a stub; DB and send mocks are reused from
+// the top-level vi.mock() calls above.
+// ============================================================================
+
+describe("handleDirectOnboardingStep — step 0 (first-ever message)", () => {
+  const mockSendContactCard = vi.fn().mockResolvedValue(undefined);
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockSendContactCard.mockResolvedValue(undefined);
+  });
+
+  it("calls sendContactCard with the user's userId and phone", async () => {
+    await handleDirectOnboardingStep(0, 1, 10, "hello", null, null, "+15551234567", mockSendContactCard);
+    expect(mockSendContactCard).toHaveBeenCalledWith(1, "+15551234567");
+  });
+
+  it("sends the intro message to the thread", async () => {
+    await handleDirectOnboardingStep(0, 1, 10, "hello", null, null, "+15551234567", mockSendContactCard);
+    expect(sendToThread).toHaveBeenCalledWith(10, ONBOARDING.directDm.intro);
+  });
+
+  it("marks the user in_progress via a DB update", async () => {
+    await handleDirectOnboardingStep(0, 1, 10, "hello", null, null, "+15551234567", mockSendContactCard);
+    expect(db.update).toHaveBeenCalled();
+  });
+
+  it("does not call applyProfileUpdates", async () => {
+    await handleDirectOnboardingStep(0, 1, 10, "hello", null, null, "+15551234567", mockSendContactCard);
+    expect(applyProfileUpdates).not.toHaveBeenCalled();
+  });
+});
+
+describe("handleDirectOnboardingStep — step 1 (waiting for name)", () => {
+  const mockCreate = openai.chat.completions.create as ReturnType<typeof vi.fn>;
+  const mockSendContactCard = vi.fn().mockResolvedValue(undefined);
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockSendContactCard.mockResolvedValue(undefined);
+  });
+
+  it("writes displayName and sends askPractical when name is extracted", async () => {
+    mockCreate.mockResolvedValueOnce({ choices: [{ message: { content: "Alice" } }] });
+    await handleDirectOnboardingStep(1, 1, 10, "I'm Alice", null, null, "+15551234567", mockSendContactCard);
+    expect(db.update).toHaveBeenCalled();
+    expect(sendToThread).toHaveBeenCalledWith(10, ONBOARDING.directDm.askPractical("Alice"));
+  });
+
+  it("sends the fallback message and skips the DB write when extraction returns null", async () => {
+    mockCreate.mockResolvedValueOnce({ choices: [{ message: { content: "null" } }] });
+    await handleDirectOnboardingStep(1, 1, 10, "???", null, null, "+15551234567", mockSendContactCard);
+    expect(sendToThread).toHaveBeenCalledWith(10, "Sorry, what should I call you?");
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it("sends the fallback message when the LLM call throws", async () => {
+    mockCreate.mockRejectedValueOnce(new Error("network error"));
+    await handleDirectOnboardingStep(1, 1, 10, "something", null, null, "+15551234567", mockSendContactCard);
+    expect(sendToThread).toHaveBeenCalledWith(10, "Sorry, what should I call you?");
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it("does not call sendContactCard", async () => {
+    mockCreate.mockResolvedValueOnce({ choices: [{ message: { content: "Bob" } }] });
+    await handleDirectOnboardingStep(1, 1, 10, "call me Bob", null, null, "+15551234567", mockSendContactCard);
+    expect(mockSendContactCard).not.toHaveBeenCalled();
+  });
+});
+
+describe("handleDirectOnboardingStep — step 2 (waiting for practical)", () => {
+  const mockCreate = openai.chat.completions.create as ReturnType<typeof vi.fn>;
+  const mockSendContactCard = vi.fn().mockResolvedValue(undefined);
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockSendContactCard.mockResolvedValue(undefined);
+  });
+
+  it("calls applyProfileUpdates with budget and sends askPersonality", async () => {
+    mockCreate.mockResolvedValueOnce({ choices: [{ message: { content: '{"budget":"$50","dietaryNeeds":null}' } }] });
+    await handleDirectOnboardingStep(2, 1, 10, "around $50", "Alice", null, "+15551234567", mockSendContactCard);
+    expect(applyProfileUpdates).toHaveBeenCalledWith(1, { budget: "$50" });
+    expect(sendToThread).toHaveBeenCalledWith(10, expect.stringContaining("go-to cuisine"));
+  });
+
+  it("calls applyProfileUpdates with dietaryNeeds when budget is null", async () => {
+    mockCreate.mockResolvedValueOnce({ choices: [{ message: { content: '{"budget":null,"dietaryNeeds":"vegan"}' } }] });
+    await handleDirectOnboardingStep(2, 1, 10, "I'm vegan", "Alice", null, "+15551234567", mockSendContactCard);
+    expect(applyProfileUpdates).toHaveBeenCalledWith(1, { dietaryNeeds: "vegan" });
+    expect(sendToThread).toHaveBeenCalledWith(10, expect.stringContaining("go-to cuisine"));
+  });
+
+  it("skips applyProfileUpdates but still sends askPersonality when neither field is extracted", async () => {
+    mockCreate.mockResolvedValueOnce({ choices: [{ message: { content: '{"budget":null,"dietaryNeeds":null}' } }] });
+    await handleDirectOnboardingStep(2, 1, 10, "no preferences", "Alice", null, "+15551234567", mockSendContactCard);
+    expect(applyProfileUpdates).not.toHaveBeenCalled();
+    expect(sendToThread).toHaveBeenCalledWith(10, expect.stringContaining("go-to cuisine"));
+  });
+
+  it("prefixes askPersonality with a budget confirmation when budget is present", async () => {
+    mockCreate.mockResolvedValueOnce({ choices: [{ message: { content: '{"budget":"$30/head","dietaryNeeds":null}' } }] });
+    await handleDirectOnboardingStep(2, 1, 10, "$30", "Alice", null, "+15551234567", mockSendContactCard);
+    const sentMsg = (sendToThread as ReturnType<typeof vi.fn>).mock.calls[0]?.[1] as string;
+    expect(sentMsg).toContain("$30/head");
+  });
+});
+
+describe("handleDirectOnboardingStep — step 3 (personality signal, completion)", () => {
+  const mockCreate = openai.chat.completions.create as ReturnType<typeof vi.fn>;
+  const mockSendContactCard = vi.fn().mockResolvedValue(undefined);
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockSendContactCard.mockResolvedValue(undefined);
+  });
+
+  it("saves preferences, sends the completion message, and marks completed in DB", async () => {
+    mockCreate.mockResolvedValueOnce({ choices: [{ message: { content: '["Italian","wine bars"]' } }] });
+    await handleDirectOnboardingStep(
+      3, 1, 10, "love Italian wine bars", "Alice",
+      { budget: "$50", dietaryNeeds: null, preferences: [] }, "+15551234567", mockSendContactCard,
+    );
+    expect(applyProfileUpdates).toHaveBeenCalledWith(1, { preferences: ["Italian", "wine bars"] });
+    expect(sendToThread).toHaveBeenCalledWith(10, expect.stringContaining("All set"));
+    expect(db.update).toHaveBeenCalled();
+  });
+
+  it("still sends the completion message even when personality extraction returns an empty array", async () => {
+    mockCreate.mockResolvedValueOnce({ choices: [{ message: { content: "[]" } }] });
+    await handleDirectOnboardingStep(
+      3, 1, 10, "I don't know", "Alice",
+      { budget: "$50", dietaryNeeds: null, preferences: [] }, "+15551234567", mockSendContactCard,
+    );
+    expect(applyProfileUpdates).not.toHaveBeenCalled();
+    expect(sendToThread).toHaveBeenCalledWith(10, expect.stringContaining("All set"));
+    expect(db.update).toHaveBeenCalled();
+  });
+
+  it("prefixes the completion message with personality confirmation when preferences are present", async () => {
+    mockCreate.mockResolvedValueOnce({ choices: [{ message: { content: '["sushi"]' } }] });
+    await handleDirectOnboardingStep(
+      3, 1, 10, "I love sushi", "Alice",
+      { budget: null, dietaryNeeds: null, preferences: [] }, "+15551234567", mockSendContactCard,
+    );
+    const sentMsg = (sendToThread as ReturnType<typeof vi.fn>).mock.calls[0]?.[1] as string;
+    expect(sentMsg).toContain("sushi");
+  });
+
+  it("does not call sendContactCard", async () => {
+    mockCreate.mockResolvedValueOnce({ choices: [{ message: { content: "[]" } }] });
+    await handleDirectOnboardingStep(
+      3, 1, 10, "whatever", "Alice",
+      { budget: null, dietaryNeeds: null, preferences: [] }, "+15551234567", mockSendContactCard,
+    );
+    expect(mockSendContactCard).not.toHaveBeenCalled();
   });
 });
