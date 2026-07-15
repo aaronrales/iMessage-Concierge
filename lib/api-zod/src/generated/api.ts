@@ -18,9 +18,13 @@ export const HealthCheckResponse = zod.object({
 
 
 /**
- * Receives inbound message, outbound status, and other Sendblue webhook events. The exact payload shape varies by event type, so unknown fields are accepted.
+ * Receives inbound message, outbound status, and other Sendblue webhook events. The exact payload shape varies by event type, so unknown fields are accepted. The `secret` path segment is a shared secret (SENDBLUE_WEBHOOK_SECRET) that must match before the event is processed -- this is what this URL should be configured on Sendblue's side, and it is the only authenticity check available since Sendblue does not sign webhook payloads.
  * @summary Receive a Sendblue webhook event
  */
+export const ReceiveSendblueWebhookParams = zod.object({
+  "secret": zod.coerce.string()
+})
+
 export const ReceiveSendblueWebhookBody = zod.object({
   "message_handle": zod.string().optional(),
   "from_number": zod.string().optional(),

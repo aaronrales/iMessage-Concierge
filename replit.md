@@ -58,8 +58,8 @@ A personal AI concierge that lives inside iMessage. It joins 1:1 and group threa
 
 ## Gotchas
 
-- No Sendblue account exists yet, so `SENDBLUE_API_KEY_ID` / `SENDBLUE_API_SECRET_KEY` / `SENDBLUE_FROM_NUMBER` are unset. The webhook receiver and dashboard APIs work fully without them (verified via direct webhook POSTs); only real outbound iMessage sends are inert until those are set. `sendblue.ts` logs a warning and no-ops rather than throwing when they're missing.
-- Once a Sendblue account exists, its webhook must be pointed at `<prod-or-dev-domain>/api/webhooks/sendblue` for `receive` events.
+- `SENDBLUE_API_KEY_ID` / `SENDBLUE_API_SECRET_KEY` / `SENDBLUE_FROM_NUMBER` must be set (via secrets) for real outbound iMessage sends to work. The webhook receiver and dashboard APIs work fully without them (verified via direct webhook POSTs); `sendblue.ts` logs a warning and no-ops on send rather than throwing when they're missing.
+- The webhook endpoint is `POST /api/webhooks/sendblue/:secret` — the `:secret` path segment must match the `SENDBLUE_WEBHOOK_SECRET` env var (auto-generated, not a Sendblue-issued value). This is the only authenticity check available since Sendblue doesn't sign webhook payloads. Register this exact full URL (including the secret) as the Sendblue `receive` webhook, not the bare `/api/webhooks/sendblue` path.
 - Always run `pnpm --filter @workspace/api-spec run codegen` after editing `lib/api-spec/openapi.yaml`, then `pnpm --filter @workspace/api-server run typecheck`.
 
 ## Pointers

@@ -136,21 +136,22 @@ export function useHealthCheck<TData = Awaited<ReturnType<typeof healthCheck>>, 
 
 
 
-export const getReceiveSendblueWebhookUrl = () => {
+export const getReceiveSendblueWebhookUrl = (secret: string,) => {
 
 
 
 
-  return `/api/webhooks/sendblue`
+  return `/api/webhooks/sendblue/${secret}`
 }
 
 /**
- * Receives inbound message, outbound status, and other Sendblue webhook events. The exact payload shape varies by event type, so unknown fields are accepted.
+ * Receives inbound message, outbound status, and other Sendblue webhook events. The exact payload shape varies by event type, so unknown fields are accepted. The `secret` path segment is a shared secret (SENDBLUE_WEBHOOK_SECRET) that must match before the event is processed -- this is what this URL should be configured on Sendblue's side, and it is the only authenticity check available since Sendblue does not sign webhook payloads.
  * @summary Receive a Sendblue webhook event
  */
-export const receiveSendblueWebhook = async (sendblueWebhookEvent: SendblueWebhookEvent, options?: RequestInit): Promise<WebhookAck> => {
+export const receiveSendblueWebhook = async (secret: string,
+    sendblueWebhookEvent: SendblueWebhookEvent, options?: RequestInit): Promise<WebhookAck> => {
 
-  return customFetch<WebhookAck>(getReceiveSendblueWebhookUrl(),
+  return customFetch<WebhookAck>(getReceiveSendblueWebhookUrl(secret),
   {
     ...options,
     method: 'POST',
@@ -164,8 +165,8 @@ export const receiveSendblueWebhook = async (sendblueWebhookEvent: SendblueWebho
 
 
 export const getReceiveSendblueWebhookMutationOptions = <TError = ErrorType<unknown>,
-    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof receiveSendblueWebhook>>, TError,{data: BodyType<SendblueWebhookEvent>}, TContext>, request?: SecondParameter<typeof customFetch>}
-): UseMutationOptions<Awaited<ReturnType<typeof receiveSendblueWebhook>>, TError,{data: BodyType<SendblueWebhookEvent>}, TContext> => {
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof receiveSendblueWebhook>>, TError,{secret: string;data: BodyType<SendblueWebhookEvent>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof receiveSendblueWebhook>>, TError,{secret: string;data: BodyType<SendblueWebhookEvent>}, TContext> => {
 
 const mutationKey = ['receiveSendblueWebhook'];
 const {mutation: mutationOptions, request: requestOptions} = options ?
@@ -177,10 +178,10 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
 
 
 
-      const mutationFn: MutationFunction<Awaited<ReturnType<typeof receiveSendblueWebhook>>, {data: BodyType<SendblueWebhookEvent>}> = (props) => {
-          const {data} = props ?? {};
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof receiveSendblueWebhook>>, {secret: string;data: BodyType<SendblueWebhookEvent>}> = (props) => {
+          const {secret,data} = props ?? {};
 
-          return  receiveSendblueWebhook(data,requestOptions)
+          return  receiveSendblueWebhook(secret,data,requestOptions)
         }
 
 
@@ -198,11 +199,11 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
  * @summary Receive a Sendblue webhook event
  */
 export const useReceiveSendblueWebhook = <TError = ErrorType<unknown>,
-    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof receiveSendblueWebhook>>, TError,{data: BodyType<SendblueWebhookEvent>}, TContext>, request?: SecondParameter<typeof customFetch>}
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof receiveSendblueWebhook>>, TError,{secret: string;data: BodyType<SendblueWebhookEvent>}, TContext>, request?: SecondParameter<typeof customFetch>}
  ): UseMutationResult<
         Awaited<ReturnType<typeof receiveSendblueWebhook>>,
         TError,
-        {data: BodyType<SendblueWebhookEvent>},
+        {secret: string;data: BodyType<SendblueWebhookEvent>},
         TContext
       > => {
       return useMutation(getReceiveSendblueWebhookMutationOptions(options));

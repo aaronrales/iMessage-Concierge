@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { ReceiveSendblueWebhookBody } from "@workspace/api-zod";
+import { ReceiveSendblueWebhookBody, ReceiveSendblueWebhookParams } from "@workspace/api-zod";
 import { logger } from "../../lib/logger";
 import { sendDirectMessage, sendGroupMessage } from "../../lib/sendblue";
 import {
@@ -56,7 +56,26 @@ async function sendToThread(threadId: number, content: string): Promise<void> {
   await recordMessage({ threadId, userId: null, direction: "outbound", role: "assistant", content });
 }
 
-router.post("/webhooks/sendblue", async (req, res): Promise<void> => {
+router.post("/webhooks/sendblue/:secret", async (req, res): Promise<void> => {
+  const params = ReceiveSendblueWebhookParams.safeParse(req.params);
+  const expectedSecret = process.env["SENDBLUE_WEBHOOK_SECRET"];
+
+  // Sendblue does not sign webhook payloads, so the shared secret embedded in
+  // the URL we register with them is the only authenticity check available.
+  // Reject silently (no 200 ack) rather than processing unauthenticated
+  // events -- an attacker with the wrong secret should not be able to inject
+  // messages, cast votes, or approve/reject bookings.
+  if (!expectedSecret) {
+    req.log.error("SENDBLUE_WEBHOOK_SECRET is not configured; rejecting webhook request");
+    res.status(503).json({ error: "Webhook not configured" });
+    return;
+  }
+  if (!params.success || params.data.secret !== expectedSecret) {
+    req.log.warn("Rejected Sendblue webhook request with invalid secret");
+    res.status(401).json({ error: "Unauthorized" });
+    return;
+  }
+
   const parsed = ReceiveSendblueWebhookBody.safeParse(req.body);
   if (!parsed.success) {
     req.log.warn({ errors: parsed.error.message }, "Invalid Sendblue webhook payload");
@@ -149,13 +168,10 @@ router.post("/webhooks/sendblue", async (req, res): Promise<void> => {
         const booking = await confirmBooking(pendingBooking.id);
         await sendToThread(
           booking.threadId,
-          isGroup,
-          groupId,
-          booking.threadId === threadId ? directPhoneNumber : null,
           `Confirmed: "${booking.title}". I'll follow up here once it's actually locked in with the venue.`,
         );
         if (booking.threadId !== threadId) {
-          await sendToThread(threadId, isGroup, groupId, directPhoneNumber, `Thanks -- approved "${booking.title}".`);
+          await sendToThread(threadId, `Thanks -- approved "${booking.title}".`);
         }
         res.status(200).json({ received: true });
         return;
@@ -164,13 +180,10 @@ router.post("/webhooks/sendblue", async (req, res): Promise<void> => {
         const booking = await rejectBookingRecord(pendingBooking.id);
         await sendToThread(
           booking.threadId,
-          isGroup,
-          groupId,
-          booking.threadId === threadId ? directPhoneNumber : null,
           `No problem, I've dropped "${booking.title}". Let me know if you want to plan something else.`,
         );
         if (booking.threadId !== threadId) {
-          await sendToThread(threadId, isGroup, groupId, directPhoneNumber, `Got it -- rejected "${booking.title}".`);
+          await sendToThread(threadId, `Got it -- rejected "${booking.title}".`);
         }
         res.status(200).json({ received: true });
         return;
@@ -215,15 +228,12 @@ router.post("/webhooks/sendblue", async (req, res): Promise<void> => {
         const { thread: approverThread } = await findOrCreateDirectThread(approverPhone as string);
         await sendToThread(
           approverThread.id,
-          false,
-          null,
-          approverPhone,
           `Heads up -- can you approve this booking: "${booking.title}"? Reply YES to confirm or NO to skip it.`,
         );
       }
     }
 
-    await sendToThread(threadId, isGroup, groupId, directPhoneNumber, result.reply);
+    await sendToThread(threadId, result.reply);
 
     res.status(200).json({ received: true });
   } catch (error) {

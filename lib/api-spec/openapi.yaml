@@ -33,7 +33,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
 
-  /webhooks/sendblue:
+  /webhooks/sendblue/{secret}:
     post:
       operationId: receiveSendblueWebhook
       tags: [webhooks]
@@ -41,7 +41,17 @@ paths:
       description: >
         Receives inbound message, outbound status, and other Sendblue webhook
         events. The exact payload shape varies by event type, so unknown
-        fields are accepted.
+        fields are accepted. The `secret` path segment is a shared secret
+        (SENDBLUE_WEBHOOK_SECRET) that must match before the event is
+        processed -- this is what this URL should be configured on Sendblue's
+        side, and it is the only authenticity check available since Sendblue
+        does not sign webhook payloads.
+      parameters:
+        - name: secret
+          in: path
+          required: true
+          schema:
+            type: string
       requestBody:
         required: true
         content:
