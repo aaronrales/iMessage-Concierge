@@ -2,17 +2,13 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Toaster } from '@/components/ui/toaster';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import NotFound from '@/pages/not-found';
-import { Route, Switch, Router as WouterRouter } from 'wouter';
+import { Route, Switch, Router as WouterRouter, Redirect } from 'wouter';
 import { Layout } from '@/components/Layout';
 import { UsersPage } from '@/pages/Users';
 import { ThreadsPage } from '@/pages/Threads';
-import { ApprovalsPage } from '@/pages/Approvals';
 import { VenuesPage } from '@/pages/Venues';
-import { DeliveryPage } from '@/pages/Delivery';
-import { PopulatePage } from '@/pages/Populate';
-import { TurnsPage } from '@/pages/Turns';
+import { OperationsPage } from '@/pages/Operations';
 import { SettingsPage } from '@/pages/Settings';
-import { Redirect } from 'wouter';
 
 const queryClient = new QueryClient();
 
@@ -23,12 +19,14 @@ function Router() {
         <Route path="/" component={() => <Redirect to="/users" />} />
         <Route path="/users" component={UsersPage} />
         <Route path="/threads" component={ThreadsPage} />
-        <Route path="/approvals" component={ApprovalsPage} />
         <Route path="/venues" component={VenuesPage} />
-        <Route path="/delivery" component={DeliveryPage} />
-        <Route path="/populate" component={PopulatePage} />
-        <Route path="/turns" component={TurnsPage} />
+        <Route path="/operations" component={OperationsPage} />
         <Route path="/settings" component={SettingsPage} />
+        {/* Legacy redirects — preserve bookmarks and deep-links */}
+        <Route path="/turns" component={() => <Redirect to="/threads?tab=turns" />} />
+        <Route path="/populate" component={() => <Redirect to="/venues?tab=populate" />} />
+        <Route path="/approvals" component={() => <Redirect to="/operations" />} />
+        <Route path="/delivery" component={() => <Redirect to="/operations?tab=delivery" />} />
         <Route component={NotFound} />
       </Switch>
     </Layout>

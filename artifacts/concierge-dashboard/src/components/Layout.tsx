@@ -1,16 +1,24 @@
 import { Link, useLocation } from "wouter";
-import { Users, MessageSquare, CheckSquare, ConciergeBell, UtensilsCrossed, AlertTriangle, Database, ThumbsUp, Settings } from "lucide-react";
-import { 
-  Sidebar, 
-  SidebarContent, 
-  SidebarHeader, 
-  SidebarMenu, 
-  SidebarMenuItem, 
-  SidebarMenuButton, 
+import { Users, MessageSquare, ConciergeBell, UtensilsCrossed, Activity, Settings } from "lucide-react";
+import {
+  Sidebar,
+  SidebarContent,
+  SidebarHeader,
+  SidebarMenu,
+  SidebarMenuItem,
+  SidebarMenuButton,
   SidebarProvider,
   SidebarInset
 } from "@/components/ui/sidebar";
 import React from "react";
+
+const NAV = [
+  { href: "/users",      label: "Users",       Icon: Users,          match: (l: string) => l === "/" || l.startsWith("/users") },
+  { href: "/threads",    label: "Threads",     Icon: MessageSquare,  match: (l: string) => l.startsWith("/threads") },
+  { href: "/venues",     label: "Venues",      Icon: UtensilsCrossed,match: (l: string) => l.startsWith("/venues") },
+  { href: "/operations", label: "Operations",  Icon: Activity,       match: (l: string) => l.startsWith("/operations") || l.startsWith("/approvals") || l.startsWith("/delivery") },
+  { href: "/settings",   label: "Settings",    Icon: Settings,       match: (l: string) => l.startsWith("/settings") },
+];
 
 export function Layout({ children }: { children: React.ReactNode }) {
   const [location] = useLocation();
@@ -28,70 +36,16 @@ export function Layout({ children }: { children: React.ReactNode }) {
         </SidebarHeader>
         <SidebarContent className="p-2">
           <SidebarMenu>
-            <SidebarMenuItem>
-              <SidebarMenuButton asChild isActive={location === "/" || location === "/users"}>
-                <Link href="/users">
-                  <Users />
-                  <span>Users</span>
-                </Link>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-            <SidebarMenuItem>
-              <SidebarMenuButton asChild isActive={location.startsWith("/threads")}>
-                <Link href="/threads">
-                  <MessageSquare />
-                  <span>Threads</span>
-                </Link>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-            <SidebarMenuItem>
-              <SidebarMenuButton asChild isActive={location.startsWith("/approvals")}>
-                <Link href="/approvals">
-                  <CheckSquare />
-                  <span>Approvals</span>
-                </Link>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-            <SidebarMenuItem>
-              <SidebarMenuButton asChild isActive={location.startsWith("/venues")}>
-                <Link href="/venues">
-                  <UtensilsCrossed />
-                  <span>Venue Review</span>
-                </Link>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-            <SidebarMenuItem>
-              <SidebarMenuButton asChild isActive={location.startsWith("/delivery")}>
-                <Link href="/delivery">
-                  <AlertTriangle />
-                  <span>Delivery Issues</span>
-                </Link>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-            <SidebarMenuItem>
-              <SidebarMenuButton asChild isActive={location.startsWith("/populate")}>
-                <Link href="/populate">
-                  <Database />
-                  <span>Populate</span>
-                </Link>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-            <SidebarMenuItem>
-              <SidebarMenuButton asChild isActive={location.startsWith("/turns")}>
-                <Link href="/turns">
-                  <ThumbsUp />
-                  <span>Turn Review</span>
-                </Link>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-            <SidebarMenuItem>
-              <SidebarMenuButton asChild isActive={location.startsWith("/settings")}>
-                <Link href="/settings">
-                  <Settings />
-                  <span>Settings</span>
-                </Link>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
+            {NAV.map(({ href, label, Icon, match }) => (
+              <SidebarMenuItem key={href}>
+                <SidebarMenuButton asChild isActive={match(location)}>
+                  <Link href={href}>
+                    <Icon />
+                    <span>{label}</span>
+                  </Link>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+            ))}
           </SidebarMenu>
         </SidebarContent>
       </Sidebar>
