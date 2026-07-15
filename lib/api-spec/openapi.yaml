@@ -102,6 +102,32 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /users/{id}/onboarding-nudge:
+    post:
+      operationId: sendOnboardingNudge
+      tags: [users]
+      summary: Manually send a stalled-onboarding follow-up DM to a user
+      description: >
+        Sends the same one-time follow-up nudge the scheduled scan would send
+        once a user's onboarding disclosure has gone unanswered, letting ops
+        intervene before the automatic 24h threshold. A no-op if the user is
+        already onboarded.
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "200":
+          description: Nudge sent (or skipped because onboarding is already complete)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookAck"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
   /threads:
     get:
       operationId: listThreads
@@ -350,6 +376,17 @@ components:
           oneOf:
             - $ref: "#/components/schemas/Profile"
             - type: "null"
+        onboardingDisclosedAt:
+          description: >
+            Earliest time an onboarding disclosure DM was sent to this user
+            while they were still not `completed` -- i.e. how long they've
+            been stalled. Null if never disclosed or already completed.
+          type: ["string", "null"]
+          format: date-time
+        onboardingNudgedAt:
+          description: Most recent stalled-onboarding follow-up nudge sent to this user, if any.
+          type: ["string", "null"]
+          format: date-time
 
     ThreadParticipantSummary:
       type: object

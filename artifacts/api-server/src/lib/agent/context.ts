@@ -1,4 +1,4 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, isNotNull, isNull, lte, ne } from "drizzle-orm";
 import {
   db,
   messagesTable,
@@ -213,6 +213,119 @@ export async function hasGroupBeenIntroduced(threadId: number): Promise<boolean>
 
 export async function markGroupIntroduced(threadId: number): Promise<void> {
   await db.update(threadsTable).set({ introducedAt: new Date() }).where(eq(threadsTable.id, threadId));
+}
+
+/** Group thread ids a user currently participates in, with each thread's current home city. */
+export async function getGroupThreadsForUser(userId: number): Promise<{ id: number; homeCity: string | null }[]> {
+  const rows = await db
+    .select({ id: threadsTable.id, homeCity: threadsTable.homeCity })
+    .from(threadParticipantsTable)
+    .innerJoin(threadsTable, eq(threadParticipantsTable.threadId, threadsTable.id))
+    .where(and(eq(threadParticipantsTable.userId, userId), eq(threadsTable.isGroup, true)));
+  return rows;
+}
+
+/** Sets a group thread's best-effort home city, but only if it isn't already set -- never overwrites a known city. */
+export async function setThreadHomeCityIfUnset(threadId: number, city: string): Promise<void> {
+  await db
+    .update(threadsTable)
+    .set({ homeCity: city })
+    .where(and(eq(threadsTable.id, threadId), isNull(threadsTable.homeCity)));
+}
+
+/** Whether every participant of a group thread has completed onboarding (and it has at least one participant). */
+export async function isGroupFullyOnboarded(threadId: number): Promise<boolean> {
+  const rows = await db
+    .select({ onboardingStatus: usersTable.onboardingStatus })
+    .from(threadParticipantsTable)
+    .innerJoin(usersTable, eq(threadParticipantsTable.userId, usersTable.id))
+    .where(eq(threadParticipantsTable.threadId, threadId));
+  return rows.length > 0 && rows.every((row) => row.onboardingStatus === "completed");
+}
+
+/** Whether this group thread's one-time "everyone's set up" kickoff recap has already been sent. */
+export async function hasOnboardingRecapBeenSent(threadId: number): Promise<boolean> {
+  const [thread] = await db
+    .select({ onboardingRecapSentAt: threadsTable.onboardingRecapSentAt })
+    .from(threadsTable)
+    .where(eq(threadsTable.id, threadId));
+  return Boolean(thread?.onboardingRecapSentAt);
+}
+
+export async function markOnboardingRecapSent(threadId: number): Promise<void> {
+  await db.update(threadsTable).set({ onboardingRecapSentAt: new Date() }).where(eq(threadsTable.id, threadId));
+}
+
+/**
+ * Users whose onboarding disclosure DM went out at least `olderThanMs` ago,
+ * are not yet `completed`, and have at least one group membership that
+ * hasn't been nudged yet. Used by both the scheduled stalled-onboarding scan
+ * and the ops dashboard's manual nudge action, so both agree on who counts
+ * as "stalled".
+ */
+export async function getStalledOnboardingUserIds(olderThanMs: number): Promise<number[]> {
+  const cutoff = new Date(Date.now() - olderThanMs);
+  const rows = await db
+    .select({ userId: usersTable.id })
+    .from(threadParticipantsTable)
+    .innerJoin(usersTable, eq(threadParticipantsTable.userId, usersTable.id))
+    .where(
+      and(
+        isNotNull(threadParticipantsTable.disclosureSentAt),
+        lte(threadParticipantsTable.disclosureSentAt, cutoff),
+        isNull(threadParticipantsTable.onboardingNudgeSentAt),
+        ne(usersTable.onboardingStatus, "completed"),
+      ),
+    );
+  return Array.from(new Set(rows.map((row) => row.userId)));
+}
+
+/**
+ * Marks every not-yet-nudged, disclosed group membership for a user as
+ * nudged, so a single nudge DM never gets re-sent for the same person even
+ * though the underlying state is tracked per group membership.
+ */
+export async function markOnboardingNudgeSentForUser(userId: number): Promise<void> {
+  await db
+    .update(threadParticipantsTable)
+    .set({ onboardingNudgeSentAt: new Date() })
+    .where(
+      and(
+        eq(threadParticipantsTable.userId, userId),
+        isNotNull(threadParticipantsTable.disclosureSentAt),
+        isNull(threadParticipantsTable.onboardingNudgeSentAt),
+      ),
+    );
+}
+
+/**
+ * Per-user onboarding disclosure/nudge summary for the ops dashboard: the
+ * earliest disclosure sent while the user is still not `completed` (i.e.
+ * how long they've been stalled), and the most recent nudge sent, if any.
+ */
+export async function getOnboardingProgressByUserId(): Promise<
+  Map<number, { disclosedAt: Date | null; nudgedAt: Date | null }>
+> {
+  const rows = await db
+    .select({
+      userId: threadParticipantsTable.userId,
+      disclosureSentAt: threadParticipantsTable.disclosureSentAt,
+      onboardingNudgeSentAt: threadParticipantsTable.onboardingNudgeSentAt,
+    })
+    .from(threadParticipantsTable);
+
+  const result = new Map<number, { disclosedAt: Date | null; nudgedAt: Date | null }>();
+  for (const row of rows) {
+    const existing = result.get(row.userId) ?? { disclosedAt: null, nudgedAt: null };
+    if (row.disclosureSentAt && (!existing.disclosedAt || row.disclosureSentAt < existing.disclosedAt)) {
+      existing.disclosedAt = row.disclosureSentAt;
+    }
+    if (row.onboardingNudgeSentAt && (!existing.nudgedAt || row.onboardingNudgeSentAt > existing.nudgedAt)) {
+      existing.nudgedAt = row.onboardingNudgeSentAt;
+    }
+    result.set(row.userId, existing);
+  }
+  return result;
 }
 
 /** All group thread ids, for scans that need to walk every group (e.g. the serendipity job). */

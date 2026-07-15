@@ -67,6 +67,16 @@ export interface UserWithProfile {
   createdAt: string;
   updatedAt: string;
   profile?: Profile | null;
+  /**
+     * Earliest time an onboarding disclosure DM was sent to this user while they were still not `completed` -- i.e. how long they've been stalled. Null if never disclosed or already completed.
+     * @nullable
+     */
+  onboardingDisclosedAt?: string | null;
+  /**
+     * Most recent stalled-onboarding follow-up nudge sent to this user, if any.
+     * @nullable
+     */
+  onboardingNudgedAt?: string | null;
 }
 
 export interface ThreadParticipantSummary {

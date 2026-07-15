@@ -25,6 +25,10 @@ export const threadsTable = pgTable("threads", {
   // for the serendipity feature. Backfilled from a confirmed booking's
   // `details.city` when known; falls back to a default city when null.
   homeCity: text("home_city"),
+  // Set once the one-time "everyone's set up" onboarding recap has been sent
+  // for this group, so it fires exactly once when the last member completes
+  // onboarding rather than once per person.
+  onboardingRecapSentAt: timestamp("onboarding_recap_sent_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true })
     .notNull()

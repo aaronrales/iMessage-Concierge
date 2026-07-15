@@ -62,7 +62,9 @@ export const ListUsersResponseItem = zod.object({
   "notes": zod.string().nullish(),
   "createdAt": zod.coerce.date(),
   "updatedAt": zod.coerce.date()
-}),zod.null()]).optional()
+}),zod.null()]).optional(),
+  "onboardingDisclosedAt": zod.coerce.date().nullish().describe('Earliest time an onboarding disclosure DM was sent to this user while they were still not `completed` -- i.e. how long they\'ve been stalled. Null if never disclosed or already completed.\n'),
+  "onboardingNudgedAt": zod.coerce.date().nullish().describe('Most recent stalled-onboarding follow-up nudge sent to this user, if any.')
 })
 export const ListUsersResponse = zod.array(ListUsersResponseItem)
 
@@ -91,7 +93,22 @@ export const GetUserResponse = zod.object({
   "notes": zod.string().nullish(),
   "createdAt": zod.coerce.date(),
   "updatedAt": zod.coerce.date()
-}),zod.null()]).optional()
+}),zod.null()]).optional(),
+  "onboardingDisclosedAt": zod.coerce.date().nullish().describe('Earliest time an onboarding disclosure DM was sent to this user while they were still not `completed` -- i.e. how long they\'ve been stalled. Null if never disclosed or already completed.\n'),
+  "onboardingNudgedAt": zod.coerce.date().nullish().describe('Most recent stalled-onboarding follow-up nudge sent to this user, if any.')
+})
+
+
+/**
+ * Sends the same one-time follow-up nudge the scheduled scan would send once a user's onboarding disclosure has gone unanswered, letting ops intervene before the automatic 24h threshold. A no-op if the user is already onboarded.
+ * @summary Manually send a stalled-onboarding follow-up DM to a user
+ */
+export const SendOnboardingNudgeParams = zod.object({
+  "id": zod.coerce.number()
+})
+
+export const SendOnboardingNudgeResponse = zod.object({
+  "received": zod.boolean()
 })
 
 

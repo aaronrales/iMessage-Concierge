@@ -1,10 +1,13 @@
 import React, { useState } from "react";
-import { useListUsers } from "@workspace/api-client-react";
-import { format } from "date-fns";
-import { Search, User, CreditCard, Apple, FileText, CheckCircle2, Clock, CircleDashed } from "lucide-react";
+import { useListUsers, useSendOnboardingNudge, getListUsersQueryKey } from "@workspace/api-client-react";
+import { useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
+import { format, formatDistanceToNow } from "date-fns";
+import { Search, User, CreditCard, Apple, FileText, CheckCircle2, Clock, CircleDashed, BellRing, AlertCircle } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Empty, EmptyMedia, EmptyHeader, EmptyTitle, EmptyDescription } from "@/components/ui/empty";
@@ -13,13 +16,46 @@ export function UsersPage() {
   const { data: users, isLoading } = useListUsers();
   const [search, setSearch] = useState("");
   const [selectedUserId, setSelectedUserId] = useState<number | null>(null);
+  const [needsAttentionOnly, setNeedsAttentionOnly] = useState(false);
 
-  const filteredUsers = users?.filter(user => 
+  const queryClient = useQueryClient();
+  const nudgeMutation = useSendOnboardingNudge();
+
+  const isStalled = (user: NonNullable<typeof users>[number]) =>
+    user.onboardingStatus !== "completed" && Boolean(user.onboardingDisclosedAt);
+
+  const stalledCount = users?.filter(isStalled).length ?? 0;
+
+  const searchedUsers = users?.filter(user => 
     user.displayName?.toLowerCase().includes(search.toLowerCase()) || 
     user.phoneNumber.includes(search)
   ) || [];
 
+  const filteredUsers = (needsAttentionOnly ? searchedUsers.filter(isStalled) : searchedUsers)
+    .slice()
+    .sort((a, b) => {
+      if (needsAttentionOnly) {
+        return new Date(a.onboardingDisclosedAt!).getTime() - new Date(b.onboardingDisclosedAt!).getTime();
+      }
+      return 0;
+    });
+
   const selectedUser = users?.find(u => u.id === selectedUserId) || (filteredUsers.length > 0 ? filteredUsers[0] : null);
+
+  const handleSendNudge = (userId: number) => {
+    nudgeMutation.mutate(
+      { id: userId },
+      {
+        onSuccess: () => {
+          toast.success("Onboarding nudge sent.");
+          queryClient.invalidateQueries({ queryKey: getListUsersQueryKey() });
+        },
+        onError: () => {
+          toast.error("Couldn't send the nudge. Try again in a moment.");
+        },
+      },
+    );
+  };
 
   const getStatusIcon = (status: string) => {
     switch (status) {
@@ -39,7 +75,7 @@ export function UsersPage() {
       <div className="w-80 border-r border-border bg-card/50 flex flex-col shrink-0">
         <div className="p-4 border-b border-border bg-card">
           <h1 className="text-xl font-bold mb-4">Users</h1>
-          <div className="relative">
+          <div className="relative mb-3">
             <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
             <Input
               placeholder="Search by name or number..."
@@ -48,6 +84,20 @@ export function UsersPage() {
               onChange={(e) => setSearch(e.target.value)}
             />
           </div>
+          <button
+            onClick={() => setNeedsAttentionOnly((v) => !v)}
+            className={`w-full flex items-center justify-between gap-2 px-3 py-2 rounded-lg text-sm font-medium border transition-colors ${
+              needsAttentionOnly
+                ? "bg-amber-500/15 border-amber-500/30 text-amber-700 dark:text-amber-400"
+                : "bg-background border-border text-muted-foreground hover-elevate"
+            }`}
+          >
+            <span className="flex items-center gap-2">
+              <AlertCircle className="h-4 w-4" />
+              Needs attention
+            </span>
+            <Badge variant="secondary" className="border-none">{stalledCount}</Badge>
+          </button>
         </div>
         <ScrollArea className="flex-1">
           {isLoading ? (
@@ -84,7 +134,17 @@ export function UsersPage() {
                     <User className="h-5 w-5" />
                   </div>
                   <div className="flex-1 min-w-0 overflow-hidden">
-                    <div className="font-semibold truncate">{user.displayName || "Unknown User"}</div>
+                    <div className="font-semibold truncate flex items-center gap-1.5">
+                      {user.displayName || "Unknown User"}
+                      {isStalled(user) && (
+                        <span
+                          title={`Stalled since ${format(new Date(user.onboardingDisclosedAt!), "MMM d")}`}
+                          className={`h-1.5 w-1.5 rounded-full shrink-0 ${
+                            selectedUser?.id === user.id ? "bg-primary-foreground" : "bg-amber-500"
+                          }`}
+                        />
+                      )}
+                    </div>
                     <div className={`text-sm truncate ${selectedUser?.id === user.id ? "text-primary-foreground/80" : "text-muted-foreground"}`}>
                       {user.phoneNumber}
                     </div>
@@ -112,11 +172,35 @@ export function UsersPage() {
                       {getStatusIcon(selectedUser.onboardingStatus)}
                       <span className="font-medium">{getStatusText(selectedUser.onboardingStatus)}</span>
                     </div>
+                    {isStalled(selectedUser) && (
+                      <span className="text-amber-700 dark:text-amber-400 text-xs font-medium">
+                        Stalled {formatDistanceToNow(new Date(selectedUser.onboardingDisclosedAt!), { addSuffix: true })}
+                      </span>
+                    )}
                   </div>
                 </div>
-                <div className="text-right text-sm text-muted-foreground">
+                <div className="text-right text-sm text-muted-foreground space-y-2">
                   <div>Joined {format(new Date(selectedUser.createdAt), "MMM d, yyyy")}</div>
                   <div>ID: #{selectedUser.id}</div>
+                  {selectedUser.onboardingStatus !== "completed" && selectedUser.onboardingDisclosedAt && (
+                    <div className="flex flex-col items-end gap-1 pt-1">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={nudgeMutation.isPending}
+                        onClick={() => handleSendNudge(selectedUser.id)}
+                        data-testid="button-send-nudge"
+                      >
+                        <BellRing className="h-3.5 w-3.5 mr-1.5" />
+                        {selectedUser.onboardingNudgedAt ? "Send nudge again" : "Send nudge now"}
+                      </Button>
+                      {selectedUser.onboardingNudgedAt && (
+                        <span className="text-xs text-muted-foreground">
+                          Last nudged {formatDistanceToNow(new Date(selectedUser.onboardingNudgedAt), { addSuffix: true })}
+                        </span>
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
 

@@ -363,6 +363,78 @@ export function useGetUser<TData = Awaited<ReturnType<typeof getUser>>, TError =
 
 
 
+export const getSendOnboardingNudgeUrl = (id: number,) => {
+
+
+
+
+  return `/api/users/${id}/onboarding-nudge`
+}
+
+/**
+ * Sends the same one-time follow-up nudge the scheduled scan would send once a user's onboarding disclosure has gone unanswered, letting ops intervene before the automatic 24h threshold. A no-op if the user is already onboarded.
+ * @summary Manually send a stalled-onboarding follow-up DM to a user
+ */
+export const sendOnboardingNudge = async (id: number, options?: RequestInit): Promise<WebhookAck> => {
+
+  return customFetch<WebhookAck>(getSendOnboardingNudgeUrl(id),
+  {
+    ...options,
+    method: 'POST'
+
+
+  }
+);}
+
+
+
+
+
+export const getSendOnboardingNudgeMutationOptions = <TError = ErrorType<ErrorResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof sendOnboardingNudge>>, TError,{id: number}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof sendOnboardingNudge>>, TError,{id: number}, TContext> => {
+
+const mutationKey = ['sendOnboardingNudge'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof sendOnboardingNudge>>, {id: number}> = (props) => {
+          const {id} = props ?? {};
+
+          return  sendOnboardingNudge(id,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type SendOnboardingNudgeMutationResult = NonNullable<Awaited<ReturnType<typeof sendOnboardingNudge>>>
+
+    export type SendOnboardingNudgeMutationError = ErrorType<ErrorResponse>
+
+    /**
+ * @summary Manually send a stalled-onboarding follow-up DM to a user
+ */
+export const useSendOnboardingNudge = <TError = ErrorType<ErrorResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof sendOnboardingNudge>>, TError,{id: number}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof sendOnboardingNudge>>,
+        TError,
+        {id: number},
+        TContext
+      > => {
+      return useMutation(getSendOnboardingNudgeMutationOptions(options));
+    }
+
 export const getListThreadsUrl = () => {
 
 

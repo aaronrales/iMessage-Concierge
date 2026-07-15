@@ -22,6 +22,10 @@ export const threadParticipantsTable = pgTable(
     // Set once the one-time onboarding disclosure ("I'm this group's AI
     // concierge...") has been sent for this participant, so it never repeats.
     disclosureSentAt: timestamp("disclosure_sent_at", { withTimezone: true }),
+    // Set once a stalled-onboarding follow-up nudge has been sent for this
+    // group membership, so it fires at most once ever per group -- never a
+    // repeated pester. See `handleOnboardingNudgeScan` in scheduler.ts.
+    onboardingNudgeSentAt: timestamp("onboarding_nudge_sent_at", { withTimezone: true }),
     joinedAt: timestamp("joined_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [unique().on(table.threadId, table.userId)],

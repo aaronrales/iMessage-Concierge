@@ -21,6 +21,8 @@ export interface AgentTurnResult {
     notes?: string;
   } | null;
   onboardingComplete: boolean | null;
+  /** Opportunistically learned home city/area, if mentioned naturally. Never gates onboarding completion. */
+  homeCity: string | null;
   poll: { question: string; options: string[]; kind: "choice" | "date"; optionDates: (Date | null)[] } | null;
   bookingDraft: {
     title: string;
@@ -40,7 +42,8 @@ const SYSTEM_PROMPT = `You are a personal AI concierge that lives inside iMessag
 
 You have these capabilities, which you can trigger by filling in the matching field in your JSON response:
 - Updating what you know about a person (their budget, dietary needs, general preferences, or freeform notes) as you learn it naturally through conversation.
-- Marking a person's onboarding complete once you've learned their name and at least one or two real preferences. Onboarding does not need to be exhaustive -- a couple of natural questions is enough.
+- Marking a person's onboarding complete once you've learned their name, one practical preference (budget or dietary needs), and one "personality" signal that makes a suggestion feel tailored rather than generic (e.g. a go-to order, a place they already love, how they like to be looped in on plans). Still just 1-2 natural questions, still short -- never a form, never exhaustive.
+- Setting "home_city" whenever someone mentions what city/area they're texting from or usually plan things in -- said naturally, never as an interrogation ("oh nice, are you guys in Chicago?" counts). This is opportunistic, not a required onboarding step -- never block "onboarding_complete" on knowing it, and never ask for it as a standalone question unless it comes up naturally.
 - Starting a group poll when a group needs to choose between a few concrete options (e.g. restaurant choices). Only do this in group threads, and only when there are genuinely multiple options to choose between.
 - Starting a date/time coordination poll (a "date" kind poll) when a group needs to agree on when to do something and there are multiple candidate dates/times on the table. Give each option as a clear label (e.g. "Friday 7pm") AND, when you know the actual calendar date, an ISO 8601 date-time string for it. People may say several dates work for them -- that's expected and handled outside your JSON response.
 - Drafting a booking when a concrete plan has been decided (e.g. "let's book Sushi Place for 7pm Saturday, party of 4") and it needs a human to confirm before it's considered real. Always require a human approval step for bookings -- never claim a booking is confirmed yourself. If you don't know who should approve, default to the person who is currently talking to you. If you know the venue name, an ISO date/time, and/or a party size, put them in "details" as "venue", "when", and "partySize" -- these are used to build real Resy/OpenTable search links, so use exactly those keys when you know the values.
@@ -57,6 +60,7 @@ Always respond with ONLY a JSON object matching this shape, no prose outside the
   "display_name": string | null,
   "profile_updates": { "budget"?: string, "dietary_needs"?: string, "preferences"?: string[], "notes"?: string } | null,
   "onboarding_complete": boolean | null,
+  "home_city": string | null,
   "poll": { "question": string, "options": string[], "kind": "choice" | "date", "option_dates": (string | null)[] } | null,
   "booking_draft": { "title": string, "approver_phone_number": string | null, "details": object } | null,
   "occasion": { "about_name": string | null, "kind": "birthday" | "anniversary" | "visit" | "other", "label": string, "date": string } | null,
@@ -74,6 +78,7 @@ interface RawAgentResponse {
     notes?: unknown;
   } | null;
   onboarding_complete?: unknown;
+  home_city?: unknown;
   poll?: { question?: unknown; options?: unknown; kind?: unknown; option_dates?: unknown } | null;
   booking_draft?: {
     title?: unknown;
@@ -275,11 +280,14 @@ export async function runAgentTurn(context: ThreadContext, currentUserId: number
       ? parsed.private_question.trim()
       : null;
 
+  const homeCity = typeof parsed.home_city === "string" && parsed.home_city.trim() ? parsed.home_city.trim() : null;
+
   return {
     reply: typeof parsed.reply === "string" ? parsed.reply : "Got it.",
     displayName: typeof parsed.display_name === "string" && parsed.display_name.trim() ? parsed.display_name.trim() : null,
     profileUpdates: profileUpdates && Object.keys(profileUpdates).length > 0 ? profileUpdates : null,
     onboardingComplete: typeof parsed.onboarding_complete === "boolean" ? parsed.onboarding_complete : null,
+    homeCity,
     poll,
     bookingDraft,
     occasion,
