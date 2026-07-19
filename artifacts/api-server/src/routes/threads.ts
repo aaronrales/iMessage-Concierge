@@ -177,7 +177,7 @@ router.get("/threads/:id", async (req, res): Promise<void> => {
 /** The thread's active project with its child plan count, shaped for the ThreadDetail response. */
 async function getActiveProjectSummary(
   threadId: number,
-): Promise<(Omit<Project, "updatedAt"> & { childPlanCount: number }) | null> {
+): Promise<(Omit<Project, "updatedAt"> & { childPlanCount: number; organizerDisplayName: string | null }) | null> {
   const [project] = await db
     .select()
     .from(projectsTable)
@@ -186,10 +186,16 @@ async function getActiveProjectSummary(
     .limit(1);
   if (!project) return null;
 
-  const [childCount] = await db
-    .select({ value: count() })
-    .from(plansTable)
-    .where(eq(plansTable.projectId, project.id));
+  const [[childCount], organizerRow] = await Promise.all([
+    db.select({ value: count() }).from(plansTable).where(eq(plansTable.projectId, project.id)),
+    project.organizerUserId
+      ? db
+          .select({ displayName: usersTable.displayName })
+          .from(usersTable)
+          .where(eq(usersTable.id, project.organizerUserId))
+          .then((rows) => rows[0] ?? null)
+      : Promise.resolve(null),
+  ]);
 
   return {
     id: project.id,
@@ -197,6 +203,8 @@ async function getActiveProjectSummary(
     type: project.type,
     honoree: project.honoree,
     honoreeUserId: project.honoreeUserId,
+    organizerUserId: project.organizerUserId ?? null,
+    organizerDisplayName: organizerRow?.displayName ?? null,
     dateRangeStart: project.dateRangeStart,
     dateRangeEnd: project.dateRangeEnd,
     status: project.status,

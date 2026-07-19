@@ -6,8 +6,10 @@ import { logger } from "../logger";
 import { AGENT_TOOLS, executeAgentTool, type VenueCarouselEntry } from "./tools";
 import { showTypingIndicator } from "./delivery";
 import { buildGroupConstraintSummary, describeReturningMember, extractGroupConstraints, type GroupConstraints } from "./tasteEngine";
-import { buildProjectPromptSummary, getActiveProject, getProjectChildPlans, parseProjectField } from "./projects";
+import { buildProjectPromptSummary, getActiveProject, getProjectChildPlans, parseProjectField, type CreateProjectInput } from "./projects";
+import type { ProjectProposal } from "@workspace/db";
 import type OpenAI from "openai";
+import type { Project } from "@workspace/db";
 
 /** Safety valve against a runaway tool-call loop; one turn should need at most a couple of round trips. */
 const MAX_TOOL_ITERATIONS = 3;
@@ -86,6 +88,13 @@ export interface AgentTurnResult {
    * Null when no venue search was performed this turn.
    */
   venueCarousels: VenueCarouselEntry[] | null;
+  /**
+   * Set only in organizer sidebar turns when the engine decides the turn
+   * is a tiebreak override ("go with the rooftop one"). The value is the
+   * raw option label text that should be matched against the open poll's
+   * options. Null in all other contexts.
+   */
+  organizerTiebreakDecision: string | null;
 }
 
 const SYSTEM_PROMPT = `You are a personal AI concierge that lives inside iMessage. You help one person or a small group plan the stuff of everyday life -- dinners, weekend trips, birthdays, "where should we all meet". You are warm, concise, and text like a helpful friend, not a corporate assistant. Keep replies short enough for a text message (usually under 3 sentences) and never use emojis.
@@ -253,7 +262,18 @@ async function runTurnWithTools(
   return { raw: "{}", venueCarousels: carouselAccumulator };
 }
 
-export async function runAgentTurn(context: ThreadContext, currentUserId: number): Promise<AgentTurnResult> {
+export interface AgentTurnOptions {
+  /**
+   * When set, the turn is treated as an organizer sidebar conversation for
+   * this project. A sidebar-specific system-prompt block is injected so the
+   * model knows its role (reviewing drafts, issuing overrides) and the group
+   * thread context is summarised for it without the model replying to the
+   * group directly.
+   */
+  sidebarProject?: Project;
+}
+
+export async function runAgentTurn(context: ThreadContext, currentUserId: number, options?: AgentTurnOptions): Promise<AgentTurnResult> {
   const currentUser = context.participants.find((p) => p.user.id === currentUserId)?.user;
   const isGroup = context.thread.isGroup;
 
@@ -284,11 +304,32 @@ export async function runAgentTurn(context: ThreadContext, currentUserId: number
 
   const globalGuidance = await getGlobalGuidance();
 
+  // When running as an organizer sidebar turn, inject a block that tells the
+  // model it is in a private 1:1 with the project organizer, not the group.
+  const sidebarBlock = options?.sidebarProject
+    ? [
+        {
+          role: "system" as const,
+          content:
+            `ORGANIZER SIDEBAR — you are in a private 1:1 DM with the project organizer, not the group thread.\n` +
+            `Your role here is to:\n` +
+            `  1. Answer questions about how the project is progressing.\n` +
+            `  2. Help the organizer shape proposals before they reach the group.\n` +
+            `  3. Let the organizer override a stalled poll tiebreak ("go with X").\n` +
+            `Keep replies short and direct — this is a 1:1 command channel, not a social chat.\n` +
+            `Never address the organizer as if you are speaking to the full group.\n` +
+            `If the organizer says "yes", "looks good", or similar, and context shows a proposal is waiting, treat it as approval.\n` +
+            `If the organizer names a specific poll option (e.g. "go with the rooftop"), treat it as a tiebreak override for the group's current poll.`,
+        },
+      ]
+    : [];
+
   const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
     { role: "system", content: SYSTEM_PROMPT },
     // Ops-authored cross-cutting guidance injected when non-empty.
     ...(globalGuidance ? [{ role: "system" as const, content: `Ops guidance (apply to all threads):\n${globalGuidance}` }] : []),
     { role: "system", content: situational },
+    ...sidebarBlock,
     // Thread-specific steering notes from the ops dashboard.
     ...(context.thread.adminNotes
       ? [{ role: "system" as const, content: `Thread-specific instructions from ops:\n${context.thread.adminNotes}` }]
@@ -415,6 +456,9 @@ export async function runAgentTurn(context: ThreadContext, currentUserId: number
     groupCreationRequest: groupCreationRequest && groupCreationRequest.participantNames.length > 0 ? groupCreationRequest : null,
     project: parseProjectField(parsed.project),
     venueCarousels: venueCarouselData.length > 0 ? venueCarouselData : null,
+    // Tiebreak decisions are resolved deterministically in the webhook layer
+    // before the engine turn runs; this field is always null from the engine.
+    organizerTiebreakDecision: null,
   };
 }
 

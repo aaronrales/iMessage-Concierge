@@ -57,7 +57,28 @@ import {
   rejectBookingRecord,
 } from "../../lib/agent/bookings";
 import { confirmPlan, getActivePlan, getOrCreateActivePlan, setPlanScheduledFor, setPlanVenue, setPendingFeedback } from "../../lib/agent/plans";
-import { createProjectForThread } from "../../lib/agent/projects";
+import {
+  createProjectForThread,
+  getActiveProject,
+  getActiveProjectForOrganizer,
+  getOrganizerForProject,
+} from "../../lib/agent/projects";
+import {
+  createProposal,
+  getOldestPendingProposal,
+  approveProposal,
+  rejectProposal,
+  releaseProposal,
+  buildOrganizerPreviewMessage,
+  isApprovalReply,
+  isRejectionReply,
+  isTiebreakOverride,
+  type ProposalType,
+  type ProposalContent,
+  type PollProposalContent,
+  type VenueShortlistProposalContent,
+} from "../../lib/agent/projectProposals";
+import type { Project } from "@workspace/db";
 import { buildGoogleCalendarLink, buildIcsUrl, describePlanSchedule } from "../../lib/agent/calendar";
 import { scheduleDayBeforeReminder, scheduleNonVoterNudge } from "../../lib/agent/scheduler";
 import { buildReservationLinks, describeReservationLinks } from "../../lib/agent/bookingLinks";
@@ -209,6 +230,76 @@ async function sendVenueCarousels(threadId: number, entries: VenueCarouselEntry[
 const router: IRouter = Router();
 
 /**
+ * Releases an organizer-approved proposal to the group thread. Mirrors the
+ * normal `processAgentTurn` delivery logic for each proposal type.
+ */
+async function releasePendingProposalToGroup(
+  proposal: import("@workspace/db").ProjectProposal,
+  groupThreadId: number,
+  organizerThreadId: number,
+): Promise<void> {
+  // Mark released before sending to fail toward under- not double-sending.
+  await releaseProposal(proposal.id);
+  const content = proposal.proposalContent as unknown;
+
+  if (proposal.proposalType === "poll") {
+    const { question, options, kind, optionDates, reply } = content as PollProposalContent;
+    await sendToThread(groupThreadId, reply);
+    const plan = await getOrCreateActivePlan(groupThreadId, question);
+    const { poll, options: pollOptions } = await createPoll(groupThreadId, question, options, {
+      kind,
+      planId: plan.id,
+      optionDates: (optionDates as (string | null)[]).map((d) => {
+        if (!d) return null;
+        const parsed = new Date(d);
+        return Number.isNaN(parsed.getTime()) ? null : parsed;
+      }),
+    });
+    await scheduleNonVoterNudge(groupThreadId, poll.id);
+    for (const [index, option] of pollOptions.entries()) {
+      await sendToThread(groupThreadId, `${index + 1}. ${option.label}`);
+    }
+  } else if (proposal.proposalType === "venue_shortlist") {
+    const { reply, venueCarousels: carousels } = content as unknown as VenueShortlistProposalContent;
+    await sendToThread(groupThreadId, reply);
+    if (Array.isArray(carousels) && carousels.length > 0) {
+      void sendVenueCarousels(groupThreadId, carousels);
+    }
+  } else {
+    // message
+    const { reply } = content as { reply: string };
+    await sendToThread(groupThreadId, reply);
+  }
+
+  await sendToThread(organizerThreadId, "Sent to the group.");
+}
+
+/**
+ * Agent turn for the organizer's private sidebar 1:1 DM. Injects the active
+ * project as sidebar context so the engine is aware of its role. Does NOT
+ * gate output through the proposal flow (sidebar replies go straight back to
+ * the organizer, not to the group).
+ */
+async function processOrganizerSidebarTurn(
+  threadId: number,
+  senderUserId: number,
+  organizerProject: Project,
+): Promise<void> {
+  const context = await loadThreadContext(threadId);
+  const result = await runAgentTurn(context, senderUserId, { sidebarProject: organizerProject });
+
+  if (result.profileUpdates) {
+    await applyProfileUpdates(senderUserId, result.profileUpdates);
+  }
+  if (result.displayName) {
+    await db.update(usersTable).set({ displayName: result.displayName }).where(eq(usersTable.id, senderUserId));
+  }
+
+  await sendContactCardIfNeeded(senderUserId, context.thread.primaryPhoneNumber!);
+  await sendToThread(threadId, result.reply);
+}
+
+/**
  * Runs the main conversation engine for a thread and delivers the result.
  * Invoked from a debounced timer (see `scheduleAgentTurn`) rather than
  * inline in the webhook handler, so a burst of rapid-fire messages collapses
@@ -265,12 +356,57 @@ async function processAgentTurn(threadId: number, senderUserId: number): Promise
       honoreeUserId: honoreeUser?.id ?? null,
       dateRangeStart: result.project.dateRangeStart,
       dateRangeEnd: result.project.dateRangeEnd,
+      // Sender becomes the default organizer; they can hand off via conversation later.
+      organizerUserId: senderUserId,
     });
     logger.info(
       { threadId, projectId: project.id, type: project.type, created },
       created ? "Project created from conversation" : "Project details merged into existing active project",
     );
   }
+
+  // ── Organizer approval gate ─────────────────────────────────────────────────
+  // If this group thread has an active project with an organizer, hold polls
+  // and venue shortlists in the pending_project_proposals queue for organizer
+  // review before releasing them to the group. The organizer gets a DM preview
+  // and approves/rejects from their private sidebar.
+  if (isGroup) {
+    const gateProject = await getActiveProject(threadId);
+    if (gateProject?.organizerUserId && (result.poll || (result.venueCarousels?.length ?? 0) > 0)) {
+      const type: ProposalType = result.poll ? "poll" : "venue_shortlist";
+      const scrubbed = scrubPrivateProfileLeaks(result.reply, context.participants);
+
+      let proposalContent: ProposalContent;
+      if (result.poll) {
+        proposalContent = {
+          question: result.poll.question,
+          options: result.poll.options,
+          kind: result.poll.kind,
+          optionDates: result.poll.optionDates.map((d) => d?.toISOString() ?? null),
+          reply: scrubbed,
+        } satisfies PollProposalContent;
+      } else {
+        proposalContent = {
+          reply: scrubbed,
+          venueCarousels: result.venueCarousels ?? [],
+        } satisfies VenueShortlistProposalContent;
+      }
+
+      // Persist before sending DM (fail toward under-not double-sending).
+      await createProposal(gateProject.id, threadId, type, proposalContent);
+
+      const organizer = await getOrganizerForProject(gateProject);
+      if (organizer?.phoneNumber) {
+        const { thread: orgThread } = await findOrCreateDirectThread(organizer.phoneNumber);
+        await sendToThread(orgThread.id, buildOrganizerPreviewMessage(type, proposalContent));
+      }
+
+      // Acknowledge to the group without revealing the draft content.
+      await sendToThread(threadId, "On it — checking a few things, back shortly.");
+      return; // Skip normal poll creation, reply send, and carousels.
+    }
+  }
+  // ── End organizer gate ──────────────────────────────────────────────────────
 
   if (result.poll && isGroup) {
     const plan = await getOrCreateActivePlan(threadId, result.poll.question);
@@ -763,6 +899,79 @@ router.post("/webhooks/sendblue/:secret", async (req, res): Promise<void> => {
           await sendToThread(openRequest.threadId, summary);
         }
 
+        res.status(200).json({ received: true });
+        return;
+      }
+    }
+
+    // 2.7. Organizer sidebar: if this 1:1 sender is the organizer of an active project,
+    // check for pending proposals awaiting approval and for poll tiebreak overrides
+    // before falling through to the normal 1:1 engine turn (which runs with injected
+    // project context so the LLM can answer project questions naturally).
+    if (!isGroup) {
+      const organizerProject = await getActiveProjectForOrganizer(senderUserId);
+      if (organizerProject) {
+        const pendingProposal = await getOldestPendingProposal(organizerProject.id);
+
+        if (pendingProposal) {
+          if (isApprovalReply(event.content)) {
+            await releasePendingProposalToGroup(pendingProposal, organizerProject.threadId, threadId);
+            res.status(200).json({ received: true });
+            return;
+          }
+          if (isRejectionReply(event.content)) {
+            await rejectProposal(pendingProposal.id, event.content);
+            await sendToThread(
+              threadId,
+              "Got it -- scrapping that draft. What would you like to change?",
+            );
+            res.status(200).json({ received: true });
+            return;
+          }
+          // Ambiguous reply: remind the organizer what's pending.
+          await sendToThread(
+            threadId,
+            'Still waiting on your call -- reply "yes" to send it to the group, or tell me what to change.',
+          );
+          res.status(200).json({ received: true });
+          return;
+        }
+
+        // No pending proposal -- check for poll tiebreak override ("go with X", "pick the rooftop one").
+        if (isTiebreakOverride(event.content)) {
+          const openPoll = await getOpenPoll(organizerProject.threadId);
+          if (openPoll) {
+            const matched = matchOption(event.content, openPoll.options);
+            if (matched) {
+              // Retrieve the full option to access optionDate (matchOption returns a slimmer type).
+              const fullOption = openPoll.options.find((o) => o.id === matched.id);
+              await closePollWithWinner(openPoll.poll.id, matched.id);
+              if (openPoll.poll.planId) {
+                if (openPoll.poll.kind === "date" && fullOption?.optionDate) {
+                  await setPlanScheduledFor(openPoll.poll.planId, fullOption.optionDate);
+                } else if (openPoll.poll.kind === "choice") {
+                  await setPlanVenue(openPoll.poll.planId, matched.label);
+                }
+              }
+              await sendToThread(
+                organizerProject.threadId,
+                `Decision made -- going with "${matched.label}".`,
+                undefined,
+                "celebration",
+              );
+              await sendToThread(threadId, `Done -- locked in "${matched.label}" for the group.`);
+              res.status(200).json({ received: true });
+              return;
+            }
+          }
+        }
+
+        // Fall through: organizer sidebar turn with project context injected.
+        // The sidebar turn function skips proposal gating (organizer replies are
+        // 1:1, not group-visible) and injects the project into the system prompt.
+        scheduleAgentTurn(threadId, senderUserId, event.content, (tid, uid) =>
+          processOrganizerSidebarTurn(tid, uid, organizerProject),
+        );
         res.status(200).json({ received: true });
         return;
       }

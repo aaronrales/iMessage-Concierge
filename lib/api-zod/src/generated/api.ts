@@ -195,6 +195,8 @@ export const GetThreadResponse = zod.object({
   "type": zod.string().describe('Occasion type slug, e.g. bachelorette, milestone_birthday, reunion, trip.'),
   "honoree": zod.string().nullable(),
   "honoreeUserId": zod.number().nullable(),
+  "organizerUserId": zod.number().nullable().describe('User ID of the project organizer who receives proposal drafts and can issue tiebreak overrides.'),
+  "organizerDisplayName": zod.string().nullable().describe('Display name of the organizer, for UI convenience.'),
   "dateRangeStart": zod.coerce.date().nullable(),
   "dateRangeEnd": zod.coerce.date().nullable(),
   "status": zod.string().describe('forming, planning, active, done, or cancelled.'),

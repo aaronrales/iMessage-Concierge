@@ -192,6 +192,16 @@ export interface ProjectSummary {
   honoree: string | null;
   /** @nullable */
   honoreeUserId: number | null;
+  /**
+     * User ID of the project organizer who receives proposal drafts and can issue tiebreak overrides.
+     * @nullable
+     */
+  organizerUserId: number | null;
+  /**
+     * Display name of the organizer, for UI convenience.
+     * @nullable
+     */
+  organizerDisplayName: string | null;
   /** @nullable */
   dateRangeStart: string | null;
   /** @nullable */

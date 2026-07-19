@@ -790,7 +790,7 @@ components:
       description: >
         A multi-event occasion (bachelorette, trip, ...) grouping several
         plans in a thread. `type` and `status` are open text vocabularies.
-      required: [id, threadId, type, honoree, honoreeUserId, dateRangeStart, dateRangeEnd, status, childPlanCount, createdAt]
+      required: [id, threadId, type, honoree, honoreeUserId, organizerUserId, organizerDisplayName, dateRangeStart, dateRangeEnd, status, childPlanCount, createdAt]
       properties:
         id:
           type: integer
@@ -803,6 +803,12 @@ components:
           type: ["string", "null"]
         honoreeUserId:
           type: ["integer", "null"]
+        organizerUserId:
+          type: ["integer", "null"]
+          description: User ID of the project organizer who receives proposal drafts and can issue tiebreak overrides.
+        organizerDisplayName:
+          type: ["string", "null"]
+          description: Display name of the organizer, for UI convenience.
         dateRangeStart:
           type: ["string", "null"]
           format: date-time

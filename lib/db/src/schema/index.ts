@@ -6,6 +6,7 @@ export * from "./threadParticipants";
 export * from "./messages";
 export * from "./plans";
 export * from "./projects";
+export * from "./projectProposals";
 export * from "./polls";
 export * from "./pollOptions";
 export * from "./pollVotes";

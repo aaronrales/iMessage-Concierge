@@ -727,6 +727,12 @@ export function ThreadsPage() {
                     <span className="text-xs text-muted-foreground">
                       {formatProjectDateRange(threadDetail.project.dateRangeStart, threadDetail.project.dateRangeEnd)}
                     </span>
+                    {threadDetail.project.organizerDisplayName && (
+                      <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                        <User className="h-3 w-3 shrink-0" />
+                        <span>Organizer: <span className="font-medium text-foreground">{threadDetail.project.organizerDisplayName}</span></span>
+                      </div>
+                    )}
                     <span className="text-xs font-medium text-muted-foreground ml-auto shrink-0">
                       {threadDetail.project.childPlanCount} {threadDetail.project.childPlanCount === 1 ? "event" : "events"}
                     </span>

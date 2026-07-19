@@ -3,6 +3,7 @@ import {
   db,
   plansTable,
   projectsTable,
+  usersTable,
   PROJECT_ACTIVE_STATUSES,
   type Plan,
   type Project,
@@ -34,6 +35,8 @@ export interface CreateProjectInput {
   honoreeUserId: number | null;
   dateRangeStart: Date | null;
   dateRangeEnd: Date | null;
+  /** Defaults to the sender who triggered project creation. Optional for callers that don't have this context. */
+  organizerUserId?: number | null;
 }
 
 /** Fills fields that are still null on the existing active project; never overwrites non-null values. */
@@ -43,6 +46,7 @@ async function mergeIntoExistingProject(existing: Project, input: CreateProjectI
   if (!existing.honoreeUserId && input.honoreeUserId) patch.honoreeUserId = input.honoreeUserId;
   if (!existing.dateRangeStart && input.dateRangeStart) patch.dateRangeStart = input.dateRangeStart;
   if (!existing.dateRangeEnd && input.dateRangeEnd) patch.dateRangeEnd = input.dateRangeEnd;
+  if (!existing.organizerUserId && input.organizerUserId) patch.organizerUserId = input.organizerUserId;
   if (Object.keys(patch).length === 0) return existing;
 
   const [updated] = await db
@@ -101,6 +105,7 @@ export async function createProjectForThread(
         honoreeUserId: input.honoreeUserId,
         dateRangeStart: input.dateRangeStart,
         dateRangeEnd: input.dateRangeEnd,
+        organizerUserId: input.organizerUserId,
         status: "planning",
       })
       .returning();
@@ -132,6 +137,39 @@ export async function createProjectForThread(
   }
 
   return { project, created: true };
+}
+
+/**
+ * Returns the display name of the organizer for a project, or null if none
+ * is set. Used by the dashboard and sidebar routing logic.
+ */
+export async function getOrganizerForProject(project: Project): Promise<{ id: number; displayName: string | null; phoneNumber: string } | null> {
+  if (!project.organizerUserId) return null;
+  const [row] = await db
+    .select({ id: usersTable.id, displayName: usersTable.displayName, phoneNumber: usersTable.phoneNumber })
+    .from(usersTable)
+    .where(eq(usersTable.id, project.organizerUserId));
+  return row ?? null;
+}
+
+/**
+ * Returns the most recent active project for which `userId` is the organizer,
+ * across ALL threads. Used by the 1:1 sidebar routing to detect when an
+ * organizer DM should attach project context to the engine turn.
+ */
+export async function getActiveProjectForOrganizer(userId: number): Promise<Project | null> {
+  const rows = await db
+    .select()
+    .from(projectsTable)
+    .where(
+      and(
+        eq(projectsTable.organizerUserId, userId),
+        inArray(projectsTable.status, [...PROJECT_ACTIVE_STATUSES]),
+      ),
+    )
+    .orderBy(desc(projectsTable.createdAt))
+    .limit(1);
+  return rows[0] ?? null;
 }
 
 /** All child plans of a project, newest first. */

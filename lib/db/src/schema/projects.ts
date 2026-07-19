@@ -1,4 +1,4 @@
-import { pgTable, serial, integer, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
+import { pgTable, serial, integer, text, timestamp, uniqueIndex, jsonb } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
@@ -32,6 +32,13 @@ export const projectsTable = pgTable("projects", {
   dateRangeStart: timestamp("date_range_start", { withTimezone: true }),
   dateRangeEnd: timestamp("date_range_end", { withTimezone: true }),
   status: text("status").notNull().default("planning"),
+  /**
+   * The user who is responsible for this project — they receive all proposal
+   * drafts via private DM before anything is released to the group, and can
+   * issue tiebreak overrides from the organizer sidebar. Defaults to whoever
+   * triggered project creation (the first person to discuss the occasion).
+   */
+  organizerUserId: integer("organizer_user_id").references(() => usersTable.id, { onDelete: "set null" }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true })
     .notNull()
