@@ -31,6 +31,14 @@ export const usersTable = pgTable("users", {
   source: text("source"),
   /** Thread that caused this user to be created, when attributable. */
   originThreadId: integer("origin_thread_id").references(() => threadsTable.id, { onDelete: "set null" }),
+  /**
+   * Set to true by the "forget me" / "delete my data" command. Prevents the
+   * concierge from sending any proactive outreach (group intros, disclosure
+   * DMs, onboarding nudges) to this user. The user row is kept for referential
+   * integrity, but all stored personal data is scrubbed. The user can
+   * reactivate by texting the concierge directly.
+   */
+  doNotContact: boolean("do_not_contact").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true })
     .notNull()

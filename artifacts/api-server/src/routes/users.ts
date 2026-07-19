@@ -75,9 +75,15 @@ router.post("/users/:id/onboarding-nudge", async (req, res): Promise<void> => {
     return;
   }
 
+  // Honor the global opt-out flag set by "forget me": a user who deleted
+  // their data must never receive proactive outreach, including manual nudges.
+  if (user.doNotContact) {
+    res.json({ received: true });
+    return;
+  }
+
   // Reuses the same send-and-mark logic the scheduled scan calls, so a
-  // manual nudge and an automatic one can never both fire for the same
-  // person.
+  // manual nudge and an automatic one can never both fire for the same person.
   await sendOnboardingNudge(user.id);
   res.json({ received: true });
 });

@@ -14,6 +14,7 @@ import agentConfigRouter from "./agent-config";
 import conciergeVcfRouter from "./conciergeVcf";
 import activationRouter from "./activation";
 import operationsRouter from "./operations";
+import privacyRouter from "./privacy";
 
 const router: IRouter = Router();
 
@@ -32,5 +33,11 @@ router.use(agentConfigRouter);
 router.use(conciergeVcfRouter);
 router.use(activationRouter);
 router.use(operationsRouter);
+// Privacy policy is mounted inside the /api router (same as all other routes),
+// so it is reachable at /api/privacy externally. The Replit proxy routes /api/*
+// to this service and strips the prefix before forwarding to Express, so the
+// Express route is registered as /privacy here. The URL helper (publicUrl.ts)
+// produces https://<domain>/api/privacy accordingly.
+router.use(privacyRouter);
 
 export default router;

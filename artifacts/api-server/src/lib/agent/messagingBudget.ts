@@ -1,5 +1,5 @@
 import { and, eq, gte } from "drizzle-orm";
-import { db, proactiveMessageSendsTable, type ProactiveMessageSend } from "@workspace/db";
+import { db, proactiveMessageSendsTable, threadParticipantsTable, usersTable, type ProactiveMessageSend } from "@workspace/db";
 
 export type ProactiveMessageCategory = "occasion_reminder" | "plan_reminder" | "nudge" | "serendipity";
 
@@ -58,11 +58,32 @@ async function countSendsSince(threadId: number, since: Date, category?: Proacti
  * would exceed either the category's own frequency cap or the thread's daily
  * ceiling across all categories.
  */
+/**
+ * Returns true if any participant in the given thread has opted out via
+ * "forget me" (users.doNotContact = true). Group iMessage sends are broadcast
+ * to all members, so a single opted-out participant blocks all proactive sends
+ * to the whole thread.
+ */
+async function threadHasOptedOutParticipant(threadId: number): Promise<boolean> {
+  const rows = await db
+    .select({ doNotContact: usersTable.doNotContact })
+    .from(threadParticipantsTable)
+    .innerJoin(usersTable, eq(threadParticipantsTable.userId, usersTable.id))
+    .where(and(eq(threadParticipantsTable.threadId, threadId), eq(usersTable.doNotContact, true)))
+    .limit(1);
+  return rows.length > 0;
+}
+
 export async function canSendProactiveMessage(
   threadId: number,
   category: ProactiveMessageCategory,
 ): Promise<boolean> {
   const rule = CATEGORY_RULES[category];
+
+  // Never send proactive messages to a thread that contains an opted-out user.
+  // Group iMessage cannot target individual recipients, so the entire thread
+  // must be suppressed when any member has invoked their right to be forgotten.
+  if (await threadHasOptedOutParticipant(threadId)) return false;
 
   const [categoryCount, dailyCount] = await Promise.all([
     countSendsSince(threadId, windowStart(rule.windowDays), category),

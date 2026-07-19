@@ -36,9 +36,15 @@ export const ONBOARDING = {
       `${confirmation}. All set -- I'll factor that in whenever I'm planning something.`,
   },
   groupDm: {
-    /** Sent when a new group member gets the disclosure DM. */
-    intro: (groupContext: string) =>
-      `Hi! I help coordinate plans for ${groupContext} -- dinners, hangouts, "where should we all go". What should I call you?`,
+    /**
+     * Sent when a new group member gets the disclosure DM.
+     * `privacyUrl` is appended when available so bystanders know their options
+     * before answering any questions.
+     */
+    intro: (groupContext: string, privacyUrl?: string | null) => {
+      const base = `Hi! I help coordinate plans for ${groupContext} -- dinners, hangouts, "where should we all go". You can text me "mute you" to stay quiet or "forget me" to delete your data${privacyUrl ? ` (full details: ${privacyUrl})` : ""}. What should I call you?`;
+      return base;
+    },
     /** Sent after name is learned. */
     askPractical: (name: string) =>
       `Nice to meet you, ${name}. Any dietary needs or budget range I should know about when I'm planning for the group?`,

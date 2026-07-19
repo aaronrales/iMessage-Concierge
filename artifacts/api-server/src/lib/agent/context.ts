@@ -293,7 +293,11 @@ export async function getParticipantsNeedingDisclosure(threadId: number): Promis
     .innerJoin(usersTable, eq(threadParticipantsTable.userId, usersTable.id))
     .where(eq(threadParticipantsTable.threadId, threadId));
 
-  return rows.filter((row) => !row.disclosureSentAt).map((row) => row.user);
+  // Exclude users who have opted out via "forget me" — they must never receive
+  // proactive outreach even if they end up in a new group the concierge joins.
+  return rows
+    .filter((row) => !row.disclosureSentAt && !row.user.doNotContact)
+    .map((row) => row.user);
 }
 
 export async function markDisclosureSent(threadId: number, userId: number): Promise<void> {
@@ -301,6 +305,22 @@ export async function markDisclosureSent(threadId: number, userId: number): Prom
     .update(threadParticipantsTable)
     .set({ disclosureSentAt: new Date() })
     .where(and(eq(threadParticipantsTable.threadId, threadId), eq(threadParticipantsTable.userId, userId)));
+}
+
+/**
+ * Returns true when at least one participant in this thread has opted out via
+ * "forget me". Used to suppress whole-group proactive intros when per-recipient
+ * targeting is impossible in group iMessage -- an opted-out member must not
+ * receive the group intro even as a bystander.
+ */
+export async function threadHasOptedOutParticipant(threadId: number): Promise<boolean> {
+  const rows = await db
+    .select({ doNotContact: usersTable.doNotContact })
+    .from(threadParticipantsTable)
+    .innerJoin(usersTable, eq(threadParticipantsTable.userId, usersTable.id))
+    .where(and(eq(threadParticipantsTable.threadId, threadId), eq(usersTable.doNotContact, true)))
+    .limit(1);
+  return rows.length > 0;
 }
 
 /** Whether this group thread has ever received its one-time "I'm this group's AI concierge" intro. */
@@ -373,6 +393,8 @@ export async function getStalledOnboardingUserIds(olderThanMs: number): Promise<
         lte(threadParticipantsTable.disclosureSentAt, cutoff),
         isNull(threadParticipantsTable.onboardingNudgeSentAt),
         ne(usersTable.onboardingStatus, "completed"),
+        // Never nudge users who opted out via "forget me".
+        eq(usersTable.doNotContact, false),
       ),
     );
   return Array.from(new Set(rows.map((row) => row.userId)));

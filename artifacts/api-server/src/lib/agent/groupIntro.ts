@@ -2,10 +2,19 @@ import { openai, CHAT_MODEL } from "../openaiClient";
 import { db, messagesTable } from "@workspace/db";
 import { eq, desc } from "drizzle-orm";
 import { logger } from "../logger";
+import { privacyPolicyUrl } from "../publicUrl";
 
-/** Shown when there are no prior messages or the LLM call fails. */
-const STATIC_INTRO =
-  `Hi all -- I'm this group's AI concierge. I help plan things here (polls, bookings, reminders). Say "what do you know about me?" any time to see what I've learned, or "mute you" to have me stay quiet.`;
+/**
+ * Builds the static fallback intro, optionally appending the privacy URL.
+ * Called at runtime so the URL is resolved from the current environment.
+ */
+function buildStaticIntro(): string {
+  const privacyUrl = privacyPolicyUrl();
+  const base =
+    `Hi all -- I'm this group's AI concierge. I help plan things here (polls, bookings, reminders). ` +
+    `Say "what do you know about me?" any time, "mute you" to have me stay quiet, or "forget me" to delete your data.`;
+  return privacyUrl ? `${base} Privacy info: ${privacyUrl}` : base;
+}
 
 /**
  * Generates a context-aware intro for a newly-joined group thread.
@@ -31,7 +40,7 @@ export async function generateGroupIntroMessage(threadId: number): Promise<strin
       .limit(10);
 
     if (recentMessages.length === 0) {
-      return STATIC_INTRO;
+      return buildStaticIntro();
     }
 
     // Reverse so oldest → newest for the model.
@@ -64,14 +73,17 @@ export async function generateGroupIntroMessage(threadId: number): Promise<strin
     const text = completion.choices[0]?.message?.content?.trim() ?? "";
 
     if (!text || text.toUpperCase() === "STATIC" || text.length < 15) {
-      return STATIC_INTRO;
+      return buildStaticIntro();
     }
 
     // Append the standard capabilities line so people know how to interact.
-    const capabilities = ` Say "what do you know about me?" any time to see what I've learned, or "mute you" to stay quiet.`;
+    const privacyUrl = privacyPolicyUrl();
+    const capabilities =
+      ` Say "what do you know about me?" any time, "mute you" to stay quiet, or "forget me" to delete your data.` +
+      (privacyUrl ? ` Privacy info: ${privacyUrl}` : "");
     return text.endsWith("?") ? text + capabilities : text + "." + capabilities;
   } catch (error) {
     logger.warn({ error, threadId }, "Contextual group intro LLM call failed; falling back to static intro");
-    return STATIC_INTRO;
+    return buildStaticIntro();
   }
 }

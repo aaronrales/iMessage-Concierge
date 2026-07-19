@@ -32,6 +32,7 @@ import {
   getAllGroupThreadIds,
   getStalledOnboardingUserIds,
   markOnboardingNudgeSentForUser,
+  threadHasOptedOutParticipant,
 } from "./context";
 import { getOnboardingStep } from "./onboarding";
 import { DEFAULT_CITY, daysUntilNextSaturday, getForecastForDay } from "./weather";
@@ -207,6 +208,10 @@ async function handlePollTiebreakAnnounce({ data }: { data: PollTiebreakJobData 
   const leading = await getLeadingOption(data.pollId, open.options);
   if (!leading) return;
 
+  // Opted-out participants in the thread must not receive proactive messages
+  // even via the tiebreak path (which bypasses canSendProactiveMessage).
+  if (await threadHasOptedOutParticipant(data.threadId)) return;
+
   await announceTiebreak(data.pollId, leading.id);
   await sendToThread(
     data.threadId,
@@ -239,6 +244,9 @@ async function handlePollTiebreakLock({ data }: { data: PollTiebreakJobData }): 
       await setPlanVenue(open.poll.planId, option.label);
     }
   }
+
+  // Opted-out participants must not receive the lock-in announcement.
+  if (await threadHasOptedOutParticipant(data.threadId)) return;
 
   await sendToThread(
     data.threadId,

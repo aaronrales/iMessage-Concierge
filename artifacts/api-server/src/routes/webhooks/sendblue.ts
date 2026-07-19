@@ -13,6 +13,7 @@ import {
   loadThreadContext,
   markDisclosureSent,
   markGroupIntroduced,
+  threadHasOptedOutParticipant,
   recordMessage,
   resolveGroupParticipants,
   setParticipantMuted,
@@ -79,6 +80,7 @@ import { generateGroupIntroMessage } from "../../lib/agent/groupIntro";
 import { fetchGooglePlacesPhotos, findGooglePlaceIdByName, type VenueCarouselEntry } from "../../lib/agent/tools";
 import { logger } from "../../lib/logger";
 import { recordActivationEvent } from "../../lib/agent/activation";
+import { privacyPolicyUrl } from "../../lib/publicUrl";
 
 /** iMessage tapback text on this poll's own announcement bubbles counts as a vote (Phase 2 texting UX polish). */
 const OBJECTION_PATTERN = /\b(no|nope|wait|hold on|object|objection|don'?t lock|actually)\b/i;
@@ -557,11 +559,19 @@ router.post("/webhooks/sendblue/:secret", async (req, res): Promise<void> => {
       // new group -- said once, ever, regardless of how many people later
       // join. Distinct from the per-person welcome below.
       if (!(await hasGroupBeenIntroduced(threadId))) {
-        // Context-aware intro: if the group already has messages (the concierge
-        // was added mid-flight), read the room and open with something specific.
-        // Falls back to the static boilerplate when there's nothing to read.
-        const introMessage = await generateGroupIntroMessage(threadId);
-        await sendToThread(threadId, introMessage);
+        // Suppress the intro when any participant in this thread has opted out
+        // via "forget me". Group iMessage sends cannot be scoped to individual
+        // recipients, so the only safe option is to stay silent for the whole
+        // group. The thread is still marked introduced so this check doesn't
+        // repeat on every subsequent message.
+        const hasOptedOut = await threadHasOptedOutParticipant(threadId);
+        if (!hasOptedOut) {
+          // Context-aware intro: if the group already has messages (the concierge
+          // was added mid-flight), read the room and open with something specific.
+          // Falls back to the static boilerplate when there's nothing to read.
+          const introMessage = await generateGroupIntroMessage(threadId);
+          await sendToThread(threadId, introMessage);
+        }
         await markGroupIntroduced(threadId);
       }
 
@@ -589,7 +599,7 @@ router.post("/webhooks/sendblue/:secret", async (req, res): Promise<void> => {
           // Send contact card first so they can save the number, then the
           // structured intro that kicks off the 3-step onboarding exchange.
           await sendContactCardIfNeeded(person.id, person.phoneNumber);
-          await sendToThread(dmThread.id, ONBOARDING.groupDm.intro("the group"));
+          await sendToThread(dmThread.id, ONBOARDING.groupDm.intro("the group", privacyPolicyUrl()));
           // Mark in_progress so the webhook routes their reply to the onboarding
           // handler rather than the main LLM agent.
           await db.update(usersTable).set({ onboardingStatus: "in_progress" }).where(eq(usersTable.id, person.id));
@@ -602,9 +612,12 @@ router.post("/webhooks/sendblue/:secret", async (req, res): Promise<void> => {
     const muteCommand = detectMuteCommand(event.content);
     if (muteCommand) {
       await setParticipantMuted(threadId, senderUserId, muteCommand === "mute");
+      const privacyUrl = privacyPolicyUrl();
       await sendToThread(
         threadId,
-        muteCommand === "mute" ? "Got it, I'll stay quiet in here until you unmute me." : "I'm back -- happy to help again.",
+        muteCommand === "mute"
+          ? `Got it, I'll go quiet in this thread. Note: if you're added to another group I'm in, I'll introduce myself there too -- that's thread-specific. Text "forget me" to delete all your data and stop future introductions${privacyUrl ? `, or see ${privacyUrl} for full privacy options` : ""}.`
+          : "I'm back -- happy to help again.",
       );
       res.status(200).json({ received: true });
       return;
