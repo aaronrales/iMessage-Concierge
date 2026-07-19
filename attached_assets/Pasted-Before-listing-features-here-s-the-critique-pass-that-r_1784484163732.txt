@@ -1,0 +1,39 @@
+Before listing features, here's the critique pass that reshaped my first draft, because it changed the whole architecture of the answer: my initial instinct was to treat these as two separate roadmaps. But mapping both against your codebase, they share roughly 70% of their missing infrastructure — and the shared piece is one structural upgrade: **your Plan entity is single-event, and both wedges are multi-event projects with a responsible owner, a timeline measured in months, and money flowing through them.** A bachelorette is 6-10 linked plans plus tasks plus a ledger; a group trip is the same thing with a destination decision bolted on the front. So the right build is a shared "Project layer" plus thin wedge-specific components — not two feature sets. Three other ideas I killed or reworked along the way: an organizer web dashboard (violates your no-app premise, heavy for a solo founder → reworked into a digest DM), payment collection (money transmission is a regulatory minefield and Splitwise's 1-star pile shows the resentment risk → reworked into a ledger that never touches funds), and corpus expansion to new cities/categories (the economics that work for 500 NYC restaurants collapse across destinations → reworked into just-in-time extraction).
+
+Here's the resulting build, stack-ranked:
+
+**The shared Project layer (build first — everything else hangs off it):**
+
+**1. Project entity above Plans.** A `projects` table (type: bachelorette | milestone_birthday | reunion | trip; honoree; date range; status) with existing plans becoming children. Your Plan lifecycle, reminders, plan cards, and weather rescue all inherit instantly. This is the single most leveraged schema change available to you — without it, everything below gets bolted onto the wrong abstraction.
+
+**2. Organizer role + private sidebar.** A first-class `organizer` designation on projects, with a behavioral contract: the agent works *for* the organizer, in front of the group. Concretely: organizer-only DM channel for drafts ("here are 3 houses — which should I float to the group?"), organizer approval before group-visible proposals, and organizer override on tiebreaks. Your private-input rails already do agent→member DMs; this inverts them into a persistent agent↔organizer channel. This is also your monetization seam — the organizer is the customer, so the role needs to exist in the data model before you can charge them.
+
+**3. Playbook engine.** Occasion-type templates that instantiate a task timeline on project creation: bachelorette = lock date → collect budgets privately → book lodging → book activities → final headcount → week-of logistics, each with lead times driving your existing pg-boss scheduler. This converts your scheduler from reactive (nudge stalled polls) to *program management* (know what's supposed to happen next month and drive toward it). It's the difference between a chatbot and an agent that runs a six-month project — and it's mostly config plus scheduler jobs, not new infrastructure.
+
+**4. Money ledger — track, never touch.** Per-project ledger: estimated cost per person (from lodging/activity links + headcount math), who's committed, who's paid whom, Venmo/Zelle deep links with pre-filled amounts, and payment nudges through your messaging-budget governor. Your private budget aggregation already handles the awkward front half (what can people afford, collected 1:1); this adds the back half (did they actually pay the organizer back — the maid-of-honor-fronting-money-on-her-credit-card problem, which the research showed is where the real suffering lives). No funds custody, ever.
+
+**5. Task + assignment tracking.** Lightweight tasks on projects (title, owner, due date), assignable to members ("Jake owns the party bus"), with deadline nudges. Unglamorous, but "the organizer carries every open loop in her head" is precisely the mental-load pain you're selling relief from — the agent has to be able to *hold the loops*.
+
+**Milestone-specific components:**
+
+**6. Multi-day itinerary artifact.** Extend your plan-card renderer to a multi-stop, multi-day itinerary card (and a print-friendly version). For bachelorettes this is half the perceived product — organizers currently hand-build these in Canva. You have the rendering pipeline; this is a new template on it.
+
+**7. Commitment mechanics.** Soft-yes → hard-yes escalation with a headcount lock deadline ("locking the house at 8 people Friday — confirm by then or you're out of the split"), visible to the group. This is your anti-flaking answer, and it works precisely because the *agent* is the enforcer — the organizer never has to be the bad guy chasing stragglers. Reuses polls + scheduler + budget governor.
+
+**8. Guest-of-honor exclusion (surprise mode).** Per-project visibility flag excluding the honoree from project threads and proactive messages, with coordination running in a parallel thread or DMs. Your group-creation-by-text feature makes standing up the shadow thread trivial. Needed for surprise birthdays; optional for bachelorettes (brides are usually in the chat, so make it a toggle, not an assumption).
+
+**Trip-specific components:**
+
+**9. Destination decision support.** A decision stage *before* venue logic: destination shortlists framed by collected budgets and date windows ("for your $800/person budget and March dates: Austin, Nashville, or Miami"), run through your existing poll + tiebreak machinery. Explicitly do not build flight search — rough cost context via web search is enough to frame the vote.
+
+**10. Just-in-time destination knowledge.** When a project lands on Nashville, run your extraction pipeline ad hoc: pull top venues/activities via Places + web search, extract your attribute schema on the fly, cache per-destination with provisional-tier hedging. The NYC corpus stays your deep home-market moat; JIT extraction is how trips don't break it. This reuses `extraction.ts` nearly wholesale — the new part is triggering and caching per-project rather than via population runs.
+
+**11. Lodging + travel coordination.** Airbnb/VRBO/hotel deep links with per-person split math feeding the ledger (extends `bookingLinks.ts`), plus an arrival matrix — flight details collected via private DM rails, assembled into "who lands when" for the group. Collection and assembly only; no travel APIs.
+
+**Cross-cutting, last but load-bearing:**
+
+**12. Organizer digest.** A weekly (daily in crunch week) DM: what's decided, what's stalled, who hasn't paid, what's next. This is the reworked "dashboard" — it's the recurring moment the organizer *feels* the labor being carried, which makes it your retention and willingness-to-pay engine more than any single feature. Pure assembly of state you already track.
+
+Sequencing note that matters for your validation plan: **items 1-4 are enough to run the concierge-for-hire smoke test** from the research doc — you don't need 5-12 to charge ten real organizers $50-150, because you can personally backfill the gaps manually and let demand tell you which of the remaining items to build first. I'd resist building 6-12 until at least three organizers have paid.
+
+Want me to turn 1-4 into concrete schema migrations and scheduler job specs, so the smoke test has its minimum infrastructure defined?
