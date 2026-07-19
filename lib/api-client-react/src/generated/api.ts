@@ -23,8 +23,10 @@ import type {
   ActivationSummary,
   Booking,
   CreateVenuePopulationRunRequest,
+  DeliveryHealthSummary,
   ErrorResponse,
   GetActivationSummaryParams,
+  GetDeliveryHealthParams,
   HealthStatus,
   ListBookingsParams,
   ListVenuesParams,
@@ -1347,6 +1349,91 @@ export const useRejectVenue = <TError = ErrorType<ErrorResponse>,
       > => {
       return useMutation(getRejectVenueMutationOptions(options));
     }
+
+export const getGetDeliveryHealthUrl = (params?: GetDeliveryHealthParams,) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value))
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0 ? `/api/operations/delivery-health?${stringifiedParams}` : `/api/operations/delivery-health`
+}
+
+/**
+ * Aggregates all outbound delivery-log rows from the last 24 hours. Success = DELIVERED or SENT; failure = ERROR or FAILED. BLOCKED and QUEUED rows are excluded from rate calculations. Per-thread breakdown sorts by successRate ascending so the worst threads surface first.
+ * @summary Rolling 24-hour delivery health summary
+ */
+export const getDeliveryHealth = async (params?: GetDeliveryHealthParams, options?: RequestInit): Promise<DeliveryHealthSummary> => {
+
+  return customFetch<DeliveryHealthSummary>(getGetDeliveryHealthUrl(params),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetDeliveryHealthQueryKey = (params?: GetDeliveryHealthParams,) => {
+    return [
+    `/api/operations/delivery-health`, ...(params ? [params] : [])
+    ] as const;
+    }
+
+
+export const getGetDeliveryHealthQueryOptions = <TData = Awaited<ReturnType<typeof getDeliveryHealth>>, TError = ErrorType<unknown>>(params?: GetDeliveryHealthParams, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getDeliveryHealth>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetDeliveryHealthQueryKey(params);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getDeliveryHealth>>> = ({ signal }) => getDeliveryHealth(params, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getDeliveryHealth>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type GetDeliveryHealthQueryResult = NonNullable<Awaited<ReturnType<typeof getDeliveryHealth>>>
+export type GetDeliveryHealthQueryError = ErrorType<unknown>
+
+
+/**
+ * @summary Rolling 24-hour delivery health summary
+ */
+
+export function useGetDeliveryHealth<TData = Awaited<ReturnType<typeof getDeliveryHealth>>, TError = ErrorType<unknown>>(
+ params?: GetDeliveryHealthParams, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getDeliveryHealth>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getGetDeliveryHealthQueryOptions(params,options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
 
 export const getGetActivationSummaryUrl = (params?: GetActivationSummaryParams,) => {
   const normalizedParams = new URLSearchParams();

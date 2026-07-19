@@ -1,10 +1,11 @@
 import React, { useState } from "react";
-import { useListBookings, useApproveBooking, useRejectBooking, getListBookingsQueryKey, useGetActivationSummary } from "@workspace/api-client-react";
+import { useListBookings, useApproveBooking, useRejectBooking, getListBookingsQueryKey, useGetActivationSummary, useGetDeliveryHealth } from "@workspace/api-client-react";
 import { useQuery } from "@tanstack/react-query";
 import { format } from "date-fns";
 import {
   Check, X, Clock, CalendarClock, Building2, MapPin, ChevronRight,
   AlertTriangle, Ban, RefreshCw, CheckSquare, TrendingUp, Users, MessageCircle,
+  Signal, ShieldAlert,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -75,6 +76,111 @@ function ActivationCard() {
             </p>
           </div>
         </div>
+      )}
+    </div>
+  );
+}
+
+// ── Delivery health card ───────────────────────────────────────────────────
+
+const SUCCESS_THRESHOLD_AMBER = 80;
+const SUCCESS_THRESHOLD_RED = 50;
+
+function rateClass(rate: number | null): string {
+  if (rate === null) return "text-muted-foreground";
+  if (rate < SUCCESS_THRESHOLD_RED) return "text-destructive font-semibold";
+  if (rate < SUCCESS_THRESHOLD_AMBER) return "text-orange-500 font-semibold";
+  return "text-emerald-600 font-semibold";
+}
+
+function rowFlagClass(rate: number | null): string {
+  if (rate === null) return "";
+  if (rate < SUCCESS_THRESHOLD_RED) return "bg-destructive/5 border-l-2 border-l-destructive";
+  if (rate < SUCCESS_THRESHOLD_AMBER) return "bg-orange-500/5 border-l-2 border-l-orange-400";
+  return "";
+}
+
+function DeliveryHealthCard() {
+  const { data, isLoading } = useGetDeliveryHealth({ windowHours: 24 });
+
+  const overallRate = data?.successRate;
+
+  return (
+    <div className="rounded-xl border border-border bg-card p-4 mb-4 shrink-0">
+      <div className="flex items-center gap-2 mb-3">
+        <Signal className="h-4 w-4 text-primary" />
+        <h2 className="text-sm font-semibold">Delivery Health — last 24h</h2>
+        {!isLoading && overallRate !== undefined && overallRate !== null && overallRate < SUCCESS_THRESHOLD_AMBER && (
+          <span className="flex items-center gap-1 text-[10px] font-semibold text-orange-600 bg-orange-500/10 px-2 py-0.5 rounded-full border border-orange-400/30">
+            <ShieldAlert className="h-3 w-3" /> Below threshold
+          </span>
+        )}
+      </div>
+
+      {isLoading ? (
+        <div className="grid grid-cols-3 gap-3">
+          {[...Array(3)].map((_, i) => (
+            <div key={i} className="h-14 rounded-lg bg-muted/50 animate-pulse" />
+          ))}
+        </div>
+      ) : !data ? (
+        <p className="text-xs text-muted-foreground">Could not load delivery health data.</p>
+      ) : (
+        <>
+          {/* Summary tiles */}
+          <div className="grid grid-cols-3 gap-3 mb-4">
+            <div className="rounded-lg bg-muted/40 px-3 py-2.5">
+              <span className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium block mb-1">Sent</span>
+              <p className="text-2xl font-bold leading-none">{data.totalSent}</p>
+            </div>
+            <div className="rounded-lg bg-muted/40 px-3 py-2.5">
+              <span className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium block mb-1">Delivered</span>
+              <p className="text-2xl font-bold leading-none">{data.successCount}</p>
+            </div>
+            <div className="rounded-lg bg-muted/40 px-3 py-2.5">
+              <span className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium block mb-1">Success rate</span>
+              <p className={`text-2xl leading-none ${rateClass(overallRate ?? null)}`}>
+                {overallRate !== null ? `${overallRate}%` : "—"}
+              </p>
+            </div>
+          </div>
+
+          {/* Per-thread breakdown */}
+          {data.byThread.length > 0 && (
+            <div className="rounded-lg border border-border overflow-hidden">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-border bg-muted/30">
+                    {["Thread", "Sent", "Delivered", "Rate"].map((h) => (
+                      <th key={h} className="px-3 py-2 text-left text-[10px] font-medium text-muted-foreground uppercase tracking-wide">{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.byThread.map((row, i) => (
+                    <tr
+                      key={row.threadId}
+                      className={`${i < data.byThread.length - 1 ? "border-b border-border/50" : ""} hover:bg-muted/20 transition-colors ${rowFlagClass(row.successRate ?? null)}`}
+                    >
+                      <td className="px-3 py-2 text-xs font-medium">
+                        {row.threadTitle ?? <span className="italic text-muted-foreground">Thread {row.threadId}</span>}
+                      </td>
+                      <td className="px-3 py-2 text-xs tabular-nums">{row.sentCount}</td>
+                      <td className="px-3 py-2 text-xs tabular-nums">{row.successCount}</td>
+                      <td className={`px-3 py-2 text-xs tabular-nums ${rateClass(row.successRate ?? null)}`}>
+                        {row.successRate !== null ? `${row.successRate}%` : "—"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {data.byThread.length === 0 && data.totalSent === 0 && (
+            <p className="text-xs text-muted-foreground text-center py-3">No outbound messages in the last 24h.</p>
+          )}
+        </>
       )}
     </div>
   );
@@ -461,6 +567,7 @@ export function OperationsPage() {
 
       <div className="flex-1 p-8 overflow-hidden flex flex-col max-w-6xl mx-auto w-full">
         <ActivationCard />
+        <DeliveryHealthCard />
         <div className="flex items-center gap-1 border-b border-border mb-6 shrink-0">
           <button
             onClick={() => setActiveTab("bookings")}

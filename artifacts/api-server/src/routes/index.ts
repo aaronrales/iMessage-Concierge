@@ -13,6 +13,7 @@ import turnsRouter from "./turns";
 import agentConfigRouter from "./agent-config";
 import conciergeVcfRouter from "./conciergeVcf";
 import activationRouter from "./activation";
+import operationsRouter from "./operations";
 
 const router: IRouter = Router();
 
@@ -30,5 +31,6 @@ router.use(turnsRouter);
 router.use(agentConfigRouter);
 router.use(conciergeVcfRouter);
 router.use(activationRouter);
+router.use(operationsRouter);
 
 export default router;

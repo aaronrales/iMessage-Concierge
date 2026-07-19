@@ -364,6 +364,40 @@ export interface VenuePopulationRun {
   createdAt: string;
 }
 
+export interface DeliveryHealthByThread {
+  threadId: number;
+  /**
+     * Group title, primary phone number, or null for untitled threads.
+     * @nullable
+     */
+  threadTitle?: string | null;
+  /** Completed delivery attempts (DELIVERED + SENT + ERROR + FAILED) in the window. */
+  sentCount: number;
+  /** Successful deliveries (DELIVERED + SENT) in the window. */
+  successCount: number;
+  /**
+     * Percent 0–100 (one decimal). Null when sentCount is 0.
+     * @nullable
+     */
+  successRate?: number | null;
+}
+
+export interface DeliveryHealthSummary {
+  /** The lookback window used to compute this summary. */
+  windowHours: number;
+  /** Total completed delivery attempts across all threads. */
+  totalSent: number;
+  /** Total successful deliveries (DELIVERED or SENT). */
+  successCount: number;
+  /**
+     * Percent 0–100 (one decimal). Null when totalSent is 0.
+     * @nullable
+     */
+  successRate: number | null;
+  /** Per-thread breakdown sorted by successRate ascending (worst first). */
+  byThread: DeliveryHealthByThread[];
+}
+
 export interface ActivationSummaryBySource {
   /** Users who started via a cold 1:1 DM. */
   coldDm: number;
@@ -416,6 +450,14 @@ status?: BookingStatus;
 
 export type ListVenuesParams = {
 tier?: VenueTier;
+};
+
+export type GetDeliveryHealthParams = {
+/**
+ * @minimum 1
+ * @maximum 168
+ */
+windowHours?: number;
 };
 
 export type GetActivationSummaryParams = {

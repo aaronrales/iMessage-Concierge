@@ -482,6 +482,34 @@ export const RejectVenueResponse = zod.object({
 
 
 /**
+ * Aggregates all outbound delivery-log rows from the last 24 hours. Success = DELIVERED or SENT; failure = ERROR or FAILED. BLOCKED and QUEUED rows are excluded from rate calculations. Per-thread breakdown sorts by successRate ascending so the worst threads surface first.
+ * @summary Rolling 24-hour delivery health summary
+ */
+export const getDeliveryHealthQueryWindowHoursDefault = 24;
+export const getDeliveryHealthQueryWindowHoursMax = 168;
+
+
+
+export const GetDeliveryHealthQueryParams = zod.object({
+  "windowHours": zod.coerce.number().min(1).max(getDeliveryHealthQueryWindowHoursMax).default(getDeliveryHealthQueryWindowHoursDefault)
+})
+
+export const GetDeliveryHealthResponse = zod.object({
+  "windowHours": zod.number().describe('The lookback window used to compute this summary.'),
+  "totalSent": zod.number().describe('Total completed delivery attempts across all threads.'),
+  "successCount": zod.number().describe('Total successful deliveries (DELIVERED or SENT).'),
+  "successRate": zod.number().nullable().describe('Percent 0–100 (one decimal). Null when totalSent is 0.'),
+  "byThread": zod.array(zod.object({
+  "threadId": zod.number(),
+  "threadTitle": zod.string().nullish().describe('Group title, primary phone number, or null for untitled threads.'),
+  "sentCount": zod.number().describe('Completed delivery attempts (DELIVERED + SENT + ERROR + FAILED) in the window.'),
+  "successCount": zod.number().describe('Successful deliveries (DELIVERED + SENT) in the window.'),
+  "successRate": zod.number().nullish().describe('Percent 0–100 (one decimal). Null when sentCount is 0.')
+})).describe('Per-thread breakdown sorted by successRate ascending (worst first).')
+})
+
+
+/**
  * Returns invite counts split by acquisition source and cohort-based conversion to onboarding_complete for the last N days (default 7). Conversion is among users *created* in the window, not a global ratio.
  * @summary Activation funnel summary for the ops dashboard
  */

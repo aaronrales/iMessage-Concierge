@@ -20,6 +20,8 @@ tags:
     description: Draft bookings awaiting human approval
   - name: activation
     description: Activation funnel metrics
+  - name: operations
+    description: Operational health and monitoring metrics
 paths:
   /healthz:
     get:
@@ -402,6 +404,34 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+
+  /operations/delivery-health:
+    get:
+      operationId: getDeliveryHealth
+      tags: [operations]
+      summary: Rolling 24-hour delivery health summary
+      description: >
+        Aggregates all outbound delivery-log rows from the last 24 hours.
+        Success = DELIVERED or SENT; failure = ERROR or FAILED.
+        BLOCKED and QUEUED rows are excluded from rate calculations.
+        Per-thread breakdown sorts by successRate ascending so the worst
+        threads surface first.
+      parameters:
+        - name: windowHours
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 168
+            default: 24
+      responses:
+        "200":
+          description: Delivery health summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeliveryHealthSummary"
 
   /activation-summary:
     get:
@@ -999,6 +1029,47 @@ components:
         createdAt:
           type: string
           format: date-time
+
+    DeliveryHealthByThread:
+      type: object
+      required: [threadId, sentCount, successCount]
+      properties:
+        threadId:
+          type: integer
+        threadTitle:
+          type: ["string", "null"]
+          description: Group title, primary phone number, or null for untitled threads.
+        sentCount:
+          type: integer
+          description: Completed delivery attempts (DELIVERED + SENT + ERROR + FAILED) in the window.
+        successCount:
+          type: integer
+          description: Successful deliveries (DELIVERED + SENT) in the window.
+        successRate:
+          type: ["number", "null"]
+          description: Percent 0–100 (one decimal). Null when sentCount is 0.
+
+    DeliveryHealthSummary:
+      type: object
+      required: [windowHours, totalSent, successCount, successRate, byThread]
+      properties:
+        windowHours:
+          type: integer
+          description: The lookback window used to compute this summary.
+        totalSent:
+          type: integer
+          description: Total completed delivery attempts across all threads.
+        successCount:
+          type: integer
+          description: Total successful deliveries (DELIVERED or SENT).
+        successRate:
+          type: ["number", "null"]
+          description: Percent 0–100 (one decimal). Null when totalSent is 0.
+        byThread:
+          type: array
+          description: Per-thread breakdown sorted by successRate ascending (worst first).
+          items:
+            $ref: "#/components/schemas/DeliveryHealthByThread"
 
     ActivationSummaryBySource:
       type: object
