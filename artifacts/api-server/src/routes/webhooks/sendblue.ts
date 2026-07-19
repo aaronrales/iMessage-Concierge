@@ -63,6 +63,7 @@ import {
   getActiveProjectForOrganizer,
   getOrganizerForProject,
 } from "../../lib/agent/projects";
+import { instantiateTimeline, recomputeDueDates } from "../../lib/agent/projectTimeline";
 import {
   createProposal,
   getOldestPendingProposal,
@@ -363,6 +364,14 @@ async function processAgentTurn(threadId: number, senderUserId: number): Promise
       { threadId, projectId: project.id, type: project.type, created },
       created ? "Project created from conversation" : "Project details merged into existing active project",
     );
+
+    // Timeline: instantiate steps on first creation; recompute due dates when
+    // the date range is updated via a subsequent conversation turn.
+    if (created) {
+      await instantiateTimeline(project);
+    } else if (result.project.dateRangeStart || result.project.dateRangeEnd) {
+      await recomputeDueDates(project);
+    }
   }
 
   // ── Organizer approval gate ─────────────────────────────────────────────────

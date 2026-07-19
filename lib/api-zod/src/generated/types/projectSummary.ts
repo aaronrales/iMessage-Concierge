@@ -5,6 +5,7 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+import type { ProjectSummaryTimeline } from './projectSummaryTimeline';
 
 /**
  * A multi-event occasion (bachelorette, trip, ...) grouping several plans in a thread. `type` and `status` are open text vocabularies.
@@ -35,5 +36,10 @@ export interface ProjectSummary {
   /** forming, planning, active, done, or cancelled. */
   status: string;
   childPlanCount: number;
+  /**
+     * Instantiated playbook timeline for this project, if any.
+     * @nullable
+     */
+  timeline?: ProjectSummaryTimeline;
   createdAt: Date;
 }

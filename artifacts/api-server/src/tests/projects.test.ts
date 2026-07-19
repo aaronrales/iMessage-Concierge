@@ -192,7 +192,7 @@ describe("parseProjectField", () => {
 // ── prompt summary formatting ───────────────────────────────────────────────
 
 describe("buildProjectPromptSummary", () => {
-  it("describes type, honoree, range, and each child plan", () => {
+  it("describes type, honoree, range, and each child plan", async () => {
     const project = makeProject({
       type: "milestone_birthday",
       honoree: "Sarah",
@@ -203,7 +203,7 @@ describe("buildProjectPromptSummary", () => {
       makePlan({ title: "Birthday dinner", venue: "Lilia", scheduledFor: new Date("2026-06-06T23:00:00Z"), status: "confirmed" }),
       makePlan({ title: "Spa day", status: "proposed" }),
     ];
-    const summary = buildProjectPromptSummary(project, children);
+    const summary = await buildProjectPromptSummary(project, children);
     expect(summary).toContain("milestone birthday");
     expect(summary).toContain("for Sarah");
     expect(summary).toContain("2026-06-05 to 2026-06-08");
@@ -212,8 +212,8 @@ describe("buildProjectPromptSummary", () => {
     expect(summary).toContain('Do not set "project" again');
   });
 
-  it("handles a project with no events and no dates yet", () => {
-    const summary = buildProjectPromptSummary(makeProject({ type: "trip" }), []);
+  it("handles a project with no events and no dates yet", async () => {
+    const summary = await buildProjectPromptSummary(makeProject({ type: "trip" }), []);
     expect(summary).toContain("trip");
     expect(summary).toContain("dates not settled yet");
     expect(summary).toContain("No events created for it yet");

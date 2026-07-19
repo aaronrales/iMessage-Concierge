@@ -820,6 +820,27 @@ components:
           description: forming, planning, active, done, or cancelled.
         childPlanCount:
           type: integer
+        timeline:
+          type: ["object", "null"]
+          description: Instantiated playbook timeline for this project, if any.
+          required: [total, done, nextStep]
+          properties:
+            total:
+              type: integer
+              description: Total number of timeline steps.
+            done:
+              type: integer
+              description: Number of steps that are done or skipped.
+            nextStep:
+              type: ["object", "null"]
+              description: The next pending step, ordered by due date.
+              required: [title, dueAt]
+              properties:
+                title:
+                  type: string
+                dueAt:
+                  type: ["string", "null"]
+                  format: date-time
         createdAt:
           type: string
           format: date-time

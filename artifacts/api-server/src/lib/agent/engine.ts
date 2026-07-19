@@ -287,7 +287,7 @@ export async function runAgentTurn(context: ThreadContext, currentUserId: number
   // model plans events inside it instead of treating each one as a one-off.
   const activeProject = await getActiveProject(context.thread.id);
   const projectSummary = activeProject
-    ? buildProjectPromptSummary(activeProject, await getProjectChildPlans(activeProject.id))
+    ? await buildProjectPromptSummary(activeProject, await getProjectChildPlans(activeProject.id))
     : null;
 
   const situational = [

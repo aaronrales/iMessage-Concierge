@@ -181,6 +181,32 @@ export interface PollSummary {
 }
 
 /**
+ * The next pending step, ordered by due date.
+ * @nullable
+ */
+export type ProjectSummaryTimelineNextStep = {
+  title: string;
+  /** @nullable */
+  dueAt: string | null;
+} | null;
+
+/**
+ * Instantiated playbook timeline for this project, if any.
+ * @nullable
+ */
+export type ProjectSummaryTimeline = {
+  /** Total number of timeline steps. */
+  total: number;
+  /** Number of steps that are done or skipped. */
+  done: number;
+  /**
+     * The next pending step, ordered by due date.
+     * @nullable
+     */
+  nextStep: ProjectSummaryTimelineNextStep;
+} | null;
+
+/**
  * A multi-event occasion (bachelorette, trip, ...) grouping several plans in a thread. `type` and `status` are open text vocabularies.
  */
 export interface ProjectSummary {
@@ -209,6 +235,11 @@ export interface ProjectSummary {
   /** forming, planning, active, done, or cancelled. */
   status: string;
   childPlanCount: number;
+  /**
+     * Instantiated playbook timeline for this project, if any.
+     * @nullable
+     */
+  timeline?: ProjectSummaryTimeline;
   createdAt: string;
 }
 

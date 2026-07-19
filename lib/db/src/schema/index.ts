@@ -7,6 +7,7 @@ export * from "./messages";
 export * from "./plans";
 export * from "./projects";
 export * from "./projectProposals";
+export * from "./projectTasks";
 export * from "./polls";
 export * from "./pollOptions";
 export * from "./pollVotes";

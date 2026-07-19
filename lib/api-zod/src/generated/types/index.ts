@@ -31,6 +31,8 @@ export * from './pollSummary';
 export * from './pollSummaryStatus';
 export * from './profile';
 export * from './projectSummary';
+export * from './projectSummaryTimeline';
+export * from './projectSummaryTimelineNextStep';
 export * from './sendblueWebhookEvent';
 export * from './threadDetail';
 export * from './threadParticipantSummary';

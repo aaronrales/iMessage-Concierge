@@ -8,6 +8,7 @@ import {
   type Plan,
   type Project,
 } from "@workspace/db";
+import { buildTimelinePromptSection } from "./projectTimeline";
 
 /**
  * Projects: the grouping layer above plans for multi-event occasions
@@ -256,7 +257,7 @@ export function parseProjectField(raw: unknown): {
  * as an isolated one-off. Child plans are listed so it knows what is already
  * in motion and doesn't re-propose covered events.
  */
-export function buildProjectPromptSummary(project: Project, childPlans: Plan[]): string {
+export async function buildProjectPromptSummary(project: Project, childPlans: Plan[]): Promise<string> {
   const fmt = (d: Date) => d.toISOString().slice(0, 10);
   const range =
     project.dateRangeStart && project.dateRangeEnd
@@ -281,8 +282,11 @@ export function buildProjectPromptSummary(project: Project, childPlans: Plan[]):
 
   const eventsBlock = lines.length > 0 ? `\nEvents in this project so far:\n${lines.join("\n")}` : "\nNo events created for it yet.";
 
+  const timelineSection = await buildTimelinePromptSection(project.id);
+
   return (
     `${header}${eventsBlock}\n` +
+    (timelineSection ? `\n${timelineSection}\n` : "") +
     `Plan within this project frame: multiple events can be in motion at once, so suggesting or coordinating a new event is fine even while another is undecided. Do not set "project" again for this occasion -- it already exists.`
   );
 }

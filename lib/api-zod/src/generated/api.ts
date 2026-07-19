@@ -201,6 +201,14 @@ export const GetThreadResponse = zod.object({
   "dateRangeEnd": zod.coerce.date().nullable(),
   "status": zod.string().describe('forming, planning, active, done, or cancelled.'),
   "childPlanCount": zod.number(),
+  "timeline": zod.object({
+  "total": zod.number().describe('Total number of timeline steps.'),
+  "done": zod.number().describe('Number of steps that are done or skipped.'),
+  "nextStep": zod.object({
+  "title": zod.string(),
+  "dueAt": zod.coerce.date().nullable()
+}).nullable().describe('The next pending step, ordered by due date.')
+}).nullish().describe('Instantiated playbook timeline for this project, if any.'),
   "createdAt": zod.coerce.date()
 }).describe('A multi-event occasion (bachelorette, trip, ...) grouping several plans in a thread. `type` and `status` are open text vocabularies.\n'),zod.null()]).describe('The thread\'s active multi-event project, or null when none is in flight.'),
   "participants": zod.array(zod.object({

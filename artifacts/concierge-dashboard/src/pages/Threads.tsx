@@ -733,6 +733,33 @@ export function ThreadsPage() {
                         <span>Organizer: <span className="font-medium text-foreground">{threadDetail.project.organizerDisplayName}</span></span>
                       </div>
                     )}
+                    {threadDetail.project.timeline && (() => {
+                      const tl = threadDetail.project!.timeline!;
+                      return (
+                        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                          <div className="flex items-center gap-1.5">
+                            <div className="flex gap-0.5">
+                              {Array.from({ length: tl.total }).map((_, i) => (
+                                <div
+                                  key={i}
+                                  className={`h-1.5 w-4 rounded-full ${i < tl.done ? "bg-primary" : "bg-muted-foreground/20"}`}
+                                />
+                              ))}
+                            </div>
+                            <span className="font-medium text-foreground">{tl.done}/{tl.total}</span>
+                            <span>steps</span>
+                          </div>
+                          {tl.nextStep && (
+                            <span className="text-muted-foreground/70">
+                              · Next: {tl.nextStep.title}
+                              {tl.nextStep.dueAt && (
+                                <span className="ml-1">({format(new Date(tl.nextStep.dueAt), "MMM d")})</span>
+                              )}
+                            </span>
+                          )}
+                        </div>
+                      );
+                    })()}
                     <span className="text-xs font-medium text-muted-foreground ml-auto shrink-0">
                       {threadDetail.project.childPlanCount} {threadDetail.project.childPlanCount === 1 ? "event" : "events"}
                     </span>

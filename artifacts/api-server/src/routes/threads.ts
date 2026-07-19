@@ -18,6 +18,7 @@ import {
   type Project,
 } from "@workspace/db";
 import { GetThreadParams, GetThreadResponse, ListThreadsResponse } from "@workspace/api-zod";
+import { getTimelineSummary } from "../lib/agent/projectTimeline";
 
 const router: IRouter = Router();
 
@@ -177,7 +178,7 @@ router.get("/threads/:id", async (req, res): Promise<void> => {
 /** The thread's active project with its child plan count, shaped for the ThreadDetail response. */
 async function getActiveProjectSummary(
   threadId: number,
-): Promise<(Omit<Project, "updatedAt"> & { childPlanCount: number; organizerDisplayName: string | null }) | null> {
+): Promise<(Omit<Project, "updatedAt"> & { childPlanCount: number; organizerDisplayName: string | null; timeline: { total: number; done: number; nextStep: { title: string; dueAt: Date | null } | null } | null }) | null> {
   const [project] = await db
     .select()
     .from(projectsTable)
@@ -186,7 +187,7 @@ async function getActiveProjectSummary(
     .limit(1);
   if (!project) return null;
 
-  const [[childCount], organizerRow] = await Promise.all([
+  const [[childCount], organizerRow, timeline] = await Promise.all([
     db.select({ value: count() }).from(plansTable).where(eq(plansTable.projectId, project.id)),
     project.organizerUserId
       ? db
@@ -195,6 +196,7 @@ async function getActiveProjectSummary(
           .where(eq(usersTable.id, project.organizerUserId))
           .then((rows) => rows[0] ?? null)
       : Promise.resolve(null),
+    getTimelineSummary(project.id),
   ]);
 
   return {
@@ -209,6 +211,7 @@ async function getActiveProjectSummary(
     dateRangeEnd: project.dateRangeEnd,
     status: project.status,
     childPlanCount: childCount?.value ?? 0,
+    timeline,
     createdAt: project.createdAt,
   };
 }

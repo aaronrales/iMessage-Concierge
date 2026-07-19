@@ -1,6 +1,6 @@
 import { PgBoss } from "pg-boss";
-import { eq } from "drizzle-orm";
-import { db, profilesTable, threadParticipantsTable, threadsTable, usersTable } from "@workspace/db";
+import { eq, inArray } from "drizzle-orm";
+import { db, profilesTable, projectsTable, threadParticipantsTable, threadsTable, usersTable, PROJECT_ACTIVE_STATUSES } from "@workspace/db";
 import { logger } from "../logger";
 import { canSendProactiveMessage, recordProactiveSend } from "./messagingBudget";
 import { sendToThread } from "./delivery";
@@ -34,6 +34,14 @@ import {
   markOnboardingNudgeSentForUser,
   threadHasOptedOutParticipant,
 } from "./context";
+import {
+  autoCompleteSteps,
+  getActiveProjectsWithTimelines,
+  getNextActionableStep,
+  markStepNotified,
+} from "./projectTimeline";
+import { getActiveProject, getOrganizerForProject } from "./projects";
+import { buildTimelineNudgeMessage } from "./playbooks";
 import { getOnboardingStep } from "./onboarding";
 import { DEFAULT_CITY, daysUntilNextSaturday, getForecastForDay } from "./weather";
 import { ensureRevalidationConfigSeeded, runRevalidationScan } from "./venueCorpus/revalidation";
@@ -50,6 +58,7 @@ const QUEUES = {
   onboardingNudge: "onboarding-nudge",
   venueRevalidationScan: "venue-revalidation-scan",
   weatherRescueScan: "weather-rescue-scan",
+  projectTimelineScan: "project-timeline-scan",
 } as const;
 
 const NON_VOTER_NUDGE_DELAY_SECONDS = 4 * 60 * 60; // 4 hours after a poll opens
@@ -80,6 +89,11 @@ const VENUE_REVALIDATION_SCAN_CRON = "0 9 * * *"; // daily at 09:00 local
 const WEATHER_RESCUE_SCAN_CRON = "0 8 * * *"; // daily at 08:00 local
 const WEATHER_RESCUE_WINDOW_MS = 48 * 60 * 60 * 1000; // plans in next 48 hours
 const WEATHER_RESCUE_PRECIPITATION_THRESHOLD = 60; // % probability of precipitation
+// Timeline scan: runs daily at 9am local. Finds steps entering their 14-day
+// lead window, auto-completes steps whose trigger condition is met, and sends
+// a nudge to the organizer's sidebar DM for actionable steps.
+const PROJECT_TIMELINE_SCAN_CRON = "0 9 * * *"; // daily at 09:00 local
+const TIMELINE_NUDGE_LOOKAHEAD_MS = 14 * 24 * 60 * 60 * 1000; // 14-day lead window
 // A group has to have gone quiet for a real stretch before an unprompted
 // suggestion is worth the interruption -- this is what keeps it feeling
 // rare and well-timed instead of naggy.
@@ -558,6 +572,78 @@ async function handleVenueRevalidationScan(): Promise<void> {
   }
 }
 
+/**
+ * Daily scan: for every active project with an instantiated timeline,
+ * auto-completes steps whose trigger condition is met, then nudges the
+ * organizer's sidebar DM for any step that has entered its 14-day lead
+ * window and hasn't been notified yet.
+ *
+ * Nudges flow through the messaging-budget governor under `timeline_nudge`
+ * (2 per 3 days per thread) and are clamped to quiet hours.
+ *
+ * Design note: the scheduler sends to the ORGANIZER's 1:1 thread, not the
+ * group thread, so the group budget is unaffected. The organizer thread id
+ * is found by looking up the organizer's phone via getOrganizerForProject
+ * and calling findOrCreateDirectThread.
+ */
+async function handleProjectTimelineScan(): Promise<void> {
+  const projectIds = await getActiveProjectsWithTimelines();
+  if (projectIds.length === 0) return;
+
+  logger.info({ count: projectIds.length }, "Project timeline scan: checking projects");
+
+  for (const projectId of projectIds) {
+    try {
+      const [proj] = await db
+        .select()
+        .from(projectsTable)
+        .where(eq(projectsTable.id, projectId));
+      if (!proj) continue;
+      if (!PROJECT_ACTIVE_STATUSES.includes(proj.status as typeof PROJECT_ACTIVE_STATUSES[number])) continue;
+
+      // 1. Auto-complete steps whose trigger condition is satisfied.
+      await autoCompleteSteps(proj);
+
+      // 2. Find the next step entering its lead window.
+      const step = await getNextActionableStep(projectId, TIMELINE_NUDGE_LOOKAHEAD_MS);
+      if (!step) continue;
+
+      // 3. Route the nudge to the organizer's sidebar DM.
+      if (!proj.organizerUserId) {
+        // No organizer set — mark as notified so this step doesn't re-fire
+        // on every scan, but don't send anything (nobody to notify).
+        await markStepNotified(step.id);
+        continue;
+      }
+
+      const organizer = await getOrganizerForProject(proj);
+      if (!organizer?.phoneNumber) {
+        await markStepNotified(step.id);
+        continue;
+      }
+
+      const { thread: orgThread } = await findOrCreateDirectThread(organizer.phoneNumber);
+
+      // Budget gate: use the organizer's 1:1 thread id.
+      if (!(await canSendProactiveMessage(orgThread.id, "timeline_nudge"))) continue;
+
+      // Mark before send (fail toward under-send, per project convention).
+      await markStepNotified(step.id);
+
+      const nudgeText = buildTimelineNudgeMessage(step.title, step.dueAt, step.actionHint ?? "");
+      await sendToThread(orgThread.id, nudgeText);
+      await recordProactiveSend(orgThread.id, "timeline_nudge");
+
+      logger.info(
+        { projectId, stepId: step.id, sourceStep: step.sourceStep, organizerUserId: proj.organizerUserId },
+        "Timeline nudge sent to organizer sidebar",
+      );
+    } catch (error) {
+      logger.error({ error, projectId }, "Failed to process project timeline scan item; continuing with rest of batch");
+    }
+  }
+}
+
 export async function initScheduler(): Promise<void> {
   if (boss) return;
 
@@ -610,6 +696,9 @@ export async function initScheduler(): Promise<void> {
   await boss.work(QUEUES.weatherRescueScan, async () => {
     await handleWeatherRescueScan();
   });
+  await boss.work(QUEUES.projectTimelineScan, async () => {
+    await handleProjectTimelineScan();
+  });
 
   // All time-of-day crons are interpreted in CONCIERGE_TIMEZONE so reminders
   // fire at the right local time regardless of where the server is hosted.
@@ -621,6 +710,7 @@ export async function initScheduler(): Promise<void> {
   await boss.schedule(QUEUES.onboardingNudge, ONBOARDING_NUDGE_SCAN_CRON, {}, tzOpt);
   await boss.schedule(QUEUES.venueRevalidationScan, VENUE_REVALIDATION_SCAN_CRON, {}, tzOpt);
   await boss.schedule(QUEUES.weatherRescueScan, WEATHER_RESCUE_SCAN_CRON, {}, tzOpt);
+  await boss.schedule(QUEUES.projectTimelineScan, PROJECT_TIMELINE_SCAN_CRON, {}, tzOpt);
 
   logger.info("Proactive messaging scheduler started");
 }
