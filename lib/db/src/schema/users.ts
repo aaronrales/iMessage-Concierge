@@ -1,6 +1,7 @@
-import { pgTable, text, serial, timestamp, pgEnum, boolean } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, timestamp, pgEnum, boolean, integer } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
+import { threadsTable } from "./threads";
 
 export const onboardingStatusEnum = pgEnum("onboarding_status", [
   "not_started",
@@ -19,6 +20,17 @@ export const usersTable = pgTable("users", {
    * card from being re-sent on subsequent messages.
    */
   contactCardSent: boolean("contact_card_sent").notNull().default(false),
+  /**
+   * How this user first entered the funnel. Plain text (not a pg enum) so
+   * new acquisition channels never need a migration. Expected values today:
+   *   cold_dm   – first 1:1 message from a number we'd never seen
+   *   group_add – created as a participant of a group thread
+   * Null for legacy rows created before source tracking, and for users
+   * created outside the two canonical entry flows (e.g. booking approvers).
+   */
+  source: text("source"),
+  /** Thread that caused this user to be created, when attributable. */
+  originThreadId: integer("origin_thread_id").references(() => threadsTable.id, { onDelete: "set null" }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true })
     .notNull()

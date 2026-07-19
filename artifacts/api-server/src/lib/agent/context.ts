@@ -11,6 +11,7 @@ import {
   type Thread,
   type User,
 } from "@workspace/db";
+import { recordActivationEvent } from "./activation";
 
 const HISTORY_LIMIT = 20;
 
@@ -26,50 +27,82 @@ export interface ThreadContext {
   recentMessages: Message[];
 }
 
-/** Finds an existing user by phone number, creating one if it doesn't exist yet. */
-export async function findOrCreateUser(phoneNumber: string): Promise<User> {
+/** Attribution metadata set only at user creation — never overwritten for existing users. */
+export interface UserAttribution {
+  /** Free-text acquisition channel: "cold_dm" | "group_add" */
+  source: string;
+  /** Thread the user was first encountered in. */
+  originThreadId: number;
+}
+
+/**
+ * Finds an existing user by phone number, or creates one. Race-safe: the
+ * insert uses onConflictDoNothing so two concurrent creates for the same
+ * number collapse into one row. Returns the user plus an `isNew` flag so
+ * callers can fire `added_to_group` or other creation-only side effects.
+ *
+ * `attribution` is only applied when creating a new row; existing users are
+ * never overwritten (even if their source column is null).
+ */
+export async function findOrCreateUser(
+  phoneNumber: string,
+  attribution?: UserAttribution,
+): Promise<{ user: User; isNew: boolean }> {
+  // Try insert first — wins the race when two callers hit simultaneously.
+  const [inserted] = await db
+    .insert(usersTable)
+    .values({
+      phoneNumber,
+      ...(attribution ? { source: attribution.source, originThreadId: attribution.originThreadId } : {}),
+    })
+    .onConflictDoNothing({ target: usersTable.phoneNumber })
+    .returning();
+
+  if (inserted) {
+    await db.insert(profilesTable).values({ userId: inserted.id }).onConflictDoNothing();
+    return { user: inserted, isNew: true };
+  }
+
+  // Existing user — re-select to get the current row.
   const [existing] = await db.select().from(usersTable).where(eq(usersTable.phoneNumber, phoneNumber));
-  if (existing) {
-    return existing;
+  if (!existing) {
+    throw new Error(`Race: user for ${phoneNumber} not found after conflicting insert`);
   }
-
-  const [created] = await db.insert(usersTable).values({ phoneNumber }).returning();
-  if (!created) {
-    throw new Error(`Failed to create user for phone number ${phoneNumber}`);
-  }
-
-  await db.insert(profilesTable).values({ userId: created.id }).onConflictDoNothing();
-
-  return created;
+  return { user: existing, isNew: false };
 }
 
 /** Finds the 1:1 thread for a phone number, or creates one and adds the user as a participant. */
 export async function findOrCreateDirectThread(phoneNumber: string): Promise<{ thread: Thread; user: User }> {
-  const user = await findOrCreateUser(phoneNumber);
-
-  const [existing] = await db
+  // Resolve the thread first so we can stamp the user's originThreadId at creation.
+  const [existingThread] = await db
     .select()
     .from(threadsTable)
     .where(eq(threadsTable.primaryPhoneNumber, phoneNumber));
 
-  if (existing) {
-    return { thread: existing, user };
+  let resolvedThread: Thread;
+  if (existingThread) {
+    resolvedThread = existingThread;
+  } else {
+    const [created] = await db
+      .insert(threadsTable)
+      .values({ primaryPhoneNumber: phoneNumber, isGroup: false })
+      .returning();
+    if (!created) throw new Error(`Failed to create direct thread for ${phoneNumber}`);
+    resolvedThread = created;
   }
 
-  const [created] = await db
-    .insert(threadsTable)
-    .values({ primaryPhoneNumber: phoneNumber, isGroup: false })
-    .returning();
-  if (!created) {
-    throw new Error(`Failed to create direct thread for ${phoneNumber}`);
-  }
+  // Attribution is only applied when creating a new user row.
+  const { user } = await findOrCreateUser(phoneNumber, {
+    source: "cold_dm",
+    originThreadId: resolvedThread.id,
+  });
 
   await db
     .insert(threadParticipantsTable)
-    .values({ threadId: created.id, userId: user.id, role: "member" })
+    .values({ threadId: resolvedThread.id, userId: user.id, role: "member" })
     .onConflictDoNothing();
 
-  return { thread: created, user };
+  return { thread: resolvedThread, user };
 }
 
 /** Finds the group thread for a Sendblue group id, or creates one from the participant list. */
@@ -77,24 +110,38 @@ export async function findOrCreateGroupThread(
   groupId: string,
   participantPhoneNumbers: string[],
 ): Promise<{ thread: Thread; participants: User[] }> {
+  // Resolve thread first so we can stamp originThreadId on newly created users.
   const [existing] = await db
     .select()
     .from(threadsTable)
     .where(eq(threadsTable.sendblueGroupId, groupId));
 
-  const participants = await Promise.all(participantPhoneNumbers.map((phone) => findOrCreateUser(phone)));
-
-  let thread = existing;
-  if (!thread) {
+  let thread: Thread;
+  if (existing) {
+    thread = existing;
+  } else {
     const [created] = await db
       .insert(threadsTable)
       .values({ sendblueGroupId: groupId, isGroup: true })
       .returning();
-    if (!created) {
-      throw new Error(`Failed to create group thread for ${groupId}`);
-    }
+    if (!created) throw new Error(`Failed to create group thread for ${groupId}`);
     thread = created;
   }
+
+  const participantResults = await Promise.all(
+    participantPhoneNumbers.map((phone) =>
+      findOrCreateUser(phone, { source: "group_add", originThreadId: thread.id }),
+    ),
+  );
+
+  // Record added_to_group for brand-new users (idempotent via unique index).
+  await Promise.all(
+    participantResults
+      .filter((r) => r.isNew)
+      .map((r) => recordActivationEvent(r.user.id, "added_to_group")),
+  );
+
+  const participants = participantResults.map((r) => r.user);
 
   for (const participant of participants) {
     await db

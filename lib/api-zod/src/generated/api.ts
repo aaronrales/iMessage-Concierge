@@ -482,6 +482,31 @@ export const RejectVenueResponse = zod.object({
 
 
 /**
+ * Returns invite counts split by acquisition source and cohort-based conversion to onboarding_complete for the last N days (default 7). Conversion is among users *created* in the window, not a global ratio.
+ * @summary Activation funnel summary for the ops dashboard
+ */
+export const getActivationSummaryQueryWindowDaysDefault = 7;
+
+
+
+export const GetActivationSummaryQueryParams = zod.object({
+  "windowDays": zod.coerce.number().min(1).default(getActivationSummaryQueryWindowDaysDefault)
+})
+
+export const GetActivationSummaryResponse = zod.object({
+  "windowDays": zod.number().describe('The lookback window used to compute this summary.'),
+  "totalInvites": zod.number().describe('Number of users created within the window.'),
+  "bySource": zod.object({
+  "coldDm": zod.number().describe('Users who started via a cold 1:1 DM.'),
+  "groupAdd": zod.number().describe('Users who were added to a group first.'),
+  "other": zod.number().describe('Users with a null or unrecognized source (legacy rows, approvers).')
+}),
+  "onboardingCompleted": zod.number().describe('Users created in the window who have an onboarding_complete event.'),
+  "conversionRate": zod.number().nullable().describe('Percent 0–100 (one decimal). Null when totalInvites is 0.')
+})
+
+
+/**
  * Returns the 50 most recent venue population runs, ordered by createdAt DESC.
  * @summary List recent venue population runs
  */

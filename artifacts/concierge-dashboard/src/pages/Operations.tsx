@@ -1,10 +1,10 @@
 import React, { useState } from "react";
-import { useListBookings, useApproveBooking, useRejectBooking, getListBookingsQueryKey } from "@workspace/api-client-react";
+import { useListBookings, useApproveBooking, useRejectBooking, getListBookingsQueryKey, useGetActivationSummary } from "@workspace/api-client-react";
 import { useQuery } from "@tanstack/react-query";
 import { format } from "date-fns";
 import {
   Check, X, Clock, CalendarClock, Building2, MapPin, ChevronRight,
-  AlertTriangle, Ban, RefreshCw, CheckSquare,
+  AlertTriangle, Ban, RefreshCw, CheckSquare, TrendingUp, Users, MessageCircle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -16,6 +16,69 @@ import { toast } from "sonner";
 import { Empty, EmptyMedia, EmptyHeader, EmptyTitle, EmptyDescription } from "@/components/ui/empty";
 import { ErrorState } from "@/components/ErrorState";
 import { useSearch } from "wouter";
+
+// ── Activation funnel card ─────────────────────────────────────────────────
+
+function ActivationCard() {
+  const { data, isLoading } = useGetActivationSummary({ windowDays: 7 });
+
+  return (
+    <div className="rounded-xl border border-border bg-card p-4 mb-6 shrink-0">
+      <div className="flex items-center gap-2 mb-3">
+        <TrendingUp className="h-4 w-4 text-primary" />
+        <h2 className="text-sm font-semibold">Activation — last 7 days</h2>
+      </div>
+      {isLoading ? (
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          {[...Array(4)].map((_, i) => (
+            <div key={i} className="h-16 rounded-lg bg-muted/50 animate-pulse" />
+          ))}
+        </div>
+      ) : !data ? (
+        <p className="text-xs text-muted-foreground">Could not load activation data.</p>
+      ) : (
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <div className="rounded-lg bg-muted/40 px-3 py-2.5">
+            <div className="flex items-center gap-1.5 mb-1">
+              <Users className="h-3 w-3 text-muted-foreground" />
+              <span className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">Total</span>
+            </div>
+            <p className="text-2xl font-bold leading-none">{data.totalInvites}</p>
+          </div>
+
+          <div className="rounded-lg bg-muted/40 px-3 py-2.5">
+            <div className="flex items-center gap-1.5 mb-1">
+              <MessageCircle className="h-3 w-3 text-muted-foreground" />
+              <span className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">Cold DM</span>
+            </div>
+            <p className="text-2xl font-bold leading-none">{data.bySource.coldDm}</p>
+          </div>
+
+          <div className="rounded-lg bg-muted/40 px-3 py-2.5">
+            <div className="flex items-center gap-1.5 mb-1">
+              <Users className="h-3 w-3 text-muted-foreground" />
+              <span className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">Group Add</span>
+            </div>
+            <p className="text-2xl font-bold leading-none">{data.bySource.groupAdd}</p>
+          </div>
+
+          <div className="rounded-lg bg-muted/40 px-3 py-2.5">
+            <div className="flex items-center gap-1.5 mb-1">
+              <TrendingUp className="h-3 w-3 text-muted-foreground" />
+              <span className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">Converted</span>
+            </div>
+            <p className="text-2xl font-bold leading-none">
+              {data.conversionRate !== null ? `${data.conversionRate}%` : "—"}
+            </p>
+            <p className="text-[10px] text-muted-foreground mt-0.5">
+              {data.onboardingCompleted} of {data.totalInvites} onboarded
+            </p>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 // ── Delivery types ─────────────────────────────────────────────────────────
 
@@ -397,6 +460,7 @@ export function OperationsPage() {
       </div>
 
       <div className="flex-1 p-8 overflow-hidden flex flex-col max-w-6xl mx-auto w-full">
+        <ActivationCard />
         <div className="flex items-center gap-1 border-b border-border mb-6 shrink-0">
           <button
             onClick={() => setActiveTab("bookings")}

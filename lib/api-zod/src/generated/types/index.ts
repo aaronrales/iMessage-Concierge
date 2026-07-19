@@ -6,12 +6,15 @@
  * OpenAPI spec version: 0.1.0
  */
 
+export * from './activationSummary';
+export * from './activationSummaryBySource';
 export * from './booking';
 export * from './bookingDetails';
 export * from './bookingStatus';
 export * from './createVenuePopulationRunRequest';
 export * from './createVenuePopulationRunRequestVenueType';
 export * from './errorResponse';
+export * from './getActivationSummaryParams';
 export * from './healthStatus';
 export * from './listBookingsParams';
 export * from './listVenuesParams';

@@ -27,6 +27,7 @@ import {
   loadThreadContext,
   markOnboardingRecapSent,
 } from "./context";
+import { recordActivationEvent } from "./activation";
 
 /**
  * Checks whether every group this user belongs to is now fully onboarded and,
@@ -136,6 +137,7 @@ export async function handleDirectOnboardingStep(
   const confirmation = buildPersonalityConfirmation(preferences);
   await sendToThread(threadId, messages.complete(confirmation));
   await db.update(usersTable).set({ onboardingStatus: "completed" }).where(eq(usersTable.id, userId));
+  void recordActivationEvent(userId, "onboarding_complete");
   // Fire group kickoff recap in case completing this person finishes the roster.
   await checkAndSendGroupKickoffRecap(userId);
 }

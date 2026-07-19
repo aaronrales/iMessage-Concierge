@@ -20,9 +20,11 @@ import type {
 } from '@tanstack/react-query';
 
 import type {
+  ActivationSummary,
   Booking,
   CreateVenuePopulationRunRequest,
   ErrorResponse,
+  GetActivationSummaryParams,
   HealthStatus,
   ListBookingsParams,
   ListVenuesParams,
@@ -1345,6 +1347,91 @@ export const useRejectVenue = <TError = ErrorType<ErrorResponse>,
       > => {
       return useMutation(getRejectVenueMutationOptions(options));
     }
+
+export const getGetActivationSummaryUrl = (params?: GetActivationSummaryParams,) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value))
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0 ? `/api/activation-summary?${stringifiedParams}` : `/api/activation-summary`
+}
+
+/**
+ * Returns invite counts split by acquisition source and cohort-based conversion to onboarding_complete for the last N days (default 7). Conversion is among users *created* in the window, not a global ratio.
+ * @summary Activation funnel summary for the ops dashboard
+ */
+export const getActivationSummary = async (params?: GetActivationSummaryParams, options?: RequestInit): Promise<ActivationSummary> => {
+
+  return customFetch<ActivationSummary>(getGetActivationSummaryUrl(params),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetActivationSummaryQueryKey = (params?: GetActivationSummaryParams,) => {
+    return [
+    `/api/activation-summary`, ...(params ? [params] : [])
+    ] as const;
+    }
+
+
+export const getGetActivationSummaryQueryOptions = <TData = Awaited<ReturnType<typeof getActivationSummary>>, TError = ErrorType<unknown>>(params?: GetActivationSummaryParams, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getActivationSummary>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetActivationSummaryQueryKey(params);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getActivationSummary>>> = ({ signal }) => getActivationSummary(params, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getActivationSummary>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type GetActivationSummaryQueryResult = NonNullable<Awaited<ReturnType<typeof getActivationSummary>>>
+export type GetActivationSummaryQueryError = ErrorType<unknown>
+
+
+/**
+ * @summary Activation funnel summary for the ops dashboard
+ */
+
+export function useGetActivationSummary<TData = Awaited<ReturnType<typeof getActivationSummary>>, TError = ErrorType<unknown>>(
+ params?: GetActivationSummaryParams, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getActivationSummary>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getGetActivationSummaryQueryOptions(params,options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
 
 export const getListVenuePopulationRunsUrl = () => {
 

@@ -18,6 +18,8 @@ tags:
     description: iMessage threads (1:1 and group)
   - name: bookings
     description: Draft bookings awaiting human approval
+  - name: activation
+    description: Activation funnel metrics
 paths:
   /healthz:
     get:
@@ -400,6 +402,31 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+
+  /activation-summary:
+    get:
+      operationId: getActivationSummary
+      tags: [activation]
+      summary: Activation funnel summary for the ops dashboard
+      description: >
+        Returns invite counts split by acquisition source and cohort-based
+        conversion to onboarding_complete for the last N days (default 7).
+        Conversion is among users *created* in the window, not a global ratio.
+      parameters:
+        - name: windowDays
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 7
+      responses:
+        "200":
+          description: Activation summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ActivationSummary"
 
   /venue-population-runs:
     get:
@@ -972,6 +999,39 @@ components:
         createdAt:
           type: string
           format: date-time
+
+    ActivationSummaryBySource:
+      type: object
+      required: [coldDm, groupAdd, other]
+      properties:
+        coldDm:
+          type: integer
+          description: Users who started via a cold 1:1 DM.
+        groupAdd:
+          type: integer
+          description: Users who were added to a group first.
+        other:
+          type: integer
+          description: Users with a null or unrecognized source (legacy rows, approvers).
+
+    ActivationSummary:
+      type: object
+      required: [windowDays, totalInvites, bySource, onboardingCompleted, conversionRate]
+      properties:
+        windowDays:
+          type: integer
+          description: The lookback window used to compute this summary.
+        totalInvites:
+          type: integer
+          description: Number of users created within the window.
+        bySource:
+          $ref: "#/components/schemas/ActivationSummaryBySource"
+        onboardingCompleted:
+          type: integer
+          description: Users created in the window who have an onboarding_complete event.
+        conversionRate:
+          type: ["number", "null"]
+          description: Percent 0–100 (one decimal). Null when totalInvites is 0.
 
     CreateVenuePopulationRunRequest:
       type: object

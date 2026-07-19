@@ -1,0 +1,13 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1784488408302,
+      "tag": "0000_add_source_origin_thread_activation_events",
+      "breakpoints": true
+    }
+  ]
+}

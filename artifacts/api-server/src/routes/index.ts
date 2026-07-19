@@ -12,6 +12,7 @@ import venuePopulationRunsRouter from "./venuePopulationRuns";
 import turnsRouter from "./turns";
 import agentConfigRouter from "./agent-config";
 import conciergeVcfRouter from "./conciergeVcf";
+import activationRouter from "./activation";
 
 const router: IRouter = Router();
 
@@ -28,5 +29,6 @@ router.use(venuePopulationRunsRouter);
 router.use(turnsRouter);
 router.use(agentConfigRouter);
 router.use(conciergeVcfRouter);
+router.use(activationRouter);
 
 export default router;

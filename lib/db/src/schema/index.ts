@@ -1,4 +1,5 @@
 export * from "./users";
+export * from "./activationEvents";
 export * from "./profiles";
 export * from "./threads";
 export * from "./threadParticipants";

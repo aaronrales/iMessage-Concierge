@@ -364,6 +364,30 @@ export interface VenuePopulationRun {
   createdAt: string;
 }
 
+export interface ActivationSummaryBySource {
+  /** Users who started via a cold 1:1 DM. */
+  coldDm: number;
+  /** Users who were added to a group first. */
+  groupAdd: number;
+  /** Users with a null or unrecognized source (legacy rows, approvers). */
+  other: number;
+}
+
+export interface ActivationSummary {
+  /** The lookback window used to compute this summary. */
+  windowDays: number;
+  /** Number of users created within the window. */
+  totalInvites: number;
+  bySource: ActivationSummaryBySource;
+  /** Users created in the window who have an onboarding_complete event. */
+  onboardingCompleted: number;
+  /**
+     * Percent 0–100 (one decimal). Null when totalInvites is 0.
+     * @nullable
+     */
+  conversionRate: number | null;
+}
+
 export type CreateVenuePopulationRunRequestVenueType = typeof CreateVenuePopulationRunRequestVenueType[keyof typeof CreateVenuePopulationRunRequestVenueType];
 
 
@@ -392,5 +416,12 @@ status?: BookingStatus;
 
 export type ListVenuesParams = {
 tier?: VenueTier;
+};
+
+export type GetActivationSummaryParams = {
+/**
+ * @minimum 1
+ */
+windowDays?: number;
 };
 

@@ -78,6 +78,7 @@ import { createGroupWithNumbers, sendCarousel, sendDirectMessage, sendGroupMessa
 import { generateGroupIntroMessage } from "../../lib/agent/groupIntro";
 import { fetchGooglePlacesPhotos, findGooglePlaceIdByName, type VenueCarouselEntry } from "../../lib/agent/tools";
 import { logger } from "../../lib/logger";
+import { recordActivationEvent } from "../../lib/agent/activation";
 
 /** iMessage tapback text on this poll's own announcement bubbles counts as a vote (Phase 2 texting UX polish). */
 const OBJECTION_PATTERN = /\b(no|nope|wait|hold on|object|objection|don'?t lock|actually)\b/i;
@@ -233,6 +234,7 @@ async function processAgentTurn(threadId: number, senderUserId: number): Promise
       .where(eq(usersTable.id, senderUserId));
 
     if (result.onboardingComplete) {
+      void recordActivationEvent(senderUserId, "onboarding_complete");
       await checkAndSendGroupKickoffRecap(senderUserId);
     }
   }
@@ -320,7 +322,7 @@ async function processAgentTurn(threadId: number, senderUserId: number): Promise
 
   if (result.bookingDraft) {
     const approverPhone = result.bookingDraft.approverPhoneNumber;
-    const approver = approverPhone ? await findOrCreateUser(approverPhone) : { id: senderUserId };
+    const approver = approverPhone ? (await findOrCreateUser(approverPhone)).user : { id: senderUserId };
     const plan = await getOrCreateActivePlan(threadId, result.bookingDraft.title);
     const booking = await draftBooking({
       threadId,
@@ -503,7 +505,9 @@ router.post("/webhooks/sendblue/:secret", async (req, res): Promise<void> => {
       const participantNumbers = event.participants?.length ? event.participants : [event.from_number];
       const { thread, participants } = await findOrCreateGroupThread(groupId, participantNumbers);
       threadId = thread.id;
-      const sender = participants.find((p) => p.phoneNumber === event.from_number) ?? (await findOrCreateUser(event.from_number));
+      const sender =
+        participants.find((p) => p.phoneNumber === event.from_number) ??
+        (await findOrCreateUser(event.from_number, { source: "group_add", originThreadId: thread.id })).user;
       senderUserId = sender.id;
     } else {
       const { thread, user } = await findOrCreateDirectThread(event.from_number);
@@ -543,6 +547,10 @@ router.post("/webhooks/sendblue/:secret", async (req, res): Promise<void> => {
         rawPayload: event,
       });
     }
+
+    // Record first_reply milestone. The unique index makes this idempotent
+    // across retries; funnel errors are swallowed inside recordActivationEvent.
+    void recordActivationEvent(senderUserId, "first_reply");
 
     if (isGroup) {
       // One-time, whole-group intro when the concierge is first added to a
@@ -664,6 +672,7 @@ router.post("/webhooks/sendblue/:secret", async (req, res): Promise<void> => {
           .update(usersTable)
           .set({ onboardingStatus: "completed" })
           .where(eq(usersTable.id, senderUserId));
+        void recordActivationEvent(senderUserId, "onboarding_complete");
         await checkAndSendGroupKickoffRecap(senderUserId);
       }
     }
