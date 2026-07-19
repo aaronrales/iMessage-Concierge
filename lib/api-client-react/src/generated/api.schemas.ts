@@ -173,6 +173,28 @@ export interface PollSummary {
   closedAt?: string | null;
 }
 
+/**
+ * A multi-event occasion (bachelorette, trip, ...) grouping several plans in a thread. `type` and `status` are open text vocabularies.
+ */
+export interface ProjectSummary {
+  id: number;
+  threadId: number;
+  /** Occasion type slug, e.g. bachelorette, milestone_birthday, reunion, trip. */
+  type: string;
+  /** @nullable */
+  honoree: string | null;
+  /** @nullable */
+  honoreeUserId: number | null;
+  /** @nullable */
+  dateRangeStart: string | null;
+  /** @nullable */
+  dateRangeEnd: string | null;
+  /** forming, planning, active, done, or cancelled. */
+  status: string;
+  childPlanCount: number;
+  createdAt: string;
+}
+
 export interface ThreadDetail {
   id: number;
   isGroup: boolean;
@@ -183,6 +205,8 @@ export interface ThreadDetail {
      * @nullable
      */
   adminNotes?: string | null;
+  /** The thread's active multi-event project, or null when none is in flight. */
+  project: ProjectSummary | null;
   participants: ThreadParticipantSummary[];
   messages: MessageItem[];
   polls: PollSummary[];

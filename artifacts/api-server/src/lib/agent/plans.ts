@@ -1,23 +1,103 @@
 import { and, desc, eq, gte, inArray, isNull, lte } from "drizzle-orm";
-import { db, plansTable, threadParticipantsTable, threadsTable, type Plan } from "@workspace/db";
+import { db, plansTable, threadParticipantsTable, threadsTable, type Plan, type Project } from "@workspace/db";
+import { getActiveProject } from "./projects";
 
 const ACTIVE_STATUSES = ["proposed", "deciding", "confirmed"] as const;
 
-/** The thread's current in-flight plan, if any (there is at most one active plan per thread at a time). */
+/**
+ * The thread's current conversational-focus plan, if any: the most recently
+ * created active plan. Standalone threads have at most one active plan, so
+ * this is unambiguous; threads with an active project may have several
+ * concurrent child plans, and "most recent" matches what the group is
+ * currently talking about. Callers needing every in-flight plan should use
+ * `getActivePlansForThread`.
+ */
 export async function getActivePlan(threadId: number): Promise<Plan | null> {
-  const rows = await db
+  const rows = await getActivePlansForThread(threadId);
+  return rows[0] ?? null;
+}
+
+/** Every in-flight (proposed/deciding/confirmed) plan for a thread, newest first. */
+export async function getActivePlansForThread(threadId: number): Promise<Plan[]> {
+  return db
     .select()
     .from(plansTable)
     .where(and(eq(plansTable.threadId, threadId), inArray(plansTable.status, [...ACTIVE_STATUSES])))
     .orderBy(desc(plansTable.createdAt));
-  return rows[0] ?? null;
 }
 
-/** Finds the active plan, or creates a fresh "proposed" one anchored to all current thread participants. */
-export async function getOrCreateActivePlan(threadId: number, title: string): Promise<Plan> {
-  const existing = await getActivePlan(threadId);
-  if (existing) return existing;
+/**
+ * Pure scoping rule for which existing active plan (if any) an incoming
+ * poll/booking should hang off. Exported for unit tests.
+ *
+ * - No active project: classic behavior -- reuse the most recent active plan.
+ * - Active project: reuse the most recent active child of that project.
+ *   A leftover still-forming *standalone* plan (proposed/deciding) is reused
+ *   too, but flagged for adoption into the project so the "standalone plans
+ *   are singular" rule self-heals (normally adoption already happened at
+ *   project creation). A *confirmed* standalone plan is never adopted -- a
+ *   locked-in event that predates the project must not be silently
+ *   re-labeled as part of it. Active children of a *different*
+ *   (older/finished) project are never reused or re-parented either.
+ * - Nothing reusable: the caller creates a fresh plan (attached to the
+ *   active project when there is one).
+ */
+export function chooseActivePlanForReuse(
+  activePlans: Plan[],
+  activeProject: Project | null,
+): { plan: Plan | null; needsAdoption: boolean } {
+  if (!activeProject) {
+    return { plan: activePlans[0] ?? null, needsAdoption: false };
+  }
+  const child = activePlans.find((plan) => plan.projectId === activeProject.id);
+  if (child) return { plan: child, needsAdoption: false };
 
+  const adoptable = activePlans.find(
+    (plan) => plan.projectId === null && (plan.status === "proposed" || plan.status === "deciding"),
+  );
+  if (adoptable) return { plan: adoptable, needsAdoption: true };
+
+  return { plan: null, needsAdoption: false };
+}
+
+/**
+ * Finds the active plan for the thread's current scope, or creates a fresh
+ * "proposed" one anchored to all current thread participants. When the
+ * thread has an active project, new plans are attached to it automatically
+ * and coexist with the project's other active children.
+ */
+export async function getOrCreateActivePlan(threadId: number, title: string): Promise<Plan> {
+  const [activePlans, activeProject] = await Promise.all([
+    getActivePlansForThread(threadId),
+    getActiveProject(threadId),
+  ]);
+
+  const { plan: reusable, needsAdoption } = chooseActivePlanForReuse(activePlans, activeProject);
+  if (reusable) {
+    if (needsAdoption && activeProject) {
+      const [adopted] = await db
+        .update(plansTable)
+        .set({ projectId: activeProject.id })
+        .where(eq(plansTable.id, reusable.id))
+        .returning();
+      return adopted ?? reusable;
+    }
+    return reusable;
+  }
+
+  return createPlanInThread(threadId, title, activeProject?.id ?? null);
+}
+
+/**
+ * Always creates a new active plan as a child of the given project, even if
+ * the project already has other active plans -- the explicit coexistence
+ * path (a second event of the same occasion, a playbook timeline step, ...).
+ */
+export async function createPlanInProject(projectId: number, threadId: number, title: string): Promise<Plan> {
+  return createPlanInThread(threadId, title, projectId);
+}
+
+async function createPlanInThread(threadId: number, title: string, projectId: number | null): Promise<Plan> {
   const participantRows = await db
     .select({ userId: threadParticipantsTable.userId })
     .from(threadParticipantsTable)
@@ -27,6 +107,7 @@ export async function getOrCreateActivePlan(threadId: number, title: string): Pr
     .insert(plansTable)
     .values({
       threadId,
+      projectId,
       title,
       attendeeUserIds: participantRows.map((row) => row.userId),
       status: "proposed",

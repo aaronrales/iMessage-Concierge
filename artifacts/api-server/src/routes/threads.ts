@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { desc, eq, inArray } from "drizzle-orm";
+import { and, count, desc, eq, inArray } from "drizzle-orm";
 import { z } from "zod/v4";
 import {
   db,
@@ -9,10 +9,13 @@ import {
   pollOptionsTable,
   pollVotesTable,
   pollsTable,
+  projectsTable,
+  PROJECT_ACTIVE_STATUSES,
   threadParticipantsTable,
   threadsTable,
   usersTable,
   type Message,
+  type Project,
 } from "@workspace/db";
 import { GetThreadParams, GetThreadResponse, ListThreadsResponse } from "@workspace/api-zod";
 
@@ -110,10 +113,11 @@ router.get("/threads/:id", async (req, res): Promise<void> => {
     return;
   }
 
-  const [participantsByThreadId, messages, polls] = await Promise.all([
+  const [participantsByThreadId, messages, polls, activeProject] = await Promise.all([
     getParticipantSummariesByThreadId([thread.id]),
     db.select().from(messagesTable).where(eq(messagesTable.threadId, thread.id)).orderBy(messagesTable.createdAt),
     db.select().from(pollsTable).where(eq(pollsTable.threadId, thread.id)),
+    getActiveProjectSummary(thread.id),
   ]);
 
   const pollIds = polls.map((poll) => poll.id);
@@ -159,11 +163,43 @@ router.get("/threads/:id", async (req, res): Promise<void> => {
       participants: participantsByThreadId.get(thread.id) ?? [],
       messages,
       polls: pollSummaries,
+      project: activeProject,
       createdAt: thread.createdAt,
       updatedAt: thread.updatedAt,
     }),
   );
 });
+
+/** The thread's active project with its child plan count, shaped for the ThreadDetail response. */
+async function getActiveProjectSummary(
+  threadId: number,
+): Promise<(Omit<Project, "updatedAt"> & { childPlanCount: number }) | null> {
+  const [project] = await db
+    .select()
+    .from(projectsTable)
+    .where(and(eq(projectsTable.threadId, threadId), inArray(projectsTable.status, [...PROJECT_ACTIVE_STATUSES])))
+    .orderBy(desc(projectsTable.createdAt))
+    .limit(1);
+  if (!project) return null;
+
+  const [childCount] = await db
+    .select({ value: count() })
+    .from(plansTable)
+    .where(eq(plansTable.projectId, project.id));
+
+  return {
+    id: project.id,
+    threadId: project.threadId,
+    type: project.type,
+    honoree: project.honoree,
+    honoreeUserId: project.honoreeUserId,
+    dateRangeStart: project.dateRangeStart,
+    dateRangeEnd: project.dateRangeEnd,
+    status: project.status,
+    childPlanCount: childCount?.value ?? 0,
+    createdAt: project.createdAt,
+  };
+}
 
 const ThreadIdParam = z.object({ id: z.coerce.number().int() });
 const PatchAdminNotesBody = z.object({ adminNotes: z.string() });

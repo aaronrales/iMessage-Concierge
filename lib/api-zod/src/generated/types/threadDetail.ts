@@ -7,6 +7,7 @@
  */
 import type { MessageItem } from './messageItem';
 import type { PollSummary } from './pollSummary';
+import type { ProjectSummary } from './projectSummary';
 import type { ThreadParticipantSummary } from './threadParticipantSummary';
 
 export interface ThreadDetail {
@@ -19,6 +20,8 @@ export interface ThreadDetail {
      * @nullable
      */
   adminNotes?: string | null;
+  /** The thread's active multi-event project, or null when none is in flight. */
+  project: ProjectSummary | null;
   participants: ThreadParticipantSummary[];
   messages: MessageItem[];
   polls: PollSummary[];

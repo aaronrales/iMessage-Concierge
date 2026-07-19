@@ -172,6 +172,18 @@ export const GetThreadResponse = zod.object({
   "isGroup": zod.boolean(),
   "title": zod.string().nullish(),
   "adminNotes": zod.string().nullish().describe('Ops-only steering notes injected into the agent system prompt for this thread.'),
+  "project": zod.union([zod.object({
+  "id": zod.number(),
+  "threadId": zod.number(),
+  "type": zod.string().describe('Occasion type slug, e.g. bachelorette, milestone_birthday, reunion, trip.'),
+  "honoree": zod.string().nullable(),
+  "honoreeUserId": zod.number().nullable(),
+  "dateRangeStart": zod.coerce.date().nullable(),
+  "dateRangeEnd": zod.coerce.date().nullable(),
+  "status": zod.string().describe('forming, planning, active, done, or cancelled.'),
+  "childPlanCount": zod.number(),
+  "createdAt": zod.coerce.date()
+}).describe('A multi-event occasion (bachelorette, trip, ...) grouping several plans in a thread. `type` and `status` are open text vocabularies.\n'),zod.null()]).describe('The thread\'s active multi-event project, or null when none is in flight.'),
   "participants": zod.array(zod.object({
   "userId": zod.number(),
   "phoneNumber": zod.string(),

@@ -7,3 +7,4 @@
 - [Free-text extensible vocab fields](extensible-vocab-text-columns.md) — use `text` columns (not pg-enum) for LLM-extracted category/source/dimension fields so new values don't need a migration.
 - [drizzle-kit push in a non-TTY shell](drizzle-kit-push-non-tty.md) — destructive-change prompts crash without a TTY; apply the one risky DDL statement by hand, then re-run push.
 - [Mark-before-send ordering](mark-before-send-ordering.md) — for one-shot proactive sends, persist the "already sent" marker before the send, not after, to fail toward under- not double-sending.
+- [One-active-row invariants](one-active-row-invariants.md) — enforce "one active X per thread" via partial unique index + 23505 merge-fallback; never re-parent confirmed plans into new projects.

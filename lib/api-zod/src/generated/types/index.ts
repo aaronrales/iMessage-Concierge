@@ -24,6 +24,7 @@ export * from './pollOptionTally';
 export * from './pollSummary';
 export * from './pollSummaryStatus';
 export * from './profile';
+export * from './projectSummary';
 export * from './sendblueWebhookEvent';
 export * from './threadDetail';
 export * from './threadParticipantSummary';

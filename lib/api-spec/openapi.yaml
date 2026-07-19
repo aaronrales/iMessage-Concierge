@@ -697,9 +697,42 @@ components:
           type: ["string", "null"]
           format: date-time
 
+    ProjectSummary:
+      type: object
+      description: >
+        A multi-event occasion (bachelorette, trip, ...) grouping several
+        plans in a thread. `type` and `status` are open text vocabularies.
+      required: [id, threadId, type, honoree, honoreeUserId, dateRangeStart, dateRangeEnd, status, childPlanCount, createdAt]
+      properties:
+        id:
+          type: integer
+        threadId:
+          type: integer
+        type:
+          type: string
+          description: Occasion type slug, e.g. bachelorette, milestone_birthday, reunion, trip.
+        honoree:
+          type: ["string", "null"]
+        honoreeUserId:
+          type: ["integer", "null"]
+        dateRangeStart:
+          type: ["string", "null"]
+          format: date-time
+        dateRangeEnd:
+          type: ["string", "null"]
+          format: date-time
+        status:
+          type: string
+          description: forming, planning, active, done, or cancelled.
+        childPlanCount:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+
     ThreadDetail:
       type: object
-      required: [id, isGroup, participants, messages, polls, createdAt, updatedAt]
+      required: [id, isGroup, participants, messages, polls, project, createdAt, updatedAt]
       properties:
         id:
           type: integer
@@ -710,6 +743,11 @@ components:
         adminNotes:
           type: ["string", "null"]
           description: Ops-only steering notes injected into the agent system prompt for this thread.
+        project:
+          description: The thread's active multi-event project, or null when none is in flight.
+          anyOf:
+            - $ref: "#/components/schemas/ProjectSummary"
+            - type: "null"
         participants:
           type: array
           items:

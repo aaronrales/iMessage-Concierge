@@ -2,6 +2,7 @@ import { pgTable, serial, integer, text, timestamp, jsonb, pgEnum } from "drizzl
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 import { threadsTable } from "./threads";
+import { projectsTable } from "./projects";
 
 // proposed -> deciding -> confirmed -> done is the happy path; cancelled can
 // happen from proposed or deciding.
@@ -18,6 +19,11 @@ export const plansTable = pgTable("plans", {
   threadId: integer("thread_id")
     .notNull()
     .references(() => threadsTable.id, { onDelete: "cascade" }),
+  // Parent project when this plan is one event of a multi-event occasion
+  // (bachelorette, trip, ...). Null for classic standalone plans. Standalone
+  // plans keep the one-active-per-thread rule; children of the same project
+  // may be active concurrently (see agent/plans.ts).
+  projectId: integer("project_id").references(() => projectsTable.id, { onDelete: "set null" }),
   title: text("title").notNull(),
   scheduledFor: timestamp("scheduled_for", { withTimezone: true }),
   venue: text("venue"),

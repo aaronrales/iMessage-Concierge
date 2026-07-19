@@ -6,7 +6,7 @@ import { format, formatDistanceToNow } from "date-fns";
 import {
   Search, Users as UsersIcon, MessageSquare, Bot, User, ShieldAlert, BarChart3,
   Trash2, StickyNote, Save, ThumbsUp, ThumbsDown, RefreshCw, ChevronDown, ChevronUp,
-  Filter, X as XIcon,
+  Filter, X as XIcon, CalendarRange,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -344,6 +344,15 @@ function TurnReviewPanel({
   );
 }
 
+// ── Project header helpers ────────────────────────────────────────────────
+
+function formatProjectDateRange(start: string | null, end: string | null): string {
+  if (start && end) return `${format(new Date(start), "MMM d")} – ${format(new Date(end), "MMM d, yyyy")}`;
+  if (start) return `from ${format(new Date(start), "MMM d, yyyy")}`;
+  if (end) return `until ${format(new Date(end), "MMM d, yyyy")}`;
+  return "dates TBD";
+}
+
 // ── Main ThreadsPage ──────────────────────────────────────────────────────
 
 export function ThreadsPage() {
@@ -598,6 +607,32 @@ export function ThreadsPage() {
                     )}
                   </div>
                 </div>
+
+                {/* Active project header */}
+                {threadDetail.project && (
+                  <div className="px-6 py-2.5 border-b border-border bg-primary/5 shrink-0 flex items-center gap-3 flex-wrap">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <CalendarRange className="h-4 w-4 text-primary shrink-0" />
+                      <span className="text-sm font-semibold capitalize truncate">
+                        {threadDetail.project.type.replace(/_/g, " ")}
+                      </span>
+                      {threadDetail.project.honoree && (
+                        <span className="text-sm text-muted-foreground truncate">
+                          for {threadDetail.project.honoree}
+                        </span>
+                      )}
+                    </div>
+                    <Badge variant="outline" className="capitalize bg-background">
+                      {threadDetail.project.status}
+                    </Badge>
+                    <span className="text-xs text-muted-foreground">
+                      {formatProjectDateRange(threadDetail.project.dateRangeStart, threadDetail.project.dateRangeEnd)}
+                    </span>
+                    <span className="text-xs font-medium text-muted-foreground ml-auto shrink-0">
+                      {threadDetail.project.childPlanCount} {threadDetail.project.childPlanCount === 1 ? "event" : "events"}
+                    </span>
+                  </div>
+                )}
 
                 {/* Admin steering notes */}
                 <div className="px-6 py-3 border-b border-border bg-muted/30 shrink-0">

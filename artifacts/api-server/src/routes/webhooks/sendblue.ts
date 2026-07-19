@@ -56,6 +56,7 @@ import {
   rejectBookingRecord,
 } from "../../lib/agent/bookings";
 import { confirmPlan, getActivePlan, getOrCreateActivePlan, setPlanScheduledFor, setPlanVenue, setPendingFeedback } from "../../lib/agent/plans";
+import { createProjectForThread } from "../../lib/agent/projects";
 import { buildGoogleCalendarLink, buildIcsUrl, describePlanSchedule } from "../../lib/agent/calendar";
 import { scheduleDayBeforeReminder, scheduleNonVoterNudge } from "../../lib/agent/scheduler";
 import { buildReservationLinks, describeReservationLinks } from "../../lib/agent/bookingLinks";
@@ -242,6 +243,29 @@ async function processAgentTurn(threadId: number, senderUserId: number): Promise
     // group (e.g. a one-off trip-planning thread) with a city that only
     // made sense in this conversation.
     await setThreadHomeCityIfUnset(threadId, result.homeCity);
+  }
+
+  // Project creation must run before poll/booking handling so an event
+  // coordinated in the same turn hangs off a project child plan, not a
+  // standalone one.
+  if (result.project) {
+    const honoreeUser = result.project.honoree
+      ? context.participants.find(
+          (p) => p.user.displayName?.toLowerCase() === result.project?.honoree?.toLowerCase(),
+        )?.user
+      : undefined;
+    const { project, created } = await createProjectForThread({
+      threadId,
+      type: result.project.type,
+      honoree: result.project.honoree,
+      honoreeUserId: honoreeUser?.id ?? null,
+      dateRangeStart: result.project.dateRangeStart,
+      dateRangeEnd: result.project.dateRangeEnd,
+    });
+    logger.info(
+      { threadId, projectId: project.id, type: project.type, created },
+      created ? "Project created from conversation" : "Project details merged into existing active project",
+    );
   }
 
   if (result.poll && isGroup) {
