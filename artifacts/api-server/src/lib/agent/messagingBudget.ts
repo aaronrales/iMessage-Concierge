@@ -1,7 +1,7 @@
 import { and, eq, gte } from "drizzle-orm";
 import { db, proactiveMessageSendsTable, threadParticipantsTable, usersTable, type ProactiveMessageSend } from "@workspace/db";
 
-export type ProactiveMessageCategory = "occasion_reminder" | "plan_reminder" | "nudge" | "serendipity" | "timeline_nudge";
+export type ProactiveMessageCategory = "occasion_reminder" | "plan_reminder" | "nudge" | "serendipity" | "timeline_nudge" | "payment_nudge";
 
 /**
  * Priority order, highest first. Nothing in Phase 0 consults this ordering
@@ -14,6 +14,7 @@ export const PROACTIVE_CATEGORY_PRIORITY: ProactiveMessageCategory[] = [
   "plan_reminder",
   "nudge",
   "timeline_nudge",
+  "payment_nudge",
   "serendipity",
 ];
 
@@ -34,6 +35,11 @@ const CATEGORY_RULES: Record<ProactiveMessageCategory, BudgetRule> = {
   // so they are less intrusive. Still capped conservatively: at most 2 nudges
   // per 3 days (one step entered its window + one follow-up if still pending).
   timeline_nudge: { maxPerWindow: 2, windowDays: 3 },
+  // Payment nudges go to member 1:1 threads, not the group. Very conservative
+  // cadence: at most 1 nudge per 5 days per member to avoid feeling like a
+  // debt collector. The organizer controls the narrative; we only nudge when
+  // the balance is still positive after a grace period.
+  payment_nudge: { maxPerWindow: 1, windowDays: 5 },
 };
 
 /** Hard ceiling on total proactive sends into a single thread per day, regardless of category. */

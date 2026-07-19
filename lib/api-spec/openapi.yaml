@@ -841,6 +841,20 @@ components:
                 dueAt:
                   type: ["string", "null"]
                   format: date-time
+        ledger:
+          type: ["object", "null"]
+          description: Payment ledger summary for this project, when cost tracking is active.
+          required: [totalEstimatedCents, totalCollectedCents, outstandingCount]
+          properties:
+            totalEstimatedCents:
+              type: integer
+              description: Sum of all per-person estimate entries in cents.
+            totalCollectedCents:
+              type: integer
+              description: Sum of all confirmed payment entries in cents.
+            outstandingCount:
+              type: integer
+              description: Number of members with an outstanding balance greater than zero.
         createdAt:
           type: string
           format: date-time

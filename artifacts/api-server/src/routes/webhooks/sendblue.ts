@@ -65,6 +65,17 @@ import {
 } from "../../lib/agent/projects";
 import { instantiateTimeline, recomputeDueDates } from "../../lib/agent/projectTimeline";
 import {
+  recordEstimates,
+  recordPayment,
+  recordCommitment,
+  findThreadMemberByName,
+  getProjectMemberIds,
+  buildPaymentRequestMessage,
+  getLedgerBalances,
+  formatDollars,
+  markRequestSent,
+} from "../../lib/agent/ledger";
+import {
   createProposal,
   getOldestPendingProposal,
   approveProposal,
@@ -294,6 +305,89 @@ async function processOrganizerSidebarTurn(
   }
   if (result.displayName) {
     await db.update(usersTable).set({ displayName: result.displayName }).where(eq(usersTable.id, senderUserId));
+  }
+
+  // ── Ledger action handling ─────────────────────────────────────────────────
+  if (result.ledgerAction) {
+    const action = result.ledgerAction;
+    const groupThreadId = organizerProject.threadId;
+
+    if (action.kind === "estimate") {
+      // Compute per-person amount.
+      let perPersonCents: number | null = action.perPersonCents;
+      if (!perPersonCents && action.totalCents && action.headcount && action.headcount > 0) {
+        perPersonCents = Math.round(action.totalCents / action.headcount);
+      }
+
+      if (perPersonCents && perPersonCents > 0) {
+        // Create one estimate row per group member (excluding organizer).
+        const memberIds = await getProjectMemberIds(groupThreadId, senderUserId);
+        const entries = await recordEstimates(organizerProject.id, memberIds, perPersonCents, action.note);
+
+        // Load organizer info for payment request messages.
+        const [organizer] = await db
+          .select({ displayName: usersTable.displayName, phoneNumber: usersTable.phoneNumber })
+          .from(usersTable)
+          .where(eq(usersTable.id, senderUserId));
+
+        // Send payment-request DMs to each member 1:1.
+        for (const entry of entries) {
+          if (!entry.userId) continue;
+          try {
+            const [member] = await db
+              .select({ displayName: usersTable.displayName, phoneNumber: usersTable.phoneNumber })
+              .from(usersTable)
+              .where(eq(usersTable.id, entry.userId));
+            if (!member?.phoneNumber) continue;
+
+            const { thread: memberThread } = await findOrCreateDirectThread(member.phoneNumber);
+            const msg = buildPaymentRequestMessage(
+              member.displayName ?? member.phoneNumber,
+              perPersonCents,
+              action.note,
+              organizer?.displayName ?? "the organizer",
+              organizer?.phoneNumber ?? null,
+            );
+            await sendToThread(memberThread.id, msg);
+            await markRequestSent(entry.id);
+          } catch (err) {
+            logger.error({ err, userId: entry.userId }, "Failed to send payment request DM; continuing");
+          }
+        }
+      }
+    } else if (action.kind === "payment_recorded") {
+      if (action.memberName) {
+        const member = await findThreadMemberByName(groupThreadId, action.memberName);
+        if (member) {
+          // If no amount specified, use their full outstanding estimate balance.
+          let amountCents = action.amountCents;
+          if (!amountCents) {
+            const balances = await getLedgerBalances(organizerProject.id);
+            const b = balances.find((bl) => bl.userId === member.userId);
+            amountCents = b?.outstandingCents ?? 0;
+          }
+          if (amountCents > 0) {
+            await recordPayment(organizerProject.id, member.userId, amountCents, action.note);
+            logger.info(
+              { projectId: organizerProject.id, userId: member.userId, amountCents },
+              "Payment recorded via organizer sidebar",
+            );
+          }
+        } else {
+          logger.warn(
+            { projectId: organizerProject.id, memberName: action.memberName },
+            "Could not resolve member name for payment recording",
+          );
+        }
+      }
+    } else if (action.kind === "commitment") {
+      if (action.memberName) {
+        const member = await findThreadMemberByName(groupThreadId, action.memberName);
+        if (member) {
+          await recordCommitment(organizerProject.id, member.userId, action.note);
+        }
+      }
+    }
   }
 
   await sendContactCardIfNeeded(senderUserId, context.thread.primaryPhoneNumber!);

@@ -9,6 +9,7 @@ import {
   type Project,
 } from "@workspace/db";
 import { buildTimelinePromptSection } from "./projectTimeline";
+import { buildLedgerPromptSection } from "./ledger";
 
 /**
  * Projects: the grouping layer above plans for multi-event occasions
@@ -282,11 +283,15 @@ export async function buildProjectPromptSummary(project: Project, childPlans: Pl
 
   const eventsBlock = lines.length > 0 ? `\nEvents in this project so far:\n${lines.join("\n")}` : "\nNo events created for it yet.";
 
-  const timelineSection = await buildTimelinePromptSection(project.id);
+  const [timelineSection, ledgerSection] = await Promise.all([
+    buildTimelinePromptSection(project.id),
+    buildLedgerPromptSection(project.id),
+  ]);
 
   return (
     `${header}${eventsBlock}\n` +
     (timelineSection ? `\n${timelineSection}\n` : "") +
+    (ledgerSection ? `\n${ledgerSection}\n` : "") +
     `Plan within this project frame: multiple events can be in motion at once, so suggesting or coordinating a new event is fine even while another is undecided. Do not set "project" again for this occasion -- it already exists.`
   );
 }

@@ -5,6 +5,7 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+import type { ProjectSummaryLedger } from './projectSummaryLedger';
 import type { ProjectSummaryTimeline } from './projectSummaryTimeline';
 
 /**
@@ -41,5 +42,10 @@ export interface ProjectSummary {
      * @nullable
      */
   timeline?: ProjectSummaryTimeline;
+  /**
+     * Payment ledger summary for this project, when cost tracking is active.
+     * @nullable
+     */
+  ledger?: ProjectSummaryLedger;
   createdAt: Date;
 }

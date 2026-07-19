@@ -89,6 +89,29 @@ export interface AgentTurnResult {
    */
   venueCarousels: VenueCarouselEntry[] | null;
   /**
+   * Ledger action from the organizer sidebar when the organizer reports a
+   * cost or a payment. Only populated in sidebar turns; null everywhere else.
+   *
+   * - estimate: organizer reports a cost split ("house was $2,400 across 8")
+   * - payment_recorded: organizer confirms a member has paid ("Jake paid me")
+   * - commitment: member has confirmed they're in (headcount tracking)
+   */
+  ledgerAction: {
+    kind: "estimate" | "payment_recorded" | "commitment";
+    /** For `estimate`: total project cost in cents. Use with headcount to compute per-person share. */
+    totalCents: number | null;
+    /** For `estimate`: number of people to split across (may differ from thread participant count). */
+    headcount: number | null;
+    /** For `estimate`: per-person amount in cents (alternative to totalCents+headcount). */
+    perPersonCents: number | null;
+    /** Short description of what the cost is for, e.g. "Airbnb house deposit". */
+    note: string;
+    /** For `payment_recorded` / `commitment`: display name of the member who paid / committed. */
+    memberName: string | null;
+    /** For `payment_recorded`: amount paid in cents (null = treat as full settlement of their estimate). */
+    amountCents: number | null;
+  } | null;
+  /**
    * Set only in organizer sidebar turns when the engine decides the turn
    * is a tiebreak override ("go with the rooftop one"). The value is the
    * raw option label text that should be matched against the open poll's
@@ -161,6 +184,15 @@ interface RawAgentResponse {
     occasion?: unknown;
   } | null;
   project?: unknown;
+  ledger_action?: {
+    kind?: unknown;
+    total_cents?: unknown;
+    headcount?: unknown;
+    per_person_cents?: unknown;
+    note?: unknown;
+    member_name?: unknown;
+    amount_cents?: unknown;
+  } | null;
 }
 
 function buildTranscript(context: ThreadContext, currentUserId: number): { role: "user" | "assistant"; content: string }[] {
@@ -316,10 +348,20 @@ export async function runAgentTurn(context: ThreadContext, currentUserId: number
             `  1. Answer questions about how the project is progressing.\n` +
             `  2. Help the organizer shape proposals before they reach the group.\n` +
             `  3. Let the organizer override a stalled poll tiebreak ("go with X").\n` +
+            `  4. Record money facts the organizer tells you (costs, payments received).\n` +
             `Keep replies short and direct — this is a 1:1 command channel, not a social chat.\n` +
             `Never address the organizer as if you are speaking to the full group.\n` +
             `If the organizer says "yes", "looks good", or similar, and context shows a proposal is waiting, treat it as approval.\n` +
-            `If the organizer names a specific poll option (e.g. "go with the rooftop"), treat it as a tiebreak override for the group's current poll.`,
+            `If the organizer names a specific poll option (e.g. "go with the rooftop"), treat it as a tiebreak override for the group's current poll.\n\n` +
+            `MONEY LEDGER — when the organizer reports a cost or payment, set "ledger_action" in your JSON:\n` +
+            `  • Estimate: organizer says "the house was $2,400, split across 8" or "add $300 each for the deposit"\n` +
+            `    → kind: "estimate", total_cents (e.g. 240000 for $2,400) OR per_person_cents (e.g. 30000 for $300), headcount if given, note: what it's for.\n` +
+            `  • Payment recorded: organizer says "Jake paid me" or "Sarah sent it"\n` +
+            `    → kind: "payment_recorded", member_name: "Jake", amount_cents if mentioned (null = full settlement), note: how they paid.\n` +
+            `  • Commitment: organizer says "Jake is in" or "confirm Sarah is coming"\n` +
+            `    → kind: "commitment", member_name: "Jake".\n` +
+            `  All amounts in CENTS (multiply dollars × 100). Never set ledger_action for general questions about the ledger — just answer using the payment ledger context above.\n` +
+            `  IMPORTANT: the agent never holds, moves, or guarantees money. Never say "I've collected" or "I'll send the money". Language must be: "I've recorded that..." or "I noted that...".`,
         },
       ]
     : [];
@@ -443,6 +485,26 @@ export async function runAgentTurn(context: ThreadContext, currentUserId: number
         }
       : null;
 
+  // Parse ledger_action from sidebar turns (null-safe; non-sidebar turns always leave it null).
+  const rawLa = parsed.ledger_action;
+  const ledgerActionKinds = new Set(["estimate", "payment_recorded", "commitment"]);
+  const ledgerAction =
+    rawLa && typeof rawLa === "object" && typeof rawLa.kind === "string" && ledgerActionKinds.has(rawLa.kind)
+      ? {
+          kind: rawLa.kind as "estimate" | "payment_recorded" | "commitment",
+          totalCents: typeof rawLa.total_cents === "number" && rawLa.total_cents > 0 ? Math.round(rawLa.total_cents) : null,
+          headcount: typeof rawLa.headcount === "number" && rawLa.headcount > 0 ? Math.round(rawLa.headcount) : null,
+          perPersonCents:
+            typeof rawLa.per_person_cents === "number" && rawLa.per_person_cents > 0
+              ? Math.round(rawLa.per_person_cents)
+              : null,
+          note: typeof rawLa.note === "string" && rawLa.note.trim() ? rawLa.note.trim() : "Trip expenses",
+          memberName: typeof rawLa.member_name === "string" && rawLa.member_name.trim() ? rawLa.member_name.trim() : null,
+          amountCents:
+            typeof rawLa.amount_cents === "number" && rawLa.amount_cents > 0 ? Math.round(rawLa.amount_cents) : null,
+        }
+      : null;
+
   return {
     reply: typeof parsed.reply === "string" ? parsed.reply : "Got it.",
     displayName: typeof parsed.display_name === "string" && parsed.display_name.trim() ? parsed.display_name.trim() : null,
@@ -459,6 +521,7 @@ export async function runAgentTurn(context: ThreadContext, currentUserId: number
     // Tiebreak decisions are resolved deterministically in the webhook layer
     // before the engine turn runs; this field is always null from the engine.
     organizerTiebreakDecision: null,
+    ledgerAction,
   };
 }
 

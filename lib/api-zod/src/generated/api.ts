@@ -209,6 +209,11 @@ export const GetThreadResponse = zod.object({
   "dueAt": zod.coerce.date().nullable()
 }).nullable().describe('The next pending step, ordered by due date.')
 }).nullish().describe('Instantiated playbook timeline for this project, if any.'),
+  "ledger": zod.object({
+  "totalEstimatedCents": zod.number().describe('Sum of all per-person estimate entries in cents.'),
+  "totalCollectedCents": zod.number().describe('Sum of all confirmed payment entries in cents.'),
+  "outstandingCount": zod.number().describe('Number of members with an outstanding balance greater than zero.')
+}).nullish().describe('Payment ledger summary for this project, when cost tracking is active.'),
   "createdAt": zod.coerce.date()
 }).describe('A multi-event occasion (bachelorette, trip, ...) grouping several plans in a thread. `type` and `status` are open text vocabularies.\n'),zod.null()]).describe('The thread\'s active multi-event project, or null when none is in flight.'),
   "participants": zod.array(zod.object({

@@ -207,6 +207,19 @@ export type ProjectSummaryTimeline = {
 } | null;
 
 /**
+ * Payment ledger summary for this project, when cost tracking is active.
+ * @nullable
+ */
+export type ProjectSummaryLedger = {
+  /** Sum of all per-person estimate entries in cents. */
+  totalEstimatedCents: number;
+  /** Sum of all confirmed payment entries in cents. */
+  totalCollectedCents: number;
+  /** Number of members with an outstanding balance greater than zero. */
+  outstandingCount: number;
+} | null;
+
+/**
  * A multi-event occasion (bachelorette, trip, ...) grouping several plans in a thread. `type` and `status` are open text vocabularies.
  */
 export interface ProjectSummary {
@@ -240,6 +253,11 @@ export interface ProjectSummary {
      * @nullable
      */
   timeline?: ProjectSummaryTimeline;
+  /**
+     * Payment ledger summary for this project, when cost tracking is active.
+     * @nullable
+     */
+  ledger?: ProjectSummaryLedger;
   createdAt: string;
 }
 

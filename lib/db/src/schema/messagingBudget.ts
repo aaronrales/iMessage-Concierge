@@ -13,6 +13,7 @@ export const proactiveMessageCategoryEnum = pgEnum("proactive_message_category",
   "nudge",
   "serendipity",
   "timeline_nudge",
+  "payment_nudge",
 ]);
 
 /**

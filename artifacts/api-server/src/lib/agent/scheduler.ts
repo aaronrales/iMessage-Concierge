@@ -42,6 +42,12 @@ import {
 } from "./projectTimeline";
 import { getActiveProject, getOrganizerForProject } from "./projects";
 import { buildTimelineNudgeMessage } from "./playbooks";
+import {
+  getOutstandingBalancesForNudge,
+  buildPaymentRequestMessage,
+  formatDollars,
+  markPaymentNudgeSent,
+} from "./ledger";
 import { getOnboardingStep } from "./onboarding";
 import { DEFAULT_CITY, daysUntilNextSaturday, getForecastForDay } from "./weather";
 import { ensureRevalidationConfigSeeded, runRevalidationScan } from "./venueCorpus/revalidation";
@@ -59,6 +65,7 @@ const QUEUES = {
   venueRevalidationScan: "venue-revalidation-scan",
   weatherRescueScan: "weather-rescue-scan",
   projectTimelineScan: "project-timeline-scan",
+  paymentNudgeScan: "payment-nudge-scan",
 } as const;
 
 const NON_VOTER_NUDGE_DELAY_SECONDS = 4 * 60 * 60; // 4 hours after a poll opens
@@ -94,6 +101,10 @@ const WEATHER_RESCUE_PRECIPITATION_THRESHOLD = 60; // % probability of precipita
 // a nudge to the organizer's sidebar DM for actionable steps.
 const PROJECT_TIMELINE_SCAN_CRON = "0 9 * * *"; // daily at 09:00 local
 const TIMELINE_NUDGE_LOOKAHEAD_MS = 14 * 24 * 60 * 60 * 1000; // 14-day lead window
+// Payment nudge scan: once per day after the morning digest window. Sends
+// gentle per-member reminders for outstanding balances past the 3-day grace
+// period. Category budget (1 per 5 days) prevents nagging.
+const PAYMENT_NUDGE_SCAN_CRON = "0 11 * * *"; // daily at 11:00 local
 // A group has to have gone quiet for a real stretch before an unprompted
 // suggestion is worth the interruption -- this is what keeps it feeling
 // rare and well-timed instead of naggy.
@@ -573,6 +584,58 @@ async function handleVenueRevalidationScan(): Promise<void> {
 }
 
 /**
+ * Daily scan: for each active project with outstanding balances past the
+ * grace period, sends a gentle payment nudge to each unpaid member's 1:1 DM.
+ *
+ * Budget-gated under `payment_nudge` (1 per 5 days per member thread).
+ * Mark-before-send ordering (fail toward under-send).
+ *
+ * The agent never implies it holds funds. Nudge text is friendly, not
+ * debt-collector language.
+ */
+async function handlePaymentNudgeScan(): Promise<void> {
+  const outstanding = await getOutstandingBalancesForNudge();
+  if (outstanding.length === 0) return;
+
+  logger.info({ count: outstanding.length }, "Payment nudge scan: outstanding balances found");
+
+  for (const item of outstanding) {
+    try {
+      const { member, organizerName, organizerPhone } = item;
+
+      // Find / create the member's 1:1 thread.
+      const { thread: memberThread } = await findOrCreateDirectThread(member.phoneNumber);
+
+      // Budget gate.
+      if (!(await canSendProactiveMessage(memberThread.id, "payment_nudge"))) continue;
+
+      // Mark before send (fail toward under-send).
+      await markPaymentNudgeSent(item.projectId, member.userId);
+
+      // Friendly nudge — not a full payment-request (that already went out).
+      const amount = formatDollars(member.outstandingCents);
+      const nudgeText =
+        organizerName
+          ? `Hey — just a reminder that ${amount} is still outstanding with ${organizerName} for the trip. Whenever you get a chance!`
+          : `Hey — just a reminder that ${amount} is still outstanding for the trip. Whenever you get a chance!`;
+
+      await sendToThread(memberThread.id, nudgeText);
+      await recordProactiveSend(memberThread.id, "payment_nudge", member.userId);
+
+      logger.info(
+        { projectId: item.projectId, userId: member.userId, outstandingCents: member.outstandingCents },
+        "Payment nudge sent to member",
+      );
+    } catch (error) {
+      logger.error(
+        { error, projectId: item.projectId, userId: item.member.userId },
+        "Failed to send payment nudge; continuing with rest of batch",
+      );
+    }
+  }
+}
+
+/**
  * Daily scan: for every active project with an instantiated timeline,
  * auto-completes steps whose trigger condition is met, then nudges the
  * organizer's sidebar DM for any step that has entered its 14-day lead
@@ -699,6 +762,9 @@ export async function initScheduler(): Promise<void> {
   await boss.work(QUEUES.projectTimelineScan, async () => {
     await handleProjectTimelineScan();
   });
+  await boss.work(QUEUES.paymentNudgeScan, async () => {
+    await handlePaymentNudgeScan();
+  });
 
   // All time-of-day crons are interpreted in CONCIERGE_TIMEZONE so reminders
   // fire at the right local time regardless of where the server is hosted.
@@ -711,6 +777,7 @@ export async function initScheduler(): Promise<void> {
   await boss.schedule(QUEUES.venueRevalidationScan, VENUE_REVALIDATION_SCAN_CRON, {}, tzOpt);
   await boss.schedule(QUEUES.weatherRescueScan, WEATHER_RESCUE_SCAN_CRON, {}, tzOpt);
   await boss.schedule(QUEUES.projectTimelineScan, PROJECT_TIMELINE_SCAN_CRON, {}, tzOpt);
+  await boss.schedule(QUEUES.paymentNudgeScan, PAYMENT_NUDGE_SCAN_CRON, {}, tzOpt);
 
   logger.info("Proactive messaging scheduler started");
 }

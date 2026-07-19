@@ -760,6 +760,22 @@ export function ThreadsPage() {
                         </div>
                       );
                     })()}
+                    {threadDetail.project.ledger && (() => {
+                      const { totalEstimatedCents, totalCollectedCents, outstandingCount } = threadDetail.project!.ledger!;
+                      const collected = `${(totalCollectedCents / 100).toFixed(0)}`;
+                      const total = `${(totalEstimatedCents / 100).toFixed(0)}`;
+                      return (
+                        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                          <span className="font-medium text-foreground">{collected}</span>
+                          <span>of {total} collected</span>
+                          {outstandingCount > 0 && (
+                            <span className="text-amber-600 font-medium">
+                              · {outstandingCount} outstanding
+                            </span>
+                          )}
+                        </div>
+                      );
+                    })()}
                     <span className="text-xs font-medium text-muted-foreground ml-auto shrink-0">
                       {threadDetail.project.childPlanCount} {threadDetail.project.childPlanCount === 1 ? "event" : "events"}
                     </span>
