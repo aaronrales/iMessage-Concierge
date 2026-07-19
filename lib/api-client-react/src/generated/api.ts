@@ -594,6 +594,78 @@ export function useListThreads<TData = Awaited<ReturnType<typeof listThreads>>, 
 
 
 
+export const getResolveThreadAttentionUrl = (id: number,) => {
+
+
+
+
+  return `/api/threads/${id}/resolve-attention`
+}
+
+/**
+ * Clears the needsAttention flag and nulls the timestamp. Called by ops after they have reviewed and addressed whatever triggered the flag.
+ * @summary Mark a flagged thread as resolved
+ */
+export const resolveThreadAttention = async (id: number, options?: RequestInit): Promise<WebhookAck> => {
+
+  return customFetch<WebhookAck>(getResolveThreadAttentionUrl(id),
+  {
+    ...options,
+    method: 'POST'
+
+
+  }
+);}
+
+
+
+
+
+export const getResolveThreadAttentionMutationOptions = <TError = ErrorType<ErrorResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof resolveThreadAttention>>, TError,{id: number}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof resolveThreadAttention>>, TError,{id: number}, TContext> => {
+
+const mutationKey = ['resolveThreadAttention'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof resolveThreadAttention>>, {id: number}> = (props) => {
+          const {id} = props ?? {};
+
+          return  resolveThreadAttention(id,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type ResolveThreadAttentionMutationResult = NonNullable<Awaited<ReturnType<typeof resolveThreadAttention>>>
+
+    export type ResolveThreadAttentionMutationError = ErrorType<ErrorResponse>
+
+    /**
+ * @summary Mark a flagged thread as resolved
+ */
+export const useResolveThreadAttention = <TError = ErrorType<ErrorResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof resolveThreadAttention>>, TError,{id: number}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof resolveThreadAttention>>,
+        TError,
+        {id: number},
+        TContext
+      > => {
+      return useMutation(getResolveThreadAttentionMutationOptions(options));
+    }
+
 export const getGetThreadUrl = (id: number,) => {
 
 

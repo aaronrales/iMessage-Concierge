@@ -11,6 +11,18 @@ import { logger } from "../logger";
 const MUTE_PATTERN = /\b(mute (you|yourself|the bot|concierge)|be quiet|stop responding|pause( yourself)?)\b/i;
 const UNMUTE_PATTERN = /\b(unmute (you|yourself|the bot|concierge)|start responding again|you can talk again)\b/i;
 
+/**
+ * Phrases that signal a user needs human support and the thread should be
+ * flagged for ops review. Checked before the LLM turn so it fires even when
+ * the concierge would otherwise stay quiet (muted thread, non-planning chatter).
+ */
+export const SUPPORT_FLAG_PATTERN =
+  /\b(this is broken|contact support|something('?s)? wrong|something is wrong|need(s)? help|not working|broken|reach (out to|someone|a human|support)|talk to (a )?human|speak to (a )?human|get (a )?human|get support|escalate)\b/i;
+
+export function detectSupportFlag(content: string): boolean {
+  return SUPPORT_FLAG_PATTERN.test(content.trim());
+}
+
 export type MuteCommand = "mute" | "unmute" | null;
 
 export function detectMuteCommand(content: string): MuteCommand {

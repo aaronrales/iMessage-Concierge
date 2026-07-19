@@ -1,12 +1,12 @@
 import React, { useState, useEffect } from "react";
-import { useListThreads, useGetThread, getListThreadsQueryKey } from "@workspace/api-client-react";
+import { useListThreads, useGetThread, getListThreadsQueryKey, useResolveThreadAttention } from "@workspace/api-client-react";
 import { useMutation, useQueryClient, useQuery } from "@tanstack/react-query";
 import { useSearch } from "wouter";
 import { format, formatDistanceToNow } from "date-fns";
 import {
   Search, Users as UsersIcon, MessageSquare, Bot, User, ShieldAlert, BarChart3,
   Trash2, StickyNote, Save, ThumbsUp, ThumbsDown, RefreshCw, ChevronDown, ChevronUp,
-  Filter, X as XIcon, CalendarRange,
+  Filter, X as XIcon, CalendarRange, AlertTriangle, CheckCircle2,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -377,6 +377,19 @@ export function ThreadsPage() {
   const [turnThreadFilter, setTurnThreadFilter] = useState<number | null>(null);
   const qc = useQueryClient();
 
+  const resolveAttentionMutation = useResolveThreadAttention({
+    mutation: {
+      onSuccess: () => {
+        toast.success("Thread marked as resolved.");
+        qc.invalidateQueries({ queryKey: getListThreadsQueryKey() });
+        if (selectedThreadId) {
+          qc.invalidateQueries({ queryKey: ["thread", selectedThreadId] });
+        }
+      },
+      onError: () => toast.error("Couldn't resolve thread. Try again."),
+    },
+  });
+
   const { data: threadDetail, isLoading: isLoadingDetail, isError: isErrorDetail, refetch: refetchDetail } = useGetThread(
     selectedThreadId || 0,
     { query: { enabled: !!selectedThreadId, queryKey: ["thread", selectedThreadId] } },
@@ -434,12 +447,22 @@ export function ThreadsPage() {
     setActiveMainTab("conversations");
   };
 
+  const attentionThreads = threads?.filter((t) => t.needsAttention) ?? [];
   const filteredThreads = threads?.filter((thread) =>
+    !thread.needsAttention && (
+      (thread.title && thread.title.toLowerCase().includes(search.toLowerCase())) ||
+      thread.participants.some(
+        (p) => p.displayName?.toLowerCase().includes(search.toLowerCase()) || p.phoneNumber.includes(search),
+      )
+    ),
+  ) ?? [];
+  const filteredAttentionThreads = attentionThreads.filter((thread) =>
+    !search ||
     (thread.title && thread.title.toLowerCase().includes(search.toLowerCase())) ||
     thread.participants.some(
       (p) => p.displayName?.toLowerCase().includes(search.toLowerCase()) || p.phoneNumber.includes(search),
     ),
-  ) ?? [];
+  );
 
   // Name of the filtered thread (for the filter chip label)
   const filteredThreadName = turnThreadFilter
@@ -517,48 +540,101 @@ export function ThreadsPage() {
                 </div>
               ) : isErrorList ? (
                 <ErrorState description="Couldn't load threads." onRetry={() => refetchList()} />
-              ) : filteredThreads.length === 0 ? (
-                <div className="p-8 text-center text-muted-foreground text-sm">No threads found.</div>
               ) : (
-                <div className="p-2 space-y-1">
-                  {filteredThreads.map((thread) => (
-                    <button
-                      key={thread.id}
-                      onClick={() => setSelectedThreadId(thread.id)}
-                      className={`w-full flex items-start gap-3 p-3 rounded-xl transition-all duration-200 text-left hover-elevate ${
-                        selectedThreadId === thread.id
-                          ? "bg-primary/10 border border-primary/20 shadow-sm"
-                          : "hover:bg-accent/50 border border-transparent text-foreground"
-                      }`}
-                    >
-                      <div className={`h-12 w-12 rounded-full flex items-center justify-center shrink-0 ${
-                        thread.isGroup ? "bg-secondary/15 text-secondary-foreground" : "bg-primary/10 text-primary"
-                      }`}>
-                        {thread.isGroup ? <UsersIcon className="h-5 w-5" /> : <MessageSquare className="h-5 w-5" />}
+                <div className="flex flex-col">
+                  {/* ── Needs Attention section ─────────────────────────── */}
+                  {filteredAttentionThreads.length > 0 && (
+                    <div className="p-2 pb-0">
+                      <div className="flex items-center gap-2 px-1 py-2 mb-1">
+                        <AlertTriangle className="h-3.5 w-3.5 text-amber-500" />
+                        <span className="text-xs font-bold uppercase tracking-wider text-amber-600 dark:text-amber-400">
+                          Needs Attention
+                        </span>
+                        <Badge className="h-4 px-1.5 text-[10px] bg-amber-500 text-white border-0 rounded-full">
+                          {filteredAttentionThreads.length}
+                        </Badge>
                       </div>
-                      <div className="flex-1 min-w-0 overflow-hidden">
-                        <div className="flex items-center justify-between gap-2 mb-1">
-                          <span className="font-semibold truncate">
-                            {thread.title || (thread.isGroup ? "Group Chat" : thread.participants.find((p) => p.role === "user")?.displayName || thread.participants[0]?.phoneNumber)}
-                          </span>
-                          {thread.lastMessageAt && (
-                            <span className="text-xs text-muted-foreground shrink-0">
-                              {format(new Date(thread.lastMessageAt), "MMM d")}
-                            </span>
-                          )}
-                        </div>
-                        <p className={`text-sm truncate ${selectedThreadId === thread.id ? "text-foreground" : "text-muted-foreground"}`}>
-                          {thread.lastMessagePreview || "No messages yet"}
-                        </p>
-                        {thread.isGroup && (
-                          <div className="flex items-center gap-1 mt-1.5 text-xs font-medium text-muted-foreground">
-                            <UsersIcon className="h-3 w-3" />
-                            {thread.participants.length} participants
+                      <div className="space-y-1">
+                        {filteredAttentionThreads.map((thread) => (
+                          <button
+                            key={thread.id}
+                            onClick={() => setSelectedThreadId(thread.id)}
+                            className={`w-full flex items-start gap-3 p-3 rounded-xl transition-all duration-200 text-left border ${
+                              selectedThreadId === thread.id
+                                ? "bg-amber-50 border-amber-300 shadow-sm dark:bg-amber-900/20 dark:border-amber-700"
+                                : "bg-amber-50/60 border-amber-200/80 hover:bg-amber-50 hover:border-amber-300 dark:bg-amber-900/10 dark:border-amber-800/50"
+                            }`}
+                          >
+                            <div className="h-12 w-12 rounded-full flex items-center justify-center shrink-0 bg-amber-100 text-amber-600 dark:bg-amber-900/30">
+                              {thread.isGroup ? <UsersIcon className="h-5 w-5" /> : <AlertTriangle className="h-5 w-5" />}
+                            </div>
+                            <div className="flex-1 min-w-0 overflow-hidden">
+                              <div className="flex items-center justify-between gap-2 mb-1">
+                                <span className="font-semibold truncate text-amber-900 dark:text-amber-200">
+                                  {thread.title || (thread.isGroup ? "Group Chat" : thread.participants.find((p) => p.role === "user")?.displayName || thread.participants[0]?.phoneNumber)}
+                                </span>
+                                {thread.needsAttentionAt && (
+                                  <span className="text-[10px] text-amber-600 shrink-0 font-medium">
+                                    {format(new Date(thread.needsAttentionAt), "MMM d")}
+                                  </span>
+                                )}
+                              </div>
+                              <p className="text-xs truncate text-amber-700/80 dark:text-amber-400/80">
+                                {thread.lastMessagePreview || "No messages yet"}
+                              </p>
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                      <div className="border-b border-border mt-3 mb-1" />
+                    </div>
+                  )}
+
+                  {/* ── Normal thread list ──────────────────────────────── */}
+                  {filteredThreads.length === 0 && filteredAttentionThreads.length === 0 ? (
+                    <div className="p-8 text-center text-muted-foreground text-sm">No threads found.</div>
+                  ) : filteredThreads.length > 0 ? (
+                    <div className="p-2 space-y-1">
+                      {filteredThreads.map((thread) => (
+                        <button
+                          key={thread.id}
+                          onClick={() => setSelectedThreadId(thread.id)}
+                          className={`w-full flex items-start gap-3 p-3 rounded-xl transition-all duration-200 text-left hover-elevate ${
+                            selectedThreadId === thread.id
+                              ? "bg-primary/10 border border-primary/20 shadow-sm"
+                              : "hover:bg-accent/50 border border-transparent text-foreground"
+                          }`}
+                        >
+                          <div className={`h-12 w-12 rounded-full flex items-center justify-center shrink-0 ${
+                            thread.isGroup ? "bg-secondary/15 text-secondary-foreground" : "bg-primary/10 text-primary"
+                          }`}>
+                            {thread.isGroup ? <UsersIcon className="h-5 w-5" /> : <MessageSquare className="h-5 w-5" />}
                           </div>
-                        )}
-                      </div>
-                    </button>
-                  ))}
+                          <div className="flex-1 min-w-0 overflow-hidden">
+                            <div className="flex items-center justify-between gap-2 mb-1">
+                              <span className="font-semibold truncate">
+                                {thread.title || (thread.isGroup ? "Group Chat" : thread.participants.find((p) => p.role === "user")?.displayName || thread.participants[0]?.phoneNumber)}
+                              </span>
+                              {thread.lastMessageAt && (
+                                <span className="text-xs text-muted-foreground shrink-0">
+                                  {format(new Date(thread.lastMessageAt), "MMM d")}
+                                </span>
+                              )}
+                            </div>
+                            <p className={`text-sm truncate ${selectedThreadId === thread.id ? "text-foreground" : "text-muted-foreground"}`}>
+                              {thread.lastMessagePreview || "No messages yet"}
+                            </p>
+                            {thread.isGroup && (
+                              <div className="flex items-center gap-1 mt-1.5 text-xs font-medium text-muted-foreground">
+                                <UsersIcon className="h-3 w-3" />
+                                {thread.participants.length} participants
+                              </div>
+                            )}
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
                 </div>
               )}
             </ScrollArea>
@@ -591,6 +667,29 @@ export function ThreadsPage() {
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
                     <Badge variant="outline" className="bg-background">ID: {threadDetail.id}</Badge>
+                    {threadDetail.needsAttention && (
+                      <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-1.5 bg-amber-50 border border-amber-200 text-amber-700 rounded-lg px-2.5 py-1 text-xs font-semibold dark:bg-amber-900/20 dark:border-amber-700 dark:text-amber-400">
+                          <AlertTriangle className="h-3.5 w-3.5" />
+                          Needs Attention
+                          {threadDetail.needsAttentionAt && (
+                            <span className="font-normal opacity-70 ml-0.5">
+                              · {formatDistanceToNow(new Date(threadDetail.needsAttentionAt), { addSuffix: true })}
+                            </span>
+                          )}
+                        </div>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="border-green-300 text-green-700 hover:bg-green-50 hover:text-green-800 dark:border-green-700 dark:text-green-400"
+                          disabled={resolveAttentionMutation.isPending}
+                          onClick={() => resolveAttentionMutation.mutate({ id: threadDetail.id })}
+                        >
+                          <CheckCircle2 className="h-3.5 w-3.5 mr-1" />
+                          Resolved
+                        </Button>
+                      </div>
+                    )}
                     <Button
                       size="sm"
                       variant={confirmDeleteThreadId === threadDetail.id ? "destructive" : "outline"}

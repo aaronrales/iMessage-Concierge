@@ -20,6 +20,13 @@ export interface ThreadDetail {
      * @nullable
      */
   adminNotes?: string | null;
+  /** True when a user has sent a support-flag phrase and ops have not yet resolved it. */
+  needsAttention: boolean;
+  /**
+     * Timestamp of the most recent flag, or null when never flagged or after resolution.
+     * @nullable
+     */
+  needsAttentionAt?: Date | null;
   /** The thread's active multi-event project, or null when none is in flight. */
   project: ProjectSummary | null;
   participants: ThreadParticipantSummary[];

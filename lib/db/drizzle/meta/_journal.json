@@ -15,6 +15,13 @@
       "when": 1784489542245,
       "tag": "0001_massive_spacker_dave",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1784490352808,
+      "tag": "0002_jazzy_inertia",
+      "breakpoints": true
     }
   ]
 }

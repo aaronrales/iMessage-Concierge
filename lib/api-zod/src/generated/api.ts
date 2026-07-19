@@ -154,10 +154,25 @@ export const ListThreadsResponseItem = zod.object({
 })),
   "lastMessagePreview": zod.string().nullish(),
   "lastMessageAt": zod.coerce.date().nullish(),
+  "needsAttention": zod.boolean().describe('True when a user has sent a support-flag phrase and ops have not yet resolved it.'),
+  "needsAttentionAt": zod.coerce.date().nullish().describe('Timestamp of the most recent flag, or null when never flagged or after resolution.'),
   "createdAt": zod.coerce.date(),
   "updatedAt": zod.coerce.date()
 })
 export const ListThreadsResponse = zod.array(ListThreadsResponseItem)
+
+
+/**
+ * Clears the needsAttention flag and nulls the timestamp. Called by ops after they have reviewed and addressed whatever triggered the flag.
+ * @summary Mark a flagged thread as resolved
+ */
+export const ResolveThreadAttentionParams = zod.object({
+  "id": zod.coerce.number()
+})
+
+export const ResolveThreadAttentionResponse = zod.object({
+  "received": zod.boolean()
+})
 
 
 /**
@@ -172,6 +187,8 @@ export const GetThreadResponse = zod.object({
   "isGroup": zod.boolean(),
   "title": zod.string().nullish(),
   "adminNotes": zod.string().nullish().describe('Ops-only steering notes injected into the agent system prompt for this thread.'),
+  "needsAttention": zod.boolean().describe('True when a user has sent a support-flag phrase and ops have not yet resolved it.'),
+  "needsAttentionAt": zod.coerce.date().nullish().describe('Timestamp of the most recent flag, or null when never flagged or after resolution.'),
   "project": zod.union([zod.object({
   "id": zod.number(),
   "threadId": zod.number(),

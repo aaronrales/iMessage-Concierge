@@ -17,6 +17,13 @@ export interface ThreadSummary {
   lastMessagePreview?: string | null;
   /** @nullable */
   lastMessageAt?: Date | null;
+  /** True when a user has sent a support-flag phrase and ops have not yet resolved it. */
+  needsAttention: boolean;
+  /**
+     * Timestamp of the most recent flag, or null when never flagged or after resolution.
+     * @nullable
+     */
+  needsAttentionAt?: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }

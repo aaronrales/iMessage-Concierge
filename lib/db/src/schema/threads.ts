@@ -36,6 +36,15 @@ export const threadsTable = pgTable("threads", {
    * loud venues" or "always suggest places in Brooklyn".
    */
   adminNotes: text("admin_notes"),
+  /**
+   * Set to true when a user sends a support-flag phrase ("this is broken",
+   * "contact support", etc.). Surfaced prominently on the Threads dashboard so
+   * ops cannot accidentally miss a thread that needs attention. Cleared by ops
+   * clicking "Resolved" in the detail pane.
+   */
+  needsAttention: boolean("needs_attention").notNull().default(false),
+  /** Timestamp of the most recent time needsAttention was set to true. Null when never flagged or after resolution. */
+  needsAttentionAt: timestamp("needs_attention_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true })
     .notNull()

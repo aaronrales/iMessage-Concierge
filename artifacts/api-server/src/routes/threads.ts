@@ -92,6 +92,8 @@ router.get("/threads", async (_req, res): Promise<void> => {
       participants: participantsByThreadId.get(thread.id) ?? [],
       lastMessagePreview: latest?.content ?? null,
       lastMessageAt: latest?.createdAt ?? null,
+      needsAttention: thread.needsAttention,
+      needsAttentionAt: thread.needsAttentionAt ?? null,
       createdAt: thread.createdAt,
       updatedAt: thread.updatedAt,
     };
@@ -160,6 +162,8 @@ router.get("/threads/:id", async (req, res): Promise<void> => {
       isGroup: thread.isGroup,
       title: thread.title,
       adminNotes: thread.adminNotes,
+      needsAttention: thread.needsAttention,
+      needsAttentionAt: thread.needsAttentionAt ?? null,
       participants: participantsByThreadId.get(thread.id) ?? [],
       messages,
       polls: pollSummaries,
@@ -224,6 +228,31 @@ router.patch("/threads/:id/admin-notes", async (req, res): Promise<void> => {
   const [updated] = await db
     .update(threadsTable)
     .set({ adminNotes: body.data.adminNotes || null })
+    .where(eq(threadsTable.id, params.data.id))
+    .returning({ id: threadsTable.id });
+
+  if (!updated) {
+    res.status(404).json({ error: "Thread not found" });
+    return;
+  }
+
+  res.json({ ok: true });
+});
+
+/**
+ * Clears the needsAttention flag on a thread. Called by ops after they've
+ * reviewed and addressed whatever triggered the flag.
+ */
+router.post("/threads/:id/resolve-attention", async (req, res): Promise<void> => {
+  const params = ThreadIdParam.safeParse(req.params);
+  if (!params.success) {
+    res.status(400).json({ error: "Invalid thread id" });
+    return;
+  }
+
+  const [updated] = await db
+    .update(threadsTable)
+    .set({ needsAttention: false, needsAttentionAt: null })
     .where(eq(threadsTable.id, params.data.id))
     .returning({ id: threadsTable.id });
 

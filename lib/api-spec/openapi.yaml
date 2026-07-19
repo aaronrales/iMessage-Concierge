@@ -177,6 +177,30 @@ paths:
                 items:
                   $ref: "#/components/schemas/ThreadSummary"
 
+  /threads/{id}/resolve-attention:
+    post:
+      operationId: resolveThreadAttention
+      tags: [threads]
+      summary: Mark a flagged thread as resolved
+      description: >
+        Clears the needsAttention flag and nulls the timestamp. Called by ops
+        after they have reviewed and addressed whatever triggered the flag.
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "200":
+          description: Flag cleared
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookAck"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
   /threads/{id}:
     get:
       operationId: getThread
@@ -671,7 +695,7 @@ components:
 
     ThreadSummary:
       type: object
-      required: [id, isGroup, participants, createdAt, updatedAt]
+      required: [id, isGroup, participants, needsAttention, createdAt, updatedAt]
       properties:
         id:
           type: integer
@@ -688,6 +712,13 @@ components:
         lastMessageAt:
           type: ["string", "null"]
           format: date-time
+        needsAttention:
+          type: boolean
+          description: True when a user has sent a support-flag phrase and ops have not yet resolved it.
+        needsAttentionAt:
+          type: ["string", "null"]
+          format: date-time
+          description: Timestamp of the most recent flag, or null when never flagged or after resolution.
         createdAt:
           type: string
           format: date-time
@@ -789,7 +820,7 @@ components:
 
     ThreadDetail:
       type: object
-      required: [id, isGroup, participants, messages, polls, project, createdAt, updatedAt]
+      required: [id, isGroup, participants, messages, polls, project, needsAttention, createdAt, updatedAt]
       properties:
         id:
           type: integer
@@ -800,6 +831,13 @@ components:
         adminNotes:
           type: ["string", "null"]
           description: Ops-only steering notes injected into the agent system prompt for this thread.
+        needsAttention:
+          type: boolean
+          description: True when a user has sent a support-flag phrase and ops have not yet resolved it.
+        needsAttentionAt:
+          type: ["string", "null"]
+          format: date-time
+          description: Timestamp of the most recent flag, or null when never flagged or after resolution.
         project:
           description: The thread's active multi-event project, or null when none is in flight.
           anyOf:

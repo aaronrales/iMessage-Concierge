@@ -25,7 +25,7 @@ import { scheduleAgentTurn } from "../../lib/agent/debounce";
 import { scrubPrivateProfileLeaks } from "../../lib/agent/privacy";
 import { sendToThread } from "../../lib/agent/delivery";
 import { detectKnowledgeCommand, handleKnowledgeCommand } from "../../lib/agent/knowledge";
-import { checkPlanningIntentWithLLM, detectMuteCommand, shouldRespondInGroup } from "../../lib/agent/etiquette";
+import { checkPlanningIntentWithLLM, detectMuteCommand, detectSupportFlag, shouldRespondInGroup } from "../../lib/agent/etiquette";
 import {
   buildPersonalityConfirmation,
   buildPracticalConfirmation,
@@ -618,6 +618,24 @@ router.post("/webhooks/sendblue/:secret", async (req, res): Promise<void> => {
         muteCommand === "mute"
           ? `Got it, I'll go quiet in this thread. Note: if you're added to another group I'm in, I'll introduce myself there too -- that's thread-specific. Text "forget me" to delete all your data and stop future introductions${privacyUrl ? `, or see ${privacyUrl} for full privacy options` : ""}.`
           : "I'm back -- happy to help again.",
+      );
+      res.status(200).json({ received: true });
+      return;
+    }
+
+    // 1.25. Support flag: "this is broken", "contact support", "something's wrong", etc.
+    // Fires regardless of mute state so ops always see distress signals. Sets the
+    // needsAttention flag on the thread and sends a short acknowledgment reply,
+    // then continues processing (does not short-circuit the rest of the handler)
+    // so the LLM can still respond if the thread is otherwise active.
+    if (detectSupportFlag(event.content)) {
+      await db
+        .update(threadsTable)
+        .set({ needsAttention: true, needsAttentionAt: new Date() })
+        .where(eq(threadsTable.id, threadId));
+      await sendToThread(
+        threadId,
+        "Got it — flagging this for review. Someone will follow up shortly.",
       );
       res.status(200).json({ received: true });
       return;
