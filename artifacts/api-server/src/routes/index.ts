@@ -16,6 +16,7 @@ import activationRouter from "./activation";
 import operationsRouter from "./operations";
 import privacyRouter from "./privacy";
 import emulatorRouter from "./emulator";
+import projectsRouter from "./projects";
 
 const router: IRouter = Router();
 
@@ -41,5 +42,6 @@ router.use(operationsRouter);
 // produces https://<domain>/api/privacy accordingly.
 router.use(privacyRouter);
 router.use(emulatorRouter);
+router.use(projectsRouter);
 
 export default router;

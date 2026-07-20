@@ -105,6 +105,7 @@ import {
 } from "../../lib/agent/projectProposals";
 import type { Project } from "@workspace/db";
 import { buildGoogleCalendarLink, buildIcsUrl, describePlanSchedule } from "../../lib/agent/calendar";
+import { buildItinerary, renderItineraryAsText } from "../../lib/agent/itinerary";
 import { scheduleDayBeforeReminder, scheduleNonVoterNudge } from "../../lib/agent/scheduler";
 import { buildReservationLinks, describeReservationLinks } from "../../lib/agent/bookingLinks";
 import { buildPlanCardMediaUrl } from "../../lib/agent/planCard";
@@ -126,7 +127,7 @@ import { generateGroupIntroMessage } from "../../lib/agent/groupIntro";
 import { fetchGooglePlacesPhotos, findGooglePlaceIdByName, type VenueCarouselEntry } from "../../lib/agent/tools";
 import { logger } from "../../lib/logger";
 import { recordActivationEvent } from "../../lib/agent/activation";
-import { privacyPolicyUrl } from "../../lib/publicUrl";
+import { buildPublicUrl, privacyPolicyUrl } from "../../lib/publicUrl";
 
 /** iMessage tapback text on this poll's own announcement bubbles counts as a vote (Phase 2 texting UX polish). */
 const OBJECTION_PATTERN = /\b(no|nope|wait|hold on|object|objection|don'?t lock|actually)\b/i;
@@ -305,12 +306,50 @@ async function releasePendingProposalToGroup(
  * gate output through the proposal flow (sidebar replies go straight back to
  * the organizer, not to the group).
  */
+/**
+ * Pattern that matches "itinerary" near a link/share intent in the same
+ * message. Catches: "send me the itinerary link", "share the itinerary url",
+ * "can you send the itinerary", "itinerary link please", etc.
+ */
+const ITINERARY_LINK_PATTERN = /itinerary/i;
+const ITINERARY_LINK_INTENT = /\b(link|url|send|share|get|show|give)\b/i;
+
 async function processOrganizerSidebarTurn(
   threadId: number,
   senderUserId: number,
   organizerProject: Project,
 ): Promise<void> {
   const context = await loadThreadContext(threadId);
+
+  // ── Itinerary link shortcut ────────────────────────────────────────────────
+  // Detect "send me the itinerary link" style requests without burning an LLM
+  // turn. Reply with the URL directly so the organizer can paste it anywhere.
+  const lastUserMsg = [...context.recentMessages].reverse().find((m) => m.role === "user");
+  if (
+    lastUserMsg &&
+    ITINERARY_LINK_PATTERN.test(lastUserMsg.content) &&
+    ITINERARY_LINK_INTENT.test(lastUserMsg.content)
+  ) {
+    const url = buildPublicUrl(`projects/${organizerProject.id}/itinerary`);
+    await sendContactCardIfNeeded(senderUserId, context.thread.primaryPhoneNumber!);
+    if (url) {
+      // Also inline a text preview so the organizer can see there's content.
+      try {
+        const itinerary = await buildItinerary(organizerProject.id);
+        const preview = itinerary ? renderItineraryAsText(itinerary) : null;
+        if (preview) {
+          await sendToThread(threadId, preview);
+        }
+      } catch (err) {
+        logger.warn({ err }, "Failed to render itinerary preview for sidebar link reply");
+      }
+      await sendToThread(threadId, `Here's the itinerary link: ${url}`);
+    } else {
+      await sendToThread(threadId, "I don't have a public URL configured yet. Your ops team can access it at /api/projects/${organizerProject.id}/itinerary on the dashboard server.");
+    }
+    return;
+  }
+
   const result = await runAgentTurn(context, senderUserId, { sidebarProject: organizerProject });
 
   if (result.profileUpdates) {
@@ -473,6 +512,32 @@ async function processOrganizerSidebarTurn(
 async function processAgentTurn(threadId: number, senderUserId: number): Promise<void> {
   const context = await loadThreadContext(threadId);
   const isGroup = context.thread.isGroup;
+
+  // ── In-thread itinerary request ────────────────────────────────────────────
+  // When an organizer (or group member) asks "make us an itinerary" in a group
+  // thread that has an active project, skip the LLM and send a structured text
+  // summary directly. This is faster, deterministic, and always up-to-date.
+  if (isGroup && ITINERARY_LINK_PATTERN.test(context.recentMessages.at(-1)?.content ?? "")) {
+    const activeProject = await getActiveProject(threadId);
+    if (activeProject) {
+      try {
+        const itinerary = await buildItinerary(activeProject.id);
+        if (itinerary && itinerary.days.length > 0) {
+          const text = renderItineraryAsText(itinerary);
+          await sendToThread(threadId, text);
+          const url = buildPublicUrl(`projects/${activeProject.id}/itinerary`);
+          if (url) {
+            await sendToThread(threadId, `Full itinerary: ${url}`);
+          }
+          return;
+        }
+        // Fall through to LLM if no scheduled events yet — it can respond naturally.
+      } catch (err) {
+        logger.warn({ err, threadId }, "Failed to build itinerary for in-thread request; falling through to LLM");
+      }
+    }
+  }
+
   const result = await runAgentTurn(context, senderUserId);
 
   if (result.profileUpdates) {

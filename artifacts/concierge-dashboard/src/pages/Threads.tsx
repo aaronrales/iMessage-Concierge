@@ -6,7 +6,7 @@ import { format, formatDistanceToNow } from "date-fns";
 import {
   Search, Users as UsersIcon, MessageSquare, Bot, User, ShieldAlert, BarChart3,
   Trash2, StickyNote, Save, ThumbsUp, ThumbsDown, RefreshCw, ChevronDown, ChevronUp,
-  Filter, X as XIcon, CalendarRange, AlertTriangle, CheckCircle2,
+  Filter, X as XIcon, CalendarRange, AlertTriangle, CheckCircle2, ExternalLink,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -815,9 +815,21 @@ export function ThreadsPage() {
                         </div>
                       );
                     })()}
-                    <span className="text-xs font-medium text-muted-foreground ml-auto shrink-0">
-                      {threadDetail.project.childPlanCount} {threadDetail.project.childPlanCount === 1 ? "event" : "events"}
-                    </span>
+                    <div className="flex items-center gap-2 ml-auto shrink-0">
+                      <a
+                        href={`/api/projects/${threadDetail.project.id}/itinerary`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
+                        <Button size="sm" variant="outline" className="h-7 px-2.5 gap-1.5 text-xs bg-background">
+                          <ExternalLink className="h-3 w-3" />
+                          Itinerary
+                        </Button>
+                      </a>
+                      <span className="text-xs font-medium text-muted-foreground">
+                        {threadDetail.project.childPlanCount} {threadDetail.project.childPlanCount === 1 ? "event" : "events"}
+                      </span>
+                    </div>
                   </div>
                 )}
 
