@@ -12,7 +12,7 @@ export interface ItineraryEvent {
   planId: number;
   title: string;
   venue: string | null;
-  scheduledFor: Date;
+  scheduledFor: Date | null;
   status: string;
   attendeeCount: number;
 }
@@ -34,6 +34,7 @@ export interface Itinerary {
   dateRangeEnd: Date | null;
   days: ItineraryDay[];
   totalEvents: number;
+  unscheduledEvents: ItineraryEvent[];
 }
 
 /** Returns a stable sort key for a date in the display timezone: "YYYY-MM-DD". */
@@ -97,13 +98,15 @@ export async function buildItinerary(projectId: number): Promise<Itinerary | nul
       ),
     );
 
-  // Drop plans without a scheduled time — they can't be placed on a calendar.
+  // Separate plans with and without a scheduled time.
   const scheduled = plans.filter(
     (p): p is Plan & { scheduledFor: Date } => p.scheduledFor !== null,
   );
+  const unscheduled = plans.filter((p) => p.scheduledFor === null);
+
   scheduled.sort((a, b) => a.scheduledFor.getTime() - b.scheduledFor.getTime());
 
-  // Group into calendar days (keyed by YYYY-MM-DD in display timezone).
+  // Group scheduled plans into calendar days (keyed by YYYY-MM-DD in display timezone).
   const dayEventMap = new Map<string, ItineraryEvent[]>();
   const dayRepresentativeDate = new Map<string, Date>();
 
@@ -132,6 +135,16 @@ export async function buildItinerary(projectId: number): Promise<Itinerary | nul
       events,
     }));
 
+  // Build unscheduled events list (confirmed/done but no scheduledFor).
+  const unscheduledEvents: ItineraryEvent[] = unscheduled.map((plan) => ({
+    planId: plan.id,
+    title: plan.title,
+    venue: plan.venue,
+    scheduledFor: null,
+    status: plan.status,
+    attendeeCount: Array.isArray(plan.attendeeUserIds) ? plan.attendeeUserIds.length : 0,
+  }));
+
   return {
     projectId,
     projectType: project.type,
@@ -141,6 +154,7 @@ export async function buildItinerary(projectId: number): Promise<Itinerary | nul
     dateRangeEnd: project.dateRangeEnd,
     days,
     totalEvents: scheduled.length,
+    unscheduledEvents,
   };
 }
 
@@ -158,7 +172,10 @@ export async function buildItinerary(projectId: number): Promise<Itinerary | nul
  *     7:30 PM — Night Out at FGL House
  */
 export function renderItineraryAsText(itinerary: Itinerary): string {
-  if (itinerary.days.length === 0) {
+  const hasScheduled = itinerary.days.length > 0;
+  const hasUnscheduled = itinerary.unscheduledEvents.length > 0;
+
+  if (!hasScheduled && !hasUnscheduled) {
     return "No confirmed events are scheduled yet — once plans are locked in they'll appear here.";
   }
 
@@ -171,9 +188,17 @@ export function renderItineraryAsText(itinerary: Itinerary): string {
   for (const day of itinerary.days) {
     lines.push(`\n📅 ${day.dayLabel}`);
     for (const event of day.events) {
-      const time = formatItineraryTime(event.scheduledFor);
+      const time = formatItineraryTime(event.scheduledFor!);
       const venue = event.venue ? ` at ${event.venue}` : "";
       lines.push(`  ${time} — ${event.title}${venue}`);
+    }
+  }
+
+  if (hasUnscheduled) {
+    lines.push(`\n📌 Not yet scheduled:`);
+    for (const event of itinerary.unscheduledEvents) {
+      const venue = event.venue ? ` at ${event.venue}` : "";
+      lines.push(`  - ${event.title}${venue}`);
     }
   }
 

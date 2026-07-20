@@ -72,16 +72,18 @@ router.get("/projects/:id/itinerary", async (req, res): Promise<void> => {
 
   // ── Build schedule rows ────────────────────────────────────────────────────
   const scheduleHtml =
-    itinerary.days.length === 0
+    itinerary.days.length === 0 && itinerary.unscheduledEvents.length === 0
       ? `<p class="empty">No confirmed events scheduled yet.</p>`
-      : `<table>
+      : itinerary.days.length === 0
+        ? ``
+        : `<table>
           <tbody>
             ${itinerary.days
               .flatMap((day) => [
                 `<tr class="day-header"><td colspan="3"><span class="day-label">${escapeHtml(day.dayLabel)}</span></td></tr>`,
                 ...day.events.map(
                   (event) => `<tr class="event-row">
-                    <td class="time">${escapeHtml(formatItineraryTime(event.scheduledFor))}</td>
+                    <td class="time">${escapeHtml(formatItineraryTime(event.scheduledFor!))}</td>
                     <td class="event-title">
                       ${escapeHtml(event.title)}
                       ${event.status === "done" ? '<span class="done-badge">✓</span>' : ""}
@@ -93,6 +95,30 @@ router.get("/projects/:id/itinerary", async (req, res): Promise<void> => {
               .join("\n")}
           </tbody>
         </table>`;
+
+  // ── Build unscheduled section ──────────────────────────────────────────────
+  const unscheduledHtml =
+    itinerary.unscheduledEvents.length === 0
+      ? ``
+      : `<div class="unscheduled-section">
+          <div class="unscheduled-header">📌 Not yet scheduled</div>
+          <table class="unscheduled-table">
+            <tbody>
+              ${itinerary.unscheduledEvents
+                .map(
+                  (event) => `<tr class="event-row unscheduled-row">
+                    <td class="time tbd-time"><span class="tbd">Time TBD</span></td>
+                    <td class="event-title unscheduled-title">
+                      <em>${escapeHtml(event.title)}</em>
+                      ${event.status === "done" ? '<span class="done-badge">✓</span>' : ""}
+                    </td>
+                    <td class="venue">${event.venue ? escapeHtml(event.venue) : '<span class="tbd">Venue TBD</span>'}</td>
+                  </tr>`,
+                )
+                .join("\n")}
+            </tbody>
+          </table>
+        </div>`;
 
   const destinationHtml = itinerary.destination
     ? `<span class="destination">📍 ${escapeHtml(itinerary.destination)}</span>`
@@ -206,6 +232,31 @@ router.get("/projects/:id/itinerary", async (req, res): Promise<void> => {
     }
     .tbd { color: #bbb; font-style: italic; }
 
+    /* ── Unscheduled section ─────────────────────────────────── */
+    .unscheduled-section {
+      margin-top: 40px;
+      padding-top: 20px;
+      border-top: 1.5px dashed #ddd;
+    }
+    .unscheduled-header {
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: #999;
+      margin-bottom: 4px;
+    }
+    .unscheduled-table { width: 100%; border-collapse: collapse; }
+    .unscheduled-row td {
+      padding: 10px 0;
+      vertical-align: top;
+      border-bottom: 1px solid #f5f5f5;
+      opacity: 0.75;
+    }
+    .unscheduled-row:last-child td { border-bottom: none; }
+    .tbd-time { width: 86px; padding-right: 20px; white-space: nowrap; }
+    .unscheduled-title { font-size: 15px; font-weight: 500; padding-right: 24px; color: #555; }
+
     /* ── Empty state ─────────────────────────────────────────── */
     .empty { color: #aaa; font-style: italic; margin-top: 32px; }
 
@@ -257,6 +308,7 @@ router.get("/projects/:id/itinerary", async (req, res): Promise<void> => {
   </div>
 
   ${scheduleHtml}
+  ${unscheduledHtml}
 
   <div class="footer">
     <span>${escapeHtml(title)}</span>
