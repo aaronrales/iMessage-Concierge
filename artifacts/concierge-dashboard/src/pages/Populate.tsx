@@ -3,11 +3,14 @@ import {
   useCreateVenuePopulationRun,
   useListVenuePopulationRuns,
   getListVenuePopulationRunsQueryKey,
+  useListJITDestinationExtractions,
+  useTriggerJITDestinationExtraction,
+  getListJITDestinationExtractionsQueryKey,
 } from "@workspace/api-client-react";
-import type { VenuePopulationRun } from "@workspace/api-client-react";
+import type { VenuePopulationRun, DestinationVenueExtraction } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
-import { format, formatDistanceStrict } from "date-fns";
-import { Loader2, ChevronDown, ChevronRight, PlayCircle } from "lucide-react";
+import { format, formatDistanceStrict, formatDistanceToNow } from "date-fns";
+import { Loader2, ChevronDown, ChevronRight, PlayCircle, MapPin, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -119,6 +122,167 @@ function RunRow({ run }: { run: VenuePopulationRun }) {
   );
 }
 
+// ── JIT destination helpers ────────────────────────────────────────────────
+
+function JITStatusBadge({ status }: { status: string }) {
+  if (status === "pending") {
+    return (
+      <Badge className="gap-1 bg-blue-100 text-blue-800 border-blue-200 dark:bg-blue-900/30 dark:text-blue-300">
+        <Loader2 className="h-3 w-3 animate-spin" /> Extracting…
+      </Badge>
+    );
+  }
+  if (status === "done") {
+    return <Badge className="bg-green-100 text-green-800 border-green-200 dark:bg-green-900/30 dark:text-green-300">Done</Badge>;
+  }
+  if (status === "failed") {
+    return <Badge variant="destructive">Failed</Badge>;
+  }
+  return <Badge variant="outline">{status}</Badge>;
+}
+
+function JITExtractionRow({ row }: { row: DestinationVenueExtraction }) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <div className="bg-card border border-border rounded-xl overflow-hidden shadow-sm">
+      <div className="px-5 py-4 flex flex-wrap items-center gap-3">
+        <JITStatusBadge status={row.status} />
+        <div className="flex-1 min-w-0">
+          <div className="font-medium text-sm flex items-center gap-1.5">
+            <MapPin className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+            {row.destination}
+          </div>
+          <div className="text-xs text-muted-foreground mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5">
+            {row.venueCount != null && <span><strong className="text-foreground">{row.venueCount}</strong> venues cached</span>}
+            {row.extractedAt && (
+              <span>extracted {formatDistanceToNow(new Date(row.extractedAt), { addSuffix: true })}</span>
+            )}
+            {row.expiresAt && (
+              <span>expires {format(new Date(row.expiresAt), "MMM d, yyyy")}</span>
+            )}
+            {row.errorNote && (
+              <span className="text-destructive">{row.errorNote}</span>
+            )}
+          </div>
+        </div>
+        {row.status === "done" && (row.venueData?.length ?? 0) > 0 && (
+          <button
+            onClick={() => setOpen((v) => !v)}
+            className="text-xs text-muted-foreground inline-flex items-center gap-1 hover:underline"
+          >
+            {open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+            {open ? "Hide" : "Preview"}
+          </button>
+        )}
+      </div>
+      {open && row.venueData && row.venueData.length > 0 && (
+        <div className="border-t border-border bg-muted/30 px-5 py-3">
+          <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">Cached venues (provisional)</div>
+          <div className="space-y-1 max-h-56 overflow-y-auto">
+            {row.venueData.map((v, i) => (
+              <div key={i} className="text-xs flex gap-2 items-start">
+                <span className="font-medium shrink-0 w-40 truncate">{v.name}</span>
+                <span className="text-muted-foreground">{v.vibe}</span>
+                <span className="text-muted-foreground shrink-0">{v.roughPrice}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function JITDestinationsSection() {
+  const queryClient = useQueryClient();
+  const { data: extractions = [], isLoading } = useListJITDestinationExtractions();
+  const trigger = useTriggerJITDestinationExtraction();
+  const [destinationInput, setDestinationInput] = useState("");
+
+  const hasPending = extractions.some((e) => e.status === "pending");
+
+  // Auto-poll while any extraction is pending
+  useEffect(() => {
+    if (!hasPending) return;
+    const id = setInterval(() => {
+      queryClient.invalidateQueries({ queryKey: getListJITDestinationExtractionsQueryKey() });
+    }, 5000);
+    return () => clearInterval(id);
+  }, [hasPending, queryClient]);
+
+  const handleTrigger = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!destinationInput.trim()) return;
+    trigger.mutate(
+      { data: { destination: destinationInput.trim() } },
+      {
+        onSuccess: () => {
+          setDestinationInput("");
+          queryClient.invalidateQueries({ queryKey: getListJITDestinationExtractionsQueryKey() });
+        },
+      },
+    );
+  };
+
+  const fieldClass =
+    "h-9 rounded-md border border-border bg-background px-3 py-1 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring";
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <div className="text-sm font-semibold text-foreground">JIT Destinations</div>
+          <div className="text-xs text-muted-foreground mt-0.5">
+            Web-sourced venue knowledge auto-extracted when a trip project locks a non-NYC destination.
+          </div>
+        </div>
+        {hasPending && (
+          <div className="flex items-center gap-1.5 text-xs text-blue-600 dark:text-blue-400">
+            <Loader2 className="h-3 w-3 animate-spin" /> Polling every 5s
+          </div>
+        )}
+      </div>
+
+      <form onSubmit={handleTrigger} className="flex gap-2 items-center">
+        <input
+          value={destinationInput}
+          onChange={(e) => setDestinationInput(e.target.value)}
+          placeholder="e.g. Nashville, Austin TX, Scottsdale"
+          className={`${fieldClass} flex-1`}
+        />
+        <Button type="submit" variant="outline" size="sm" disabled={!destinationInput.trim() || trigger.isPending} className="gap-1.5 shrink-0">
+          <RefreshCw className="h-3.5 w-3.5" />
+          Trigger
+        </Button>
+        {trigger.isError && (
+          <span className="text-xs text-destructive">
+            {(trigger.error as { message?: string })?.message ?? "Failed"}
+          </span>
+        )}
+      </form>
+
+      {isLoading ? (
+        <div className="space-y-3">
+          {[1, 2].map((i) => (
+            <div key={i} className="bg-card border border-border rounded-xl h-14 animate-pulse" />
+          ))}
+        </div>
+      ) : extractions.length === 0 ? (
+        <div className="text-sm text-muted-foreground py-6 text-center">
+          No JIT extractions yet. They run automatically when a trip locks a non-NYC destination.
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {extractions.map((row) => (
+            <JITExtractionRow key={row.id} row={row} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── main page ──────────────────────────────────────────────────────────────
 
 export function PopulatePage() {
@@ -199,7 +363,7 @@ export function PopulatePage() {
         </p>
       </div>
 
-      <div className="flex-1 overflow-hidden flex flex-col p-8 max-w-4xl mx-auto w-full gap-8">
+      <div className="flex-1 overflow-y-auto flex flex-col p-8 max-w-4xl mx-auto w-full gap-8">
         {/* ── Form ── */}
         <form onSubmit={handleSubmit} className="bg-card border border-border rounded-2xl p-6 shadow-sm space-y-5">
           <div className="text-sm font-semibold text-foreground">New population run</div>
@@ -302,7 +466,7 @@ export function PopulatePage() {
         </form>
 
         {/* ── Run history ── */}
-        <div className="flex-1 flex flex-col overflow-hidden">
+        <div className="flex flex-col overflow-hidden">
           <div className="flex items-center justify-between mb-4 shrink-0">
             <div className="text-sm font-semibold text-foreground">Run History</div>
             {hasActiveRun && (
@@ -312,23 +476,26 @@ export function PopulatePage() {
             )}
           </div>
 
-          <ScrollArea className="flex-1 pr-4 -mr-4">
-            {isLoading ? (
-              <div className="space-y-3">
-                {[1, 2, 3].map((i) => (
-                  <div key={i} className="bg-card border border-border rounded-xl h-16 animate-pulse" />
-                ))}
-              </div>
-            ) : runs.length === 0 ? (
-              <div className="text-sm text-muted-foreground py-8 text-center">No runs yet. Fill in the form above to start one.</div>
-            ) : (
-              <div className="space-y-3 pb-8">
-                {runs.map((run) => (
-                  <RunRow key={run.id} run={run} />
-                ))}
-              </div>
-            )}
-          </ScrollArea>
+          {isLoading ? (
+            <div className="space-y-3">
+              {[1, 2, 3].map((i) => (
+                <div key={i} className="bg-card border border-border rounded-xl h-16 animate-pulse" />
+              ))}
+            </div>
+          ) : runs.length === 0 ? (
+            <div className="text-sm text-muted-foreground py-8 text-center">No runs yet. Fill in the form above to start one.</div>
+          ) : (
+            <div className="space-y-3 pb-2">
+              {runs.map((run) => (
+                <RunRow key={run.id} run={run} />
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* ── JIT Destinations ── */}
+        <div className="border border-border rounded-2xl p-6 bg-card shadow-sm">
+          <JITDestinationsSection />
         </div>
       </div>
     </div>

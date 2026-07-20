@@ -645,6 +645,47 @@ export const UpdateAgentConfigResponse = zod.object({
 
 
 /**
+ * Returns cached venue knowledge for non-NYC destinations, ordered by creation date descending. Used by the Populate page to show extraction status per destination.
+ * @summary List all JIT destination venue extractions
+ */
+export const ListJITDestinationExtractionsResponseItem = zod.object({
+  "id": zod.number(),
+  "destination": zod.string(),
+  "status": zod.string().describe('pending | done | failed'),
+  "venueData": zod.array(zod.object({
+  "name": zod.string(),
+  "venueType": zod.string(),
+  "vibe": zod.string(),
+  "groupFriendliness": zod.string(),
+  "roughPrice": zod.string()
+})).nullish(),
+  "venueCount": zod.number().nullish(),
+  "errorNote": zod.string().nullish(),
+  "extractedAt": zod.coerce.date().nullish(),
+  "expiresAt": zod.coerce.date().nullish(),
+  "createdAt": zod.coerce.date()
+})
+export const ListJITDestinationExtractionsResponse = zod.array(ListJITDestinationExtractionsResponseItem)
+
+
+/**
+ * Enqueues a background extraction job for the given destination if no valid cache exists. Returns 202 immediately. NYC destinations are rejected (use the curated corpus instead).
+ * @summary Manually trigger JIT venue extraction for a destination
+ */
+
+
+
+export const TriggerJITDestinationExtractionBody = zod.object({
+  "destination": zod.string().min(1)
+})
+
+export const TriggerJITDestinationExtractionResponse = zod.object({
+  "queued": zod.boolean(),
+  "destination": zod.string()
+})
+
+
+/**
  * Returns the 50 most recent venue population runs, ordered by createdAt DESC.
  * @summary List recent venue population runs
  */

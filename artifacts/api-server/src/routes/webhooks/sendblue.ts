@@ -108,7 +108,7 @@ import { buildGoogleCalendarLink, buildIcsUrl, describePlanSchedule } from "../.
 import { buildItinerary, renderItineraryAsText } from "../../lib/agent/itinerary";
 import { buildLodgingLinks, buildLodgingGroupMessage } from "../../lib/agent/lodgingLinks";
 import { startArrivalCollection, buildArrivalMatrix, formatArrivalMatrix } from "../../lib/agent/arrivalMatrix";
-import { scheduleDayBeforeReminder, scheduleNonVoterNudge } from "../../lib/agent/scheduler";
+import { scheduleDayBeforeReminder, scheduleNonVoterNudge, enqueueJITExtractionIfNeeded } from "../../lib/agent/scheduler";
 import { buildReservationLinks, describeReservationLinks } from "../../lib/agent/bookingLinks";
 import { buildPlanCardMediaUrl } from "../../lib/agent/planCard";
 import { captureOccasion } from "../../lib/agent/occasions";
@@ -1407,6 +1407,8 @@ router.post("/webhooks/sendblue/:secret", async (req, res): Promise<void> => {
                   { projectId: destProject.id, destination: matched.label },
                   "Destination locked from organizer tiebreak override",
                 );
+                // Enqueue JIT venue extraction for the locked destination (non-NYC only).
+                await enqueueJITExtractionIfNeeded(matched.label);
               }
               await sendToThread(
                 organizerProject.threadId,
@@ -1540,6 +1542,8 @@ router.post("/webhooks/sendblue/:secret", async (req, res): Promise<void> => {
                   { projectId: destProject.id, destination: winnerTally.option.label },
                   "Destination locked from poll auto-close",
                 );
+                // Enqueue JIT venue extraction for the locked destination (non-NYC only).
+                await enqueueJITExtractionIfNeeded(winnerTally.option.label);
               }
               await sendToThread(
                 threadId,

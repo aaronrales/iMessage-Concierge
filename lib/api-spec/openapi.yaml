@@ -578,6 +578,58 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /jit-destination-extractions:
+    get:
+      operationId: listJITDestinationExtractions
+      tags: [venues]
+      summary: List all JIT destination venue extractions
+      description: >
+        Returns cached venue knowledge for non-NYC destinations, ordered by
+        creation date descending. Used by the Populate page to show extraction
+        status per destination.
+      responses:
+        "200":
+          description: JIT destination extractions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/DestinationVenueExtraction"
+    post:
+      operationId: triggerJITDestinationExtraction
+      tags: [venues]
+      summary: Manually trigger JIT venue extraction for a destination
+      description: >
+        Enqueues a background extraction job for the given destination if no
+        valid cache exists. Returns 202 immediately. NYC destinations are
+        rejected (use the curated corpus instead).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TriggerJITExtractionRequest"
+      responses:
+        "202":
+          description: Extraction enqueued
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [queued, destination]
+                properties:
+                  queued:
+                    type: boolean
+                  destination:
+                    type: string
+        "400":
+          description: Invalid request or NYC destination
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
   /venue-population-runs:
     get:
       operationId: listVenuePopulationRuns
@@ -1407,6 +1459,58 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/EmulatorCapturedMessage"
+
+    JITVenueEntry:
+      type: object
+      required: [name, venueType, vibe, groupFriendliness, roughPrice]
+      properties:
+        name:
+          type: string
+        venueType:
+          type: string
+        vibe:
+          type: string
+        groupFriendliness:
+          type: string
+        roughPrice:
+          type: string
+
+    DestinationVenueExtraction:
+      type: object
+      required: [id, destination, status, createdAt]
+      properties:
+        id:
+          type: integer
+        destination:
+          type: string
+        status:
+          type: string
+          description: pending | done | failed
+        venueData:
+          type: ["array", "null"]
+          items:
+            $ref: "#/components/schemas/JITVenueEntry"
+        venueCount:
+          type: ["integer", "null"]
+        errorNote:
+          type: ["string", "null"]
+        extractedAt:
+          type: ["string", "null"]
+          format: date-time
+        expiresAt:
+          type: ["string", "null"]
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+
+    TriggerJITExtractionRequest:
+      type: object
+      required: [destination]
+      properties:
+        destination:
+          type: string
+          minLength: 1
 
     CreateVenuePopulationRunRequest:
       type: object

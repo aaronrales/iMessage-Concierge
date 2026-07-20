@@ -12,6 +12,7 @@ import { buildTimelinePromptSection } from "./projectTimeline";
 import { buildLedgerPromptSection } from "./ledger";
 import { buildActionItemsPromptSection } from "./actionItems";
 import { getCommitmentStatus } from "./commitmentPoll";
+import { buildJITVenuePromptSection, isNYCDestination } from "./venueCorpus/jitExtraction";
 
 /**
  * Projects: the grouping layer above plans for multi-event occasions
@@ -287,11 +288,14 @@ export async function buildProjectPromptSummary(project: Project, childPlans: Pl
 
   const eventsBlock = lines.length > 0 ? `\nEvents in this project so far:\n${lines.join("\n")}` : "\nNo events created for it yet.";
 
-  const [timelineSection, ledgerSection, actionItemsSection, commitmentStatus] = await Promise.all([
+  const [timelineSection, ledgerSection, actionItemsSection, commitmentStatus, jitVenueSection] = await Promise.all([
     buildTimelinePromptSection(project.id),
     buildLedgerPromptSection(project.id),
     buildActionItemsPromptSection(project.id),
     getCommitmentStatus(project),
+    project.destination && !isNYCDestination(project.destination)
+      ? buildJITVenuePromptSection(project.destination)
+      : Promise.resolve(null),
   ]);
 
   let commitmentSection: string | null = null;
@@ -317,6 +321,7 @@ export async function buildProjectPromptSummary(project: Project, childPlans: Pl
     (ledgerSection ? `\n${ledgerSection}\n` : "") +
     (actionItemsSection ? `\n${actionItemsSection}\n` : "") +
     (commitmentSection ? `\n${commitmentSection}\n` : "") +
+    (jitVenueSection ? `${jitVenueSection}\n` : "") +
     `Plan within this project frame: multiple events can be in motion at once, so suggesting or coordinating a new event is fine even while another is undecided. Do not set "project" again for this occasion -- it already exists.`
   );
 }

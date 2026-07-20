@@ -233,3 +233,41 @@ export const venuePopulationRunsTable = pgTable("venue_population_runs", {
 });
 
 export type VenuePopulationRun = typeof venuePopulationRunsTable.$inferSelect;
+
+/**
+ * JIT (just-in-time) venue knowledge cache for non-NYC destinations.
+ * When a trip project locks a non-NYC destination, a background job extracts
+ * top venues/activities for that city and caches them here with a 30-day TTL.
+ * Status lifecycle: pending → done | failed.
+ * A single row per destination (upserted on re-run); query the most recent
+ * `done` row when multiple exist (failed re-runs don't block a good cache).
+ */
+export const destinationVenueExtractionsTable = pgTable("destination_venue_extractions", {
+  id: serial("id").primaryKey(),
+  /** Canonical city name, e.g. "Nashville" or "Austin, TX". Lower-cased for matching. */
+  destination: text("destination").notNull(),
+  status: text("status").notNull().default("pending"), // pending | done | failed
+  /** Structured venue list; populated once status = done. */
+  venueData: jsonb("venue_data")
+    .$type<{
+      name: string;
+      venueType: string;
+      vibe: string;
+      groupFriendliness: string;
+      roughPrice: string;
+    }[]>()
+    .default([]),
+  venueCount: integer("venue_count"),
+  errorNote: text("error_note"),
+  extractedAt: timestamp("extracted_at", { withTimezone: true }),
+  /** Cache expiry — 30 days from extractedAt. Re-extraction runs after this. */
+  expiresAt: timestamp("expires_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const insertDestinationVenueExtractionSchema = createInsertSchema(destinationVenueExtractionsTable).omit({
+  id: true,
+  createdAt: true,
+});
+export type InsertDestinationVenueExtraction = z.infer<typeof insertDestinationVenueExtractionSchema>;
+export type DestinationVenueExtraction = typeof destinationVenueExtractionsTable.$inferSelect;

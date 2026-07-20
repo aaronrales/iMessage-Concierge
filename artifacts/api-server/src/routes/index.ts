@@ -17,6 +17,7 @@ import operationsRouter from "./operations";
 import privacyRouter from "./privacy";
 import emulatorRouter from "./emulator";
 import projectsRouter from "./projects";
+import jitDestinationExtractionsRouter from "./jitDestinationExtractions";
 
 const router: IRouter = Router();
 
@@ -43,5 +44,6 @@ router.use(operationsRouter);
 router.use(privacyRouter);
 router.use(emulatorRouter);
 router.use(projectsRouter);
+router.use(jitDestinationExtractionsRouter);
 
 export default router;

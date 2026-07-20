@@ -63,6 +63,7 @@ import { recomputeEstimatesForHeadcount } from "./ledger";
 import { getOnboardingStep } from "./onboarding";
 import { DEFAULT_CITY, daysUntilNextSaturday, getForecastForDay } from "./weather";
 import { ensureRevalidationConfigSeeded, runRevalidationScan } from "./venueCorpus/revalidation";
+import { hasValidJITCache, isNYCDestination, runAndPersistJITExtraction } from "./venueCorpus/jitExtraction";
 
 const QUEUES = {
   pollNudge: "poll-nudge",
@@ -80,6 +81,7 @@ const QUEUES = {
   paymentNudgeScan: "payment-nudge-scan",
   actionItemDueScan: "action-item-due-scan",
   commitmentDeadlineScan: "commitment-deadline-scan",
+  jitVenueExtraction: "jit-venue-extraction",
 } as const;
 
 const NON_VOTER_NUDGE_DELAY_SECONDS = 4 * 60 * 60; // 4 hours after a poll opens
@@ -209,6 +211,37 @@ interface PlanReminderJobData {
   planId: number;
 }
 
+interface JITVenueExtractionJobData {
+  destination: string;
+}
+
+async function handleJITVenueExtraction(data: JITVenueExtractionJobData): Promise<void> {
+  logger.info({ destination: data.destination }, "Running JIT venue extraction");
+  await runAndPersistJITExtraction(data.destination);
+}
+
+/**
+ * Enqueues a JIT venue extraction job for the destination if no valid cache
+ * exists yet. Safe to call on every destination lock — it short-circuits when
+ * the cache is warm. Does nothing for NYC destinations (the curated corpus
+ * covers those). Also does nothing when the scheduler is not running (e.g.
+ * during tests or when DATABASE_URL is not set).
+ */
+export async function enqueueJITExtractionIfNeeded(destination: string): Promise<void> {
+  if (isNYCDestination(destination)) return;
+  if (!boss) {
+    logger.debug({ destination }, "JIT extraction skipped: scheduler not running");
+    return;
+  }
+  const cached = await hasValidJITCache(destination);
+  if (cached) {
+    logger.debug({ destination }, "JIT extraction skipped: valid cache exists");
+    return;
+  }
+  await boss.send(QUEUES.jitVenueExtraction, { destination });
+  logger.info({ destination }, "JIT venue extraction enqueued");
+}
+
 async function handlePollNudge({ data }: { data: PollNudgeJobData }): Promise<void> {
   const open = await getOpenPoll(data.threadId);
   if (!open || open.poll.id !== data.pollId) return; // already closed/replaced -- nothing to nudge about
@@ -300,6 +333,8 @@ async function handlePollTiebreakLock({ data }: { data: PollTiebreakJobData }): 
       { projectId: destProject.id, destination: option.label },
       "Destination locked from scheduler tiebreak auto-lock",
     );
+    // Enqueue JIT venue extraction for the locked destination (non-NYC only).
+    await enqueueJITExtractionIfNeeded(option.label);
   }
 
   // Opted-out participants must not receive the lock-in announcement.
@@ -921,6 +956,11 @@ export async function initScheduler(): Promise<void> {
   });
   await boss.work(QUEUES.commitmentDeadlineScan, async () => {
     await handleCommitmentDeadlineScan();
+  });
+  await boss.work<JITVenueExtractionJobData>(QUEUES.jitVenueExtraction, async (jobs: { data: JITVenueExtractionJobData }[]) => {
+    for (const job of jobs) {
+      await handleJITVenueExtraction(job.data);
+    }
   });
 
   // All time-of-day crons are interpreted in CONCIERGE_TIMEZONE so reminders

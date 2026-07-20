@@ -600,6 +600,37 @@ export interface EmulatorMessageResponse {
   messages: EmulatorCapturedMessage[];
 }
 
+export interface JITVenueEntry {
+  name: string;
+  venueType: string;
+  vibe: string;
+  groupFriendliness: string;
+  roughPrice: string;
+}
+
+export interface DestinationVenueExtraction {
+  id: number;
+  destination: string;
+  /** pending | done | failed */
+  status: string;
+  /** @nullable */
+  venueData?: JITVenueEntry[] | null;
+  /** @nullable */
+  venueCount?: number | null;
+  /** @nullable */
+  errorNote?: string | null;
+  /** @nullable */
+  extractedAt?: string | null;
+  /** @nullable */
+  expiresAt?: string | null;
+  createdAt: string;
+}
+
+export interface TriggerJITExtractionRequest {
+  /** @minLength 1 */
+  destination: string;
+}
+
 export type CreateVenuePopulationRunRequestVenueType = typeof CreateVenuePopulationRunRequestVenueType[keyof typeof CreateVenuePopulationRunRequestVenueType];
 
 
@@ -643,5 +674,10 @@ export type GetActivationSummaryParams = {
  * @minimum 1
  */
 windowDays?: number;
+};
+
+export type TriggerJITDestinationExtraction202 = {
+  queued: boolean;
+  destination: string;
 };
 

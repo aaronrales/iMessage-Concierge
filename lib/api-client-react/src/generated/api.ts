@@ -25,6 +25,7 @@ import type {
   Booking,
   CreateVenuePopulationRunRequest,
   DeliveryHealthSummary,
+  DestinationVenueExtraction,
   EmulatorMessageRequest,
   EmulatorMessageResponse,
   EmulatorThread,
@@ -37,6 +38,8 @@ import type {
   SendblueWebhookEvent,
   ThreadDetail,
   ThreadSummary,
+  TriggerJITDestinationExtraction202,
+  TriggerJITExtractionRequest,
   UserWithProfile,
   Venue,
   VenueDetail,
@@ -1894,6 +1897,156 @@ export const useUpdateAgentConfig = <TError = ErrorType<ErrorResponse>,
         TContext
       > => {
       return useMutation(getUpdateAgentConfigMutationOptions(options));
+    }
+
+export const getListJITDestinationExtractionsUrl = () => {
+
+
+
+
+  return `/api/jit-destination-extractions`
+}
+
+/**
+ * Returns cached venue knowledge for non-NYC destinations, ordered by creation date descending. Used by the Populate page to show extraction status per destination.
+ * @summary List all JIT destination venue extractions
+ */
+export const listJITDestinationExtractions = async ( options?: RequestInit): Promise<DestinationVenueExtraction[]> => {
+
+  return customFetch<DestinationVenueExtraction[]>(getListJITDestinationExtractionsUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getListJITDestinationExtractionsQueryKey = () => {
+    return [
+    `/api/jit-destination-extractions`
+    ] as const;
+    }
+
+
+export const getListJITDestinationExtractionsQueryOptions = <TData = Awaited<ReturnType<typeof listJITDestinationExtractions>>, TError = ErrorType<unknown>>( options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listJITDestinationExtractions>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getListJITDestinationExtractionsQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof listJITDestinationExtractions>>> = ({ signal }) => listJITDestinationExtractions({ signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof listJITDestinationExtractions>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type ListJITDestinationExtractionsQueryResult = NonNullable<Awaited<ReturnType<typeof listJITDestinationExtractions>>>
+export type ListJITDestinationExtractionsQueryError = ErrorType<unknown>
+
+
+/**
+ * @summary List all JIT destination venue extractions
+ */
+
+export function useListJITDestinationExtractions<TData = Awaited<ReturnType<typeof listJITDestinationExtractions>>, TError = ErrorType<unknown>>(
+  options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listJITDestinationExtractions>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getListJITDestinationExtractionsQueryOptions(options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export const getTriggerJITDestinationExtractionUrl = () => {
+
+
+
+
+  return `/api/jit-destination-extractions`
+}
+
+/**
+ * Enqueues a background extraction job for the given destination if no valid cache exists. Returns 202 immediately. NYC destinations are rejected (use the curated corpus instead).
+ * @summary Manually trigger JIT venue extraction for a destination
+ */
+export const triggerJITDestinationExtraction = async (triggerJITExtractionRequest: TriggerJITExtractionRequest, options?: RequestInit): Promise<TriggerJITDestinationExtraction202> => {
+
+  return customFetch<TriggerJITDestinationExtraction202>(getTriggerJITDestinationExtractionUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(triggerJITExtractionRequest)
+  }
+);}
+
+
+
+
+
+export const getTriggerJITDestinationExtractionMutationOptions = <TError = ErrorType<ErrorResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof triggerJITDestinationExtraction>>, TError,{data: BodyType<TriggerJITExtractionRequest>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof triggerJITDestinationExtraction>>, TError,{data: BodyType<TriggerJITExtractionRequest>}, TContext> => {
+
+const mutationKey = ['triggerJITDestinationExtraction'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof triggerJITDestinationExtraction>>, {data: BodyType<TriggerJITExtractionRequest>}> = (props) => {
+          const {data} = props ?? {};
+
+          return  triggerJITDestinationExtraction(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type TriggerJITDestinationExtractionMutationResult = NonNullable<Awaited<ReturnType<typeof triggerJITDestinationExtraction>>>
+    export type TriggerJITDestinationExtractionMutationBody = BodyType<TriggerJITExtractionRequest>
+    export type TriggerJITDestinationExtractionMutationError = ErrorType<ErrorResponse>
+
+    /**
+ * @summary Manually trigger JIT venue extraction for a destination
+ */
+export const useTriggerJITDestinationExtraction = <TError = ErrorType<ErrorResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof triggerJITDestinationExtraction>>, TError,{data: BodyType<TriggerJITExtractionRequest>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof triggerJITDestinationExtraction>>,
+        TError,
+        {data: BodyType<TriggerJITExtractionRequest>},
+        TContext
+      > => {
+      return useMutation(getTriggerJITDestinationExtractionMutationOptions(options));
     }
 
 export const getListVenuePopulationRunsUrl = () => {
