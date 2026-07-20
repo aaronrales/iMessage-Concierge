@@ -106,6 +106,8 @@ import {
 import type { Project } from "@workspace/db";
 import { buildGoogleCalendarLink, buildIcsUrl, describePlanSchedule } from "../../lib/agent/calendar";
 import { buildItinerary, renderItineraryAsText } from "../../lib/agent/itinerary";
+import { buildLodgingLinks, buildLodgingGroupMessage } from "../../lib/agent/lodgingLinks";
+import { startArrivalCollection, buildArrivalMatrix, formatArrivalMatrix } from "../../lib/agent/arrivalMatrix";
 import { scheduleDayBeforeReminder, scheduleNonVoterNudge } from "../../lib/agent/scheduler";
 import { buildReservationLinks, describeReservationLinks } from "../../lib/agent/bookingLinks";
 import { buildPlanCardMediaUrl } from "../../lib/agent/planCard";
@@ -120,7 +122,7 @@ import {
   recordPrivateInputResponse,
   resolvePrivateInputRequest,
 } from "../../lib/agent/privateInput";
-import { feedbackTable, db, plansTable, profilesTable, threadParticipantsTable, threadsTable, usersTable } from "@workspace/db";
+import { feedbackTable, db, plansTable, profilesTable, projectsTable, threadParticipantsTable, threadsTable, usersTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { createGroupWithNumbers, sendCarousel, sendDirectMessage, sendGroupMessage, sendReaction, uploadMediaToSendblue } from "../../lib/sendblue";
 import { generateGroupIntroMessage } from "../../lib/agent/groupIntro";
@@ -314,6 +316,14 @@ async function releasePendingProposalToGroup(
 const ITINERARY_LINK_PATTERN = /itinerary/i;
 const ITINERARY_LINK_INTENT = /\b(link|url|send|share|get|show|give)\b/i;
 
+/**
+ * Matches organizer requests to collect arrival details from the group.
+ * "collect arrival info", "ask everyone when they're arriving", "gather
+ * flight details", "start arrival collection", etc.
+ */
+const ARRIVAL_COLLECTION_PATTERN =
+  /\b(collect|gather|ask|start|send|get)\b.{0,40}\barriv|\barriv\w*\s+(info|detail|form|collection|round|survey|\bwhen\b)|\bflight\s+(info|detail|number)/i;
+
 async function processOrganizerSidebarTurn(
   threadId: number,
   senderUserId: number,
@@ -325,6 +335,55 @@ async function processOrganizerSidebarTurn(
   // Detect "send me the itinerary link" style requests without burning an LLM
   // turn. Reply with the URL directly so the organizer can paste it anywhere.
   const lastUserMsg = [...context.recentMessages].reverse().find((m) => m.role === "user");
+
+  // ── Arrival collection shortcut ────────────────────────────────────────────
+  // When the organizer asks to collect arrival info, skip the LLM and start
+  // the collection round directly so the intent is never mis-interpreted.
+  if (lastUserMsg && ARRIVAL_COLLECTION_PATTERN.test(lastUserMsg.content)) {
+    try {
+      const groupThreadId = organizerProject.threadId;
+      const requestId = await startArrivalCollection(organizerProject.id, groupThreadId);
+
+      // DM each group participant (excluding the organizer) asking for arrival details.
+      const participants = await db
+        .select({ userId: threadParticipantsTable.userId })
+        .from(threadParticipantsTable)
+        .where(eq(threadParticipantsTable.threadId, groupThreadId));
+
+      // DM every group participant — including the organizer, so that
+      // isPrivateInputComplete (which counts all thread participants) can
+      // reach 100 %. The organizer should share their own arrival info too.
+      let sentCount = 0;
+      for (const { userId } of participants) {
+        try {
+          const [member] = await db
+            .select({ phoneNumber: usersTable.phoneNumber })
+            .from(usersTable)
+            .where(eq(usersTable.id, userId));
+          if (!member?.phoneNumber) continue;
+          const { thread: dmThread } = await findOrCreateDirectThread(member.phoneNumber);
+          await sendToThread(
+            dmThread.id,
+            "Hey! Quick question about the trip: what are your arrival details? Share your flight number and arrival time if flying, or when you expect to arrive if driving.",
+          );
+          sentCount++;
+        } catch (err) {
+          logger.warn({ err, userId }, "Failed to DM participant for arrival collection; continuing");
+        }
+      }
+
+      await sendContactCardIfNeeded(senderUserId, context.thread.primaryPhoneNumber!);
+      await sendToThread(
+        threadId,
+        `On it — I've sent a private message to ${sentCount} group ${sentCount === 1 ? "member" : "members"} asking for their arrival details (request #${requestId}). I'll let you know when everyone responds.`,
+      );
+    } catch (err) {
+      logger.error({ err, projectId: organizerProject.id }, "Failed to start arrival collection");
+      await sendToThread(threadId, "Sorry, something went wrong starting the arrival collection. Try again in a moment.");
+    }
+    return;
+  }
+
   if (
     lastUserMsg &&
     ITINERARY_LINK_PATTERN.test(lastUserMsg.content) &&
@@ -439,6 +498,63 @@ async function processOrganizerSidebarTurn(
           await recordCommitment(organizerProject.id, member.userId, action.note);
         }
       }
+    }
+  }
+
+  // ── Lodging action handling ───────────────────────────────────────────────
+  // When the organizer reports a lodging cost, build search deep links for
+  // Airbnb/VRBO/Hotels.com and send a per-person split message to the group.
+  // The ledger estimate is expected to be handled via the separate ledgerAction
+  // field the engine sets alongside this one.
+  if (result.lodgingAction) {
+    const action = result.lodgingAction;
+    const groupThreadId = organizerProject.threadId;
+
+    // Compute per-person amount.
+    let perPersonCents = action.perPersonCents;
+    if (!perPersonCents && action.totalCents && action.headcount && action.headcount > 0) {
+      perPersonCents = Math.round(action.totalCents / action.headcount);
+    }
+
+    // Persist per-person cost on the project so the dashboard can display it.
+    if (perPersonCents && perPersonCents > 0) {
+      try {
+        await db.update(projectsTable).set({ lodgingPerPersonCents: perPersonCents }).where(eq(projectsTable.id, organizerProject.id));
+      } catch (err) {
+        logger.warn({ err, projectId: organizerProject.id }, "Failed to store lodgingPerPersonCents; continuing");
+      }
+    }
+
+    // Build lodging search links using the project's destination + date range.
+    // If the organizer provided check-in/out dates in their message, prefer those.
+    const checkIn = action.checkIn ? new Date(action.checkIn) : organizerProject.dateRangeStart;
+    const checkOut = action.checkOut ? new Date(action.checkOut) : organizerProject.dateRangeEnd;
+    const destination = organizerProject.destination ?? "the destination";
+    const guests = action.headcount ?? 8; // fall back to a reasonable default
+
+    const links = buildLodgingLinks({ destination, checkIn, checkOut, guests });
+
+    // Build night count for display.
+    let nights = action.nights;
+    if (!nights && checkIn && checkOut) {
+      nights = Math.round((checkOut.getTime() - checkIn.getTime()) / (24 * 60 * 60 * 1000));
+    }
+
+    const groupMsg = buildLodgingGroupMessage({
+      links,
+      destination,
+      propertyName: action.propertyName,
+      perPersonCents,
+      totalCents: action.totalCents,
+      headcount: action.headcount,
+      nights,
+    });
+
+    try {
+      await sendToThread(groupThreadId, groupMsg);
+      logger.info({ projectId: organizerProject.id, perPersonCents, destination }, "Lodging group message sent");
+    } catch (err) {
+      logger.error({ err, projectId: organizerProject.id }, "Failed to send lodging group message");
     }
   }
 
@@ -1185,6 +1301,45 @@ router.post("/webhooks/sendblue/:secret", async (req, res): Promise<void> => {
         await sendToThread(threadId, "Got it, thanks -- keeping that between us.");
 
         if (await isPrivateInputComplete(openRequest)) {
+          // Check if this request is an arrival-collection round for a project.
+          // If so, send the structured arrival matrix to the group instead of
+          // the generic LLM-aggregated summary — the matrix is more useful.
+          const [arrivalProject] = await db
+            .select({
+              id: projectsTable.id,
+              threadId: projectsTable.threadId,
+              arrivalCollectionRequestId: projectsTable.arrivalCollectionRequestId,
+              organizerUserId: projectsTable.organizerUserId,
+            })
+            .from(projectsTable)
+            .where(eq(projectsTable.arrivalCollectionRequestId, openRequest.id))
+            .limit(1);
+
+          if (arrivalProject) {
+            try {
+              const matrix = await buildArrivalMatrix(arrivalProject);
+              if (matrix && matrix.entries.length > 0) {
+                const matrixText = formatArrivalMatrix(matrix);
+                await resolvePrivateInputRequest(openRequest.id, matrixText);
+                await sendToThread(openRequest.threadId, matrixText);
+                // Notify the organizer's sidebar too.
+                if (arrivalProject.organizerUserId) {
+                  const [orgUser] = await db
+                    .select({ phoneNumber: usersTable.phoneNumber })
+                    .from(usersTable)
+                    .where(eq(usersTable.id, arrivalProject.organizerUserId));
+                  if (orgUser?.phoneNumber) {
+                    const { thread: orgThread } = await findOrCreateDirectThread(orgUser.phoneNumber);
+                    await sendToThread(orgThread.id, `All arrival details are in:\n\n${matrixText}`);
+                  }
+                }
+                return;
+              }
+            } catch (err) {
+              logger.warn({ err, projectId: arrivalProject.id }, "Failed to assemble arrival matrix; falling through to generic summary");
+            }
+          }
+
           const summary = await aggregatePrivateInput(openRequest);
           await resolvePrivateInputRequest(openRequest.id, summary);
           await sendToThread(openRequest.threadId, summary);

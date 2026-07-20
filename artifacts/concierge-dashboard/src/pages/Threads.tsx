@@ -7,6 +7,7 @@ import {
   Search, Users as UsersIcon, MessageSquare, Bot, User, ShieldAlert, BarChart3,
   Trash2, StickyNote, Save, ThumbsUp, ThumbsDown, RefreshCw, ChevronDown, ChevronUp,
   Filter, X as XIcon, CalendarRange, AlertTriangle, CheckCircle2, ExternalLink,
+  Home, PlaneLanding,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -815,6 +816,22 @@ export function ThreadsPage() {
                         </div>
                       );
                     })()}
+                    {threadDetail.project.lodgingPerPersonCents != null && (
+                      <div className="flex items-center gap-1.5 text-xs font-medium text-indigo-700 dark:text-indigo-400">
+                        <Home className="h-3.5 w-3.5" />
+                        <span>
+                          ${Math.round(threadDetail.project.lodgingPerPersonCents / 100)}/person lodging
+                        </span>
+                      </div>
+                    )}
+                    {threadDetail.project.arrival && (
+                      <div className="flex items-center gap-1.5 text-xs font-medium text-cyan-700 dark:text-cyan-400">
+                        <PlaneLanding className="h-3.5 w-3.5" />
+                        <span>
+                          {threadDetail.project.arrival.respondedCount}/{threadDetail.project.arrival.totalCount} arrivals
+                        </span>
+                      </div>
+                    )}
                     <div className="flex items-center gap-2 ml-auto shrink-0">
                       <a
                         href={`/api/projects/${threadDetail.project.id}/itinerary`}

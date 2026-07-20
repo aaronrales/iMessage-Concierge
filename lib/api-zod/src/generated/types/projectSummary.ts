@@ -5,6 +5,7 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+import type { ProjectSummaryArrival } from './projectSummaryArrival';
 import type { ProjectSummaryCommitment } from './projectSummaryCommitment';
 import type { ProjectSummaryLedger } from './projectSummaryLedger';
 import type { ProjectSummaryTimeline } from './projectSummaryTimeline';
@@ -60,5 +61,15 @@ export interface ProjectSummary {
      * @nullable
      */
   commitment?: ProjectSummaryCommitment;
+  /**
+     * Per-person lodging cost in cents, set when the organizer shares a lodging estimate ("Found an Airbnb for $2,400, 8 people"). Null when no lodging estimate has been recorded.
+     * @nullable
+     */
+  lodgingPerPersonCents?: number | null;
+  /**
+     * Arrival-detail collection status. Null when no collection round has been started.
+     * @nullable
+     */
+  arrival?: ProjectSummaryArrival;
   createdAt: Date;
 }

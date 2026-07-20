@@ -58,6 +58,20 @@ export const projectsTable = pgTable("projects", {
    */
   destination: text("destination"),
   destinationPollId: integer("destination_poll_id"),
+  /**
+   * Tracks the active private-input request used to collect per-member
+   * arrival details (flight info, driving ETA). Set when the organizer
+   * triggers the arrival-collection round; cleared/replaced if re-opened.
+   * References private_input_requests.id but kept as a bare integer (no FK)
+   * to mirror the commitmentPollId / destinationPollId pattern.
+   */
+  arrivalCollectionRequestId: integer("arrival_collection_request_id"),
+  /**
+   * Per-person lodging cost in cents, set when the organizer reports a
+   * lodging estimate ("Found an Airbnb for $2,400, 8 people"). Used by the
+   * dashboard to show the per-person cost without recomputing from the ledger.
+   */
+  lodgingPerPersonCents: integer("lodging_per_person_cents"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true })
     .notNull()

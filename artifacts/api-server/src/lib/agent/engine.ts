@@ -171,6 +171,29 @@ export interface AgentTurnResult {
     amountCents: number | null;
   } | null;
   /**
+   * Set in organizer sidebar turns when the organizer shares a lodging cost
+   * ("Found an Airbnb for $2,400, 8 people"). The webhook handler records
+   * the ledger estimate and sends a group message with search deep links.
+   * Null everywhere else.
+   */
+  lodgingAction: {
+    kind: "lodging_estimate";
+    /** Short name of the property, e.g. "Nashville Airbnb" — null if not named. */
+    propertyName: string | null;
+    /** Total cost in cents, e.g. 240000 for $2,400. */
+    totalCents: number | null;
+    /** Number of people to split across. Null = use group participant count. */
+    headcount: number | null;
+    /** Per-person share in cents, alternative to totalCents+headcount. */
+    perPersonCents: number | null;
+    /** ISO date of check-in, e.g. "2026-08-01". Null if not mentioned. */
+    checkIn: string | null;
+    /** ISO date of check-out, e.g. "2026-08-05". Null if not mentioned. */
+    checkOut: string | null;
+    /** Number of nights. Null if not explicitly stated. */
+    nights: number | null;
+  } | null;
+  /**
    * Set only in organizer sidebar turns when the engine decides the turn
    * is a tiebreak override ("go with the rooftop one"). The value is the
    * raw option label text that should be matched against the open poll's
@@ -282,6 +305,16 @@ interface RawAgentResponse {
     note?: unknown;
     member_name?: unknown;
     amount_cents?: unknown;
+  } | null;
+  lodging_action?: {
+    kind?: unknown;
+    property_name?: unknown;
+    total_cents?: unknown;
+    headcount?: unknown;
+    per_person_cents?: unknown;
+    check_in?: unknown;
+    check_out?: unknown;
+    nights?: unknown;
   } | null;
   task_action?: {
     kind?: unknown;
@@ -475,7 +508,12 @@ export async function runAgentTurn(context: ThreadContext, currentUserId: number
             `  • Commitment: organizer says "Jake is in" or "confirm Sarah is coming"\n` +
             `    → kind: "commitment", member_name: "Jake".\n` +
             `  All amounts in CENTS (multiply dollars × 100). Never set ledger_action for general questions about the ledger — just answer using the payment ledger context above.\n` +
-            `  IMPORTANT: the agent never holds, moves, or guarantees money. Never say "I've collected" or "I'll send the money". Language must be: "I've recorded that..." or "I noted that...".`,
+            `  IMPORTANT: the agent never holds, moves, or guarantees money. Never say "I've collected" or "I'll send the money". Language must be: "I've recorded that..." or "I noted that...".\n\n` +
+            `LODGING — when the organizer shares a lodging cost or option, set "lodging_action" in your JSON (in ADDITION to "ledger_action" for the estimate):\n` +
+            `  → kind: "lodging_estimate", property_name: "Nashville Airbnb" (or null), total_cents: 240000, headcount: 8 (or null), per_person_cents: 30000 (alternative to total+headcount), check_in: "2026-08-01" (ISO date or null), check_out: "2026-08-05" (ISO date or null), nights: 4 (or null).\n` +
+            `  Example: "Found an Airbnb for $2,400, 4 nights, 8 people" → total_cents: 240000, headcount: 8, nights: 4.\n` +
+            `  The system will automatically generate Airbnb/VRBO/Hotels.com search links and send the group a cost-split message. Do NOT include lodging links in your "reply" — the system handles that. Your "reply" should just confirm you've noted it.\n` +
+            `  Always set "ledger_action" with kind: "estimate" alongside "lodging_action" so the amount is recorded in the ledger.`,
         },
       ]
     : [];
@@ -658,6 +696,35 @@ export async function runAgentTurn(context: ThreadContext, currentUserId: number
 
   const destinationSuggestionRequest = parsed.destination_suggestion_request === true;
 
+  // Parse lodging_action from organizer sidebar turns.
+  const rawLodging = parsed.lodging_action;
+  const lodgingAction =
+    rawLodging && typeof rawLodging === "object" && rawLodging.kind === "lodging_estimate"
+      ? {
+          kind: "lodging_estimate" as const,
+          propertyName:
+            typeof rawLodging.property_name === "string" && rawLodging.property_name.trim()
+              ? rawLodging.property_name.trim()
+              : null,
+          totalCents:
+            typeof rawLodging.total_cents === "number" && rawLodging.total_cents > 0
+              ? Math.round(rawLodging.total_cents)
+              : null,
+          headcount:
+            typeof rawLodging.headcount === "number" && rawLodging.headcount > 0
+              ? Math.round(rawLodging.headcount)
+              : null,
+          perPersonCents:
+            typeof rawLodging.per_person_cents === "number" && rawLodging.per_person_cents > 0
+              ? Math.round(rawLodging.per_person_cents)
+              : null,
+          checkIn: typeof rawLodging.check_in === "string" && rawLodging.check_in.trim() ? rawLodging.check_in.trim() : null,
+          checkOut: typeof rawLodging.check_out === "string" && rawLodging.check_out.trim() ? rawLodging.check_out.trim() : null,
+          nights:
+            typeof rawLodging.nights === "number" && rawLodging.nights > 0 ? Math.round(rawLodging.nights) : null,
+        }
+      : null;
+
   return {
     reply: typeof parsed.reply === "string" ? parsed.reply : "Got it.",
     displayName: typeof parsed.display_name === "string" && parsed.display_name.trim() ? parsed.display_name.trim() : null,
@@ -675,6 +742,7 @@ export async function runAgentTurn(context: ThreadContext, currentUserId: number
     // before the engine turn runs; this field is always null from the engine.
     organizerTiebreakDecision: null,
     ledgerAction,
+    lodgingAction,
     taskAction,
     commitmentAction,
     destinationSuggestionRequest: destinationSuggestionRequest ? true : null,

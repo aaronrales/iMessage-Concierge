@@ -224,6 +224,12 @@ export const GetThreadResponse = zod.object({
   "lockedAt": zod.coerce.date().nullable().describe('When the headcount was locked, or null if not yet locked.'),
   "lockedCount": zod.number().nullable().describe('The final locked headcount, or null if not yet locked.')
 }).nullish().describe('Active commitment round for this project, if any. Null when no round has been started.'),
+  "lodgingPerPersonCents": zod.number().nullish().describe('Per-person lodging cost in cents, set when the organizer shares a lodging estimate (\"Found an Airbnb for $2,400, 8 people\"). Null when no lodging estimate has been recorded.\n'),
+  "arrival": zod.object({
+  "requestId": zod.number().describe('ID of the private-input request tracking arrival responses.'),
+  "respondedCount": zod.number().describe('Number of group members who have submitted arrival details.'),
+  "totalCount": zod.number().describe('Total number of group participants expected to respond.')
+}).nullish().describe('Arrival-detail collection status. Null when no collection round has been started.'),
   "createdAt": zod.coerce.date()
 }).describe('A multi-event occasion (bachelorette, trip, ...) grouping several plans in a thread. `type` and `status` are open text vocabularies.\n'),zod.null()]).describe('The thread\'s active multi-event project, or null when none is in flight.'),
   "participants": zod.array(zod.object({

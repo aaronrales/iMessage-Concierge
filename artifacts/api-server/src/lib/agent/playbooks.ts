@@ -90,6 +90,13 @@ const BACHELORETTE: Playbook = {
       completionTrigger: "none",
     },
     {
+      key: "collect_arrivals",
+      title: "Collect arrival details",
+      leadTimeDays: 10,
+      actionHint: "collect_arrival_details",
+      completionTrigger: "none",
+    },
+    {
       key: "week_of_logistics",
       title: "Week-of logistics",
       leadTimeDays: 7,
@@ -179,6 +186,13 @@ const REUNION: Playbook = {
       completionTrigger: "plan_confirmed",
     },
     {
+      key: "collect_arrivals",
+      title: "Collect arrival details",
+      leadTimeDays: 10,
+      actionHint: "collect_arrival_details",
+      completionTrigger: "none",
+    },
+    {
       key: "week_of_logistics",
       title: "Week-of logistics",
       leadTimeDays: 7,
@@ -227,6 +241,13 @@ const TRIP: Playbook = {
       leadTimeDays: 14,
       actionHint: "start_activities_shortlist",
       completionTrigger: "plan_confirmed",
+    },
+    {
+      key: "collect_arrivals",
+      title: "Collect arrival details",
+      leadTimeDays: 10,
+      actionHint: "collect_arrival_details",
+      completionTrigger: "none",
     },
     {
       key: "week_of_logistics",
@@ -284,6 +305,8 @@ export function buildTimelineNudgeMessage(stepTitle: string, dueAt: Date | null,
       return `Timeline check${timing}: "${stepTitle}" -- want me to quietly ask everyone what they'd like to chip in for the gift?`;
     case "send_week_of_details":
       return `Timeline check${timing}: "${stepTitle}" -- should I send the group a rundown of the plan for the week?`;
+    case "collect_arrival_details":
+      return `Timeline check${timing}: "${stepTitle}" -- want me to DM everyone privately and ask for their flight info and arrival time?`;
     case "placeholder_destination_decision":
       return `Timeline check${timing}: "${stepTitle}" -- the group hasn't settled on a destination yet. Want to start that conversation?`;
     default:

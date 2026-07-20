@@ -999,6 +999,26 @@ components:
             lockedCount:
               type: ["integer", "null"]
               description: The final locked headcount, or null if not yet locked.
+        lodgingPerPersonCents:
+          type: ["integer", "null"]
+          description: >
+            Per-person lodging cost in cents, set when the organizer shares a
+            lodging estimate ("Found an Airbnb for $2,400, 8 people"). Null
+            when no lodging estimate has been recorded.
+        arrival:
+          type: ["object", "null"]
+          description: Arrival-detail collection status. Null when no collection round has been started.
+          required: [requestId, respondedCount, totalCount]
+          properties:
+            requestId:
+              type: integer
+              description: ID of the private-input request tracking arrival responses.
+            respondedCount:
+              type: integer
+              description: Number of group members who have submitted arrival details.
+            totalCount:
+              type: integer
+              description: Total number of group participants expected to respond.
         createdAt:
           type: string
           format: date-time

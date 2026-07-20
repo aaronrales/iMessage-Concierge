@@ -255,6 +255,19 @@ export type ProjectSummaryCommitment = {
 } | null;
 
 /**
+ * Arrival-detail collection status. Null when no collection round has been started.
+ * @nullable
+ */
+export type ProjectSummaryArrival = {
+  /** ID of the private-input request tracking arrival responses. */
+  requestId: number;
+  /** Number of group members who have submitted arrival details. */
+  respondedCount: number;
+  /** Total number of group participants expected to respond. */
+  totalCount: number;
+} | null;
+
+/**
  * A multi-event occasion (bachelorette, trip, ...) grouping several plans in a thread. `type` and `status` are open text vocabularies.
  */
 export interface ProjectSummary {
@@ -305,6 +318,16 @@ export interface ProjectSummary {
      * @nullable
      */
   commitment?: ProjectSummaryCommitment;
+  /**
+     * Per-person lodging cost in cents, set when the organizer shares a lodging estimate ("Found an Airbnb for $2,400, 8 people"). Null when no lodging estimate has been recorded.
+     * @nullable
+     */
+  lodgingPerPersonCents?: number | null;
+  /**
+     * Arrival-detail collection status. Null when no collection round has been started.
+     * @nullable
+     */
+  arrival?: ProjectSummaryArrival;
   createdAt: string;
 }
 
