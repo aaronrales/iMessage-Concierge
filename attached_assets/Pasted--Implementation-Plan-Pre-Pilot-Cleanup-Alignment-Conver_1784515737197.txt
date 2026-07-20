@@ -1,0 +1,131 @@
+# Implementation Plan: Pre-Pilot Cleanup, Alignment & Conversation Testing
+
+**Companion to:** `conversational-flow-fixes-implementation-plan.md` (do that plan's items #1–2 first; they're user-facing blockers).
+**Goal:** Close the correctness/alignment gaps found in the pre-pilot audit, pay down the operational debt that makes testing unsafe, and stand up a lightweight conversation-simulation workflow so the founder can verify behavior end-to-end without real phones.
+
+Suggested order: Phase A (foundations) → Phase B (correctness) → Phase C (instrumentation) → Phase D (testing workflow, can start in parallel with B) → Phase E (housekeeping, fill idle moments).
+
+---
+
+## Phase A — Foundations (prerequisites for safely testing anything)
+
+### A1. Consolidate migrations into one deterministic system
+**Problem:** Hand-written SQL in `scripts/migrations/` + drizzle-kit migrations in `lib/db/drizzle/` + an implied original `drizzle-kit push` baseline = a fresh database cannot be provisioned from the repo.
+**Work:**
+1. Stand up a scratch Postgres and determine the true current schema (introspect prod/dev with `drizzle-kit introspect`).
+2. Generate a single squashed baseline migration (`0000_baseline`) from the current Drizzle schema files, which are the source of truth.
+3. Verify the baseline creates a byte-identical schema to the live DB (diff `pg_dump --schema-only`).
+4. Delete `scripts/migrations/*.sql` (fold anything not represented in schema files into the baseline); delete the old drizzle migration chain; mark the live DB as migrated-to-baseline (insert into drizzle's migrations table manually — document this one-time step).
+5. Document in `replit.md`: "Fresh DB = `pnpm --filter @workspace/db exec drizzle-kit migrate`. Schema changes = edit schema files → `drizzle-kit generate` → `migrate`. Never `push`, never hand-written SQL." (There's already a `.agents/memory/drizzle-kit-push-non-tty.md` note — update it to reflect the new policy.)
+**Acceptance:** `docker run postgres` + one command + `pnpm test` green against it.
+
+### A2. Central config module + lazy clients + `.env.example`
+**Problem:** Env vars are scattered and unvalidated; `openaiClient.ts` throws at *import*, breaking 4 test suites and making boot failures cryptic.
+**Work:**
+1. New `artifacts/api-server/src/lib/config.ts`: one zod schema validating all env at startup (`DATABASE_URL`, `AI_INTEGRATIONS_OPENAI_BASE_URL`, `AI_INTEGRATIONS_OPENAI_API_KEY`, `GOOGLE_PLACES_API_KEY`, `SENDBLUE_API_KEY`/secret, `CONCIERGE_TIMEZONE` (default America/New_York), `PUBLIC_API_URL`, `CONCIERGE_PHONE_NUMBER`, weather key, etc.). Distinguish required-at-boot vs optional-with-warning (e.g., missing Sendblue creds → boot fine, log loudly, sends become no-ops — this is the emulator/dev mode).
+2. Refactor `openaiClient.ts` to lazy-init: export `getOpenAI()` that constructs on first call; throw on first *use* with a clear message. Update all call sites (engine, etiquette, onboarding, groupIntro, privateInput, destinationSuggestions, arrivalMatrix, JIT extraction).
+3. Commit `.env.example` with every var, a one-line comment each, and dummy values.
+**Acceptance:** `pnpm exec vitest run` passes with zero env vars set (all suites at least load; DB-integration tests skip — see D3). Boot with a missing required var prints exactly which var is missing.
+
+---
+
+## Phase B — Correctness & alignment
+
+### B1. Project completion lifecycle
+**Problem:** Nothing ever marks a project `done`. Post-event, payment/timeline nudges keep firing, and the one-active-project-per-thread index blocks the group's next occasion.
+**Work:**
+1. New scheduler queue `projectCloseoutScan` (daily, after morning window): find active projects where `dateRangeEnd < now() - 1 day`.
+2. For each: DM the organizer sidebar a close-out summary — event recap line, outstanding balances from `getLedgerBalances`, open tasks — and ask to close ("Everything settled? Say 'close it out' and I'll wrap this up, or tell me what's still open.").
+3. Organizer sidebar handles `close it out` (add to the sidebar prompt's command list alongside commitment/task actions): set `status = 'done'`, stamp a `closedAt`, announce a short wrap-up to the group thread (reuse plan-card renderer for a trip-recap card if cheap; plain message otherwise), and trigger plan-level feedback prompts for any child plans that never got one.
+4. Guard every project-scoped scheduler handler (`paymentNudgeScan`, `projectTimelineScan`, `actionItemDueScan`, `commitmentDeadlineScan`) with `PROJECT_ACTIVE_STATUSES` — verify each already filters; add the filter where missing.
+5. If the organizer never responds: re-nudge once at +3 days, then auto-transition to `done` at +7 days with a log entry (never leave zombies).
+**Acceptance:** Emulator scenario (see D2): project with past `dateRangeEnd` → closeout DM → "close it out" → group wrap-up sent, nudges stop, a new project can be created in the same thread.
+
+### B2. Tiebreak defers to the organizer on project polls
+**Problem:** `pollTiebreakAnnounce/Lock` sends "Executive decision…" to the group with no organizer check — violates the organizer contract.
+**Work:**
+1. In the tiebreak-announce handler: resolve `getActiveProject(threadId)`. If an organizer exists → do NOT announce to the group; instead DM the organizer sidebar: "The '<question>' poll is stalled (<vote summary>). Want to make the call, or should I go with <leading>? I'll decide in 24h if I don't hear from you." Schedule the lock job at +24h instead of +1h.
+2. Lock handler: if organizer overrode in the meantime (existing sidebar tiebreak path), respect it; otherwise lock as today but phrase the group announcement as organizer-sanctioned neutral ("Locking in <winner> so we can keep moving").
+3. Non-project polls keep the current 1-hour executive-decision behavior unchanged.
+4. **Sweep for siblings:** audit every scheduler handler that calls `sendToThread` on a group thread (`planRevive`, `pollNudge`, `serendipityScan`, `weatherRescueScan`) — decide explicitly per-handler whether an active project changes its behavior, and leave a one-line comment recording the decision even where the answer is "no change." This prevents the next contract-bypass bug.
+**Acceptance:** Emulator: project poll stalls → organizer DM (not group); organizer silent 24h (time-travel, see D4) → neutral lock message to group.
+
+### B3. Link occasions ↔ projects
+**Problem:** Occasion-scan acceptance leads nowhere structured; an active project doesn't suppress duplicate occasion pings.
+**Work:**
+1. Add `projectId` (nullable FK) to `occasions` schema.
+2. Occasion scan: before pinging, skip if an active project in that thread has matching `honoree`/`honoreeUserId` (or matching linked `projectId`).
+3. On acceptance ("yes, let's plan something"): create a project (`type: milestone_birthday` or infer), set `honoree*` from the occasion, link `occasions.projectId`, and run the trip-intake-style kickoff (flow-fixes plan #3) so the conversation immediately moves.
+**Acceptance:** Emulator: occasion ping → "yes" → project exists with honoree set and intake question asked; second scan run produces no duplicate ping.
+
+---
+
+## Phase C — Pilot instrumentation
+
+### C1. Cost logging
+**Work:** In the (now lazy) OpenAI client wrapper, after every completion, insert into new `llm_cost_log` table: `threadId` (nullable), `module` (caller-supplied string), `model`, `promptTokens`, `completionTokens`, `estimatedCostCents` (hardcoded per-model rate table in config), `createdAt`. Add a rollup query + card on `Operations.tsx`: cost per day, cost per active thread (7-day), top-5 most expensive threads. Also log Google Places calls (count only) for a complete unit-economics picture.
+**Acceptance:** After one emulator conversation, the Operations page shows nonzero cost attributed to that thread.
+
+### C2. Quiet hours for proactive sends
+**Work:** In the messaging-budget check (single chokepoint all proactive sends already pass through): if local time (`CONCIERGE_TIMEZONE`) is outside 09:00–21:00, defer — re-enqueue the send with a delay to 09:05, don't drop it (dropping a payment nudge silently is worse than sending it late). User-initiated replies are never gated. Config: `QUIET_HOURS_START/END` with defaults.
+**Acceptance:** Unit test with faked clock: proactive send at 23:00 → deferred job for 09:05; reactive reply at 23:00 → sends immediately.
+
+---
+
+## Phase D — Lightweight conversation-testing workflow
+
+The Emulator's AsyncLocalStorage capture is the right foundation — it runs the *real* webhook path. Build three thin layers on it:
+
+### D1. Scenario runner (the core)
+New `artifacts/api-server/src/testing/scenarioRunner.ts`:
+- A scenario is a TS/JSON fixture: `{ name, seed, turns }` where `seed` declares starting state (users, thread, optional project/poll/ledger rows — thin helpers over the schema) and `turns` is an ordered list of `{ from: "alice", text: "..." }` user messages plus `{ expect: [...] }` assertion blocks.
+- Runner: provision seed rows (inside a transaction rolled back at the end, or against a dedicated scratch schema), then for each turn, invoke the same entry point the Emulator route uses (extract the shared function from `routes/emulator.ts` if it isn't already shared), collect captured outbound messages, and evaluate expectations.
+- Two assertion styles, both cheap:
+  - **Deterministic:** `contains`/`notContains`/`regex` on captured messages, `dbExpect` (e.g., "a project row exists with type=trip"), `sentToThread` (group vs organizer DM routing — this is how B2's contract is asserted).
+  - **LLM-judge (optional per assertion):** `judge: "the reply asks for trip dates"` → one cheap model call scoring pass/fail. Use sparingly; deterministic first.
+- **Mock the nondeterministic edges, run everything else real:** stub Google Places/lodging/web-search tool functions with fixture responses (keyed by scenario) so runs are repeatable and free; the LLM engine call itself stays real by default, with a `--record`/`--replay` flag that caches LLM responses per scenario to disk for fast, free re-runs (replay mode is what CI and quick local iterations use; record mode refreshes after prompt changes).
+
+### D2. Golden scenario suite
+`artifacts/api-server/src/testing/scenarios/*.scenario.ts`, run via `pnpm test:scenarios`. Initial set (each maps to a fixed bug or contract):
+1. `lake-como-trip` — the transcript from the founder's screenshot: trip intent → intake questions asked → lodging request → options delivered or bounded promise (regression for flow-fixes #1–3).
+2. `bachelorette-happy-path` — occasion mention → project + playbook → proposal gated to organizer → approve → poll released → votes + tapback → commitment round → headcount lock → ledger estimates → payment recorded.
+3. `organizer-tiebreak` — stalled project poll → organizer DM'd, group NOT messaged → time-travel 24h → neutral lock (B2).
+4. `project-closeout` — past-dated project → closeout DM → "close it out" → wrap-up + nudges stop (B1).
+5. `etiquette-silence` — group banter with no planning intent → zero captured sends.
+6. `privacy-scrub` — private budget collected via DM → group-visible venue proposal contains no budget mention.
+7. `occasion-to-project` — B3 acceptance path.
+Every future bug found in dogfood gets a scenario before it gets a fix — that's the standing rule.
+
+### D3. Test-suite hygiene (finishes what A2 starts)
+Split vitest into two projects in `vitest.config.ts`: `unit` (no DB, no network — must pass with zero env) and `integration` (requires `TEST_DATABASE_URL`; ledger DB tests and the scenario suite live here; skipped with a visible notice when the var is absent). Fix the 4 suites that currently fail at import (covered by A2's lazy client). Add `pnpm test` = unit, `pnpm test:all` = both.
+
+### D4. Time travel for scheduler paths
+Scenarios like B1/B2 need "24 hours pass." Two pieces:
+- A `now()` provider: tiny module `lib/agent/clock.ts` exporting `getNow()`; replace direct `new Date()` in scheduler *decision logic* (not DB defaults) with it. Scenario runner can then set a frozen/offset clock.
+- A `runScan(queueName)` test helper that invokes a scheduler handler directly (they're already plain async functions) instead of waiting for pg-boss cron — pg-boss itself stays out of the test path entirely.
+
+### D5. Founder-facing manual layer (small, high leverage)
+On the existing Emulator dashboard page: (a) a scenario dropdown — "load seed state from scenario X" so manual poking starts from a rich fixture instead of a blank thread; (b) a "save this conversation as scenario draft" button that serializes the current emulator exchange to a fixture file skeleton (assertions added by hand after); (c) a persona switcher if not already present (send the next message as Alice/Bob/organizer) so group dynamics and organizer-sidebar routing can be exercised by one person. This makes the founder's exploratory testing directly convertible into permanent regression coverage.
+
+---
+
+## Phase E — Housekeeping (fill idle moments; all < 30 min each)
+1. Delete `artifacts/api-server/seed-temp.mts` and `scripts/src/hello.ts` (or move seed logic into a real `pnpm seed` script if still used).
+2. Resolve the esbuild peer-dependency warning (align the pinned esbuild with the plugin's supported range).
+3. Refresh `replit.md`: project layer, organizer contract + proposal gate, playbooks/ledger/closeout lifecycle, the new migration policy (A1), config policy (A2), and the scenario-testing workflow (`pnpm test:scenarios`). Delete stale references (Yelp key, "single LLM call" if any remain).
+4. Confirm `mockup-sandbox` is still used; remove from the workspace if not.
+5. Add the audit's standing rule as a comment atop the webhook: deterministic-command handlers should migrate into the pipeline structure below as they're touched (see next item).
+6. **Webhook decomposition, staged:** extract the deterministic command handlers (mute, forget/knowledge, approvals/rejections/tiebreak replies, group-creation, arrival replies, tapbacks) from `routes/webhooks/sendblue.ts` into `lib/agent/commands/` as an ordered registry of `{ matcher, handler }` pairs the webhook iterates. Target: webhook file under ~600 lines handling only parse → dedupe → command pipeline → gates → agent turn. Full gate/turn extraction is post-pilot; do not block on it.
+
+---
+
+## Sequencing & effort (rough, one developer)
+| Phase | Items | Est. |
+|---|---|---|
+| A | A1 migrations, A2 config | 1.5–2 days |
+| B | B1 closeout, B2 tiebreak, B3 occasions | 2–2.5 days |
+| C | C1 cost, C2 quiet hours | 1 day |
+| D | D1 runner, D2 scenarios, D3 hygiene, D4 clock, D5 emulator UX | 3–4 days (D1+D3 first; scenarios accrete) |
+| E | Housekeeping + staged webhook extraction | 1–1.5 days spread out |
+
+**Definition of pilot-ready:** fresh DB provisions with one command; `pnpm test` green with no env; the 7 golden scenarios pass in replay mode; cost and delivery metrics visible on Operations; no proactive send can fire at midnight; and a project can be born, planned, decided, paid, and closed entirely inside the Emulator.
