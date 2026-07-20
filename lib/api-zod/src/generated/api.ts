@@ -615,6 +615,30 @@ export const SendEmulatorMessageResponse = zod.object({
 
 
 /**
+ * Returns the current admin-controlled agent configuration. The `persona` key falls back to the built-in default when not yet saved to the database, so the Settings page is always pre-populated.
+ * @summary Get agent configuration
+ */
+export const GetAgentConfigResponse = zod.object({
+  "globalGuidance": zod.string().optional().describe('Cross-cutting ops corrections injected into every agent turn after the persona block. Leave blank to use default behavior.\n'),
+  "persona": zod.string().optional().describe('Voice, tone, and behavioral principles for the bot. Injected between SYSTEM_PROMPT and globalGuidance on every agent turn. Falls back to the built-in default when not yet saved to the database.\n')
+})
+
+
+/**
+ * Upserts one or both config keys independently. Only supplied fields are written; omitted fields are left unchanged.
+ * @summary Update agent configuration
+ */
+export const UpdateAgentConfigBody = zod.object({
+  "globalGuidance": zod.string().optional().describe('Cross-cutting ops corrections injected into every agent turn after the persona block. Leave blank to use default behavior.\n'),
+  "persona": zod.string().optional().describe('Voice, tone, and behavioral principles for the bot. Injected between SYSTEM_PROMPT and globalGuidance on every agent turn. Falls back to the built-in default when not yet saved to the database.\n')
+})
+
+export const UpdateAgentConfigResponse = zod.object({
+  "received": zod.boolean()
+})
+
+
+/**
  * Returns the 50 most recent venue population runs, ordered by createdAt DESC.
  * @summary List recent venue population runs
  */

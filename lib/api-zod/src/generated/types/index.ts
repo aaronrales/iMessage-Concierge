@@ -8,6 +8,7 @@
 
 export * from './activationSummary';
 export * from './activationSummaryBySource';
+export * from './agentConfig';
 export * from './booking';
 export * from './bookingDetails';
 export * from './bookingStatus';

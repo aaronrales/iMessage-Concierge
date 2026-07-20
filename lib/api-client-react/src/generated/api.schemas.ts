@@ -5,6 +5,13 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+export interface AgentConfig {
+  /** Cross-cutting ops corrections injected into every agent turn after the persona block. Leave blank to use default behavior. */
+  globalGuidance?: string;
+  /** Voice, tone, and behavioral principles for the bot. Injected between SYSTEM_PROMPT and globalGuidance on every agent turn. Falls back to the built-in default when not yet saved to the database. */
+  persona?: string;
+}
+
 export interface HealthStatus {
   status: string;
 }

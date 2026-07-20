@@ -535,6 +535,49 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /agent-config:
+    get:
+      operationId: getAgentConfig
+      tags: [operations]
+      summary: Get agent configuration
+      description: >
+        Returns the current admin-controlled agent configuration.
+        The `persona` key falls back to the built-in default when not yet saved
+        to the database, so the Settings page is always pre-populated.
+      responses:
+        "200":
+          description: Current agent configuration
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentConfig"
+    put:
+      operationId: updateAgentConfig
+      tags: [operations]
+      summary: Update agent configuration
+      description: >
+        Upserts one or both config keys independently. Only supplied fields are
+        written; omitted fields are left unchanged.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AgentConfig"
+      responses:
+        "200":
+          description: Config saved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookAck"
+        "400":
+          description: Invalid request body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
   /venue-population-runs:
     get:
       operationId: listVenuePopulationRuns
@@ -594,6 +637,21 @@ components:
         type: integer
 
   schemas:
+    AgentConfig:
+      type: object
+      properties:
+        globalGuidance:
+          type: string
+          description: >
+            Cross-cutting ops corrections injected into every agent turn after
+            the persona block. Leave blank to use default behavior.
+        persona:
+          type: string
+          description: >
+            Voice, tone, and behavioral principles for the bot. Injected between
+            SYSTEM_PROMPT and globalGuidance on every agent turn. Falls back to
+            the built-in default when not yet saved to the database.
+
     HealthStatus:
       type: object
       properties:

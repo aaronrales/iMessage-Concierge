@@ -60,23 +60,37 @@ function parseCommitmentDeadline(raw: string): Date | null {
 }
 
 /**
- * Fetches the `globalGuidance` ops instruction block from `agent_config`. This
- * text is prepended to every agent system prompt when non-empty, giving ops a
- * real-time lever for cross-cutting corrections without a code deploy.
- *
- * Returns null (not throwing) on any DB error so a config hiccup can never
- * break normal message processing.
+ * Fetches an `agent_config` value by key. Returns null (not throwing) on any
+ * DB error so a config hiccup can never break normal message processing.
  */
-async function getGlobalGuidance(): Promise<string | null> {
+async function getAgentConfigValue(key: string): Promise<string | null> {
   try {
     const [row] = await db
       .select({ value: agentConfigTable.value })
       .from(agentConfigTable)
-      .where(eq(agentConfigTable.key, "globalGuidance"));
+      .where(eq(agentConfigTable.key, key));
     return row?.value?.trim() || null;
   } catch {
     return null;
   }
+}
+
+/**
+ * Fetches the `globalGuidance` ops instruction block from `agent_config`. This
+ * text is injected after the persona block on every agent turn, giving ops a
+ * real-time lever for cross-cutting corrections without a code deploy.
+ */
+async function getGlobalGuidance(): Promise<string | null> {
+  return getAgentConfigValue("globalGuidance");
+}
+
+/**
+ * Fetches the `persona` block from `agent_config`. This defines the bot's
+ * voice, tone, and behavioral principles. Injected between SYSTEM_PROMPT and
+ * globalGuidance so identity is established before functional rules layer on.
+ */
+async function getPersona(): Promise<string | null> {
+  return getAgentConfigValue("persona");
 }
 
 export interface AgentTurnResult {
@@ -422,7 +436,7 @@ export async function runAgentTurn(context: ThreadContext, currentUserId: number
     ...(returningMemberNotes.length > 0 ? [returningMemberNotes.join("\n")] : []),
   ].join("\n\n");
 
-  const globalGuidance = await getGlobalGuidance();
+  const [globalGuidance, persona] = await Promise.all([getGlobalGuidance(), getPersona()]);
 
   // When running as an organizer sidebar turn, inject a block that tells the
   // model it is in a private 1:1 with the project organizer, not the group.
@@ -468,7 +482,11 @@ export async function runAgentTurn(context: ThreadContext, currentUserId: number
 
   const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
     { role: "system", content: SYSTEM_PROMPT },
-    // Ops-authored cross-cutting guidance injected when non-empty.
+    // Persona block: voice, tone, and behavioral principles. Injected after
+    // functional instructions but before ops corrections so identity is
+    // established first. Editable from the Settings page without a code deploy.
+    ...(persona ? [{ role: "system" as const, content: `Persona (voice, tone, and behavior):\n${persona}` }] : []),
+    // Ops-authored cross-cutting corrections injected when non-empty.
     ...(globalGuidance ? [{ role: "system" as const, content: `Ops guidance (apply to all threads):\n${globalGuidance}` }] : []),
     { role: "system", content: situational },
     ...sidebarBlock,

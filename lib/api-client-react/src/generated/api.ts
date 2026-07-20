@@ -21,6 +21,7 @@ import type {
 
 import type {
   ActivationSummary,
+  AgentConfig,
   Booking,
   CreateVenuePopulationRunRequest,
   DeliveryHealthSummary,
@@ -1743,6 +1744,156 @@ export const useSendEmulatorMessage = <TError = ErrorType<ErrorResponse>,
         TContext
       > => {
       return useMutation(getSendEmulatorMessageMutationOptions(options));
+    }
+
+export const getGetAgentConfigUrl = () => {
+
+
+
+
+  return `/api/agent-config`
+}
+
+/**
+ * Returns the current admin-controlled agent configuration. The `persona` key falls back to the built-in default when not yet saved to the database, so the Settings page is always pre-populated.
+ * @summary Get agent configuration
+ */
+export const getAgentConfig = async ( options?: RequestInit): Promise<AgentConfig> => {
+
+  return customFetch<AgentConfig>(getGetAgentConfigUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetAgentConfigQueryKey = () => {
+    return [
+    `/api/agent-config`
+    ] as const;
+    }
+
+
+export const getGetAgentConfigQueryOptions = <TData = Awaited<ReturnType<typeof getAgentConfig>>, TError = ErrorType<unknown>>( options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getAgentConfig>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetAgentConfigQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getAgentConfig>>> = ({ signal }) => getAgentConfig({ signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getAgentConfig>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type GetAgentConfigQueryResult = NonNullable<Awaited<ReturnType<typeof getAgentConfig>>>
+export type GetAgentConfigQueryError = ErrorType<unknown>
+
+
+/**
+ * @summary Get agent configuration
+ */
+
+export function useGetAgentConfig<TData = Awaited<ReturnType<typeof getAgentConfig>>, TError = ErrorType<unknown>>(
+  options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getAgentConfig>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getGetAgentConfigQueryOptions(options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export const getUpdateAgentConfigUrl = () => {
+
+
+
+
+  return `/api/agent-config`
+}
+
+/**
+ * Upserts one or both config keys independently. Only supplied fields are written; omitted fields are left unchanged.
+ * @summary Update agent configuration
+ */
+export const updateAgentConfig = async (agentConfig: AgentConfig, options?: RequestInit): Promise<WebhookAck> => {
+
+  return customFetch<WebhookAck>(getUpdateAgentConfigUrl(),
+  {
+    ...options,
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(agentConfig)
+  }
+);}
+
+
+
+
+
+export const getUpdateAgentConfigMutationOptions = <TError = ErrorType<ErrorResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateAgentConfig>>, TError,{data: BodyType<AgentConfig>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof updateAgentConfig>>, TError,{data: BodyType<AgentConfig>}, TContext> => {
+
+const mutationKey = ['updateAgentConfig'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof updateAgentConfig>>, {data: BodyType<AgentConfig>}> = (props) => {
+          const {data} = props ?? {};
+
+          return  updateAgentConfig(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type UpdateAgentConfigMutationResult = NonNullable<Awaited<ReturnType<typeof updateAgentConfig>>>
+    export type UpdateAgentConfigMutationBody = BodyType<AgentConfig>
+    export type UpdateAgentConfigMutationError = ErrorType<ErrorResponse>
+
+    /**
+ * @summary Update agent configuration
+ */
+export const useUpdateAgentConfig = <TError = ErrorType<ErrorResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateAgentConfig>>, TError,{data: BodyType<AgentConfig>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof updateAgentConfig>>,
+        TError,
+        {data: BodyType<AgentConfig>},
+        TContext
+      > => {
+      return useMutation(getUpdateAgentConfigMutationOptions(options));
     }
 
 export const getListVenuePopulationRunsUrl = () => {
