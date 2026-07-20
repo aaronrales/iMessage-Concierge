@@ -1,0 +1,13 @@
+5. Task + assignment tracking. Lightweight tasks on projects (title, owner, due date), assignable to members ("Jake owns the party bus"), with deadline nudges. Unglamorous, but "the organizer carries every open loop in her head" is precisely the mental-load pain you're selling relief from — the agent has to be able to hold the loops.
+
+Milestone-specific components:
+6. Multi-day itinerary artifact. Extend your plan-card renderer to a multi-stop, multi-day itinerary card (and a print-friendly version). For bachelorettes this is half the perceived product — organizers currently hand-build these in Canva. You have the rendering pipeline; this is a new template on it.
+7. Commitment mechanics. Soft-yes → hard-yes escalation with a headcount lock deadline ("locking the house at 8 people Friday — confirm by then or you're out of the split"), visible to the group. This is your anti-flaking answer, and it works precisely because the agent is the enforcer — the organizer never has to be the bad guy chasing stragglers. Reuses polls + scheduler + budget governor.
+
+Trip-specific components:
+9. Destination decision support. A decision stage before venue logic: destination shortlists framed by collected budgets and date windows ("for your $800/person budget and March dates: Austin, Nashville, or Miami"), run through your existing poll + tiebreak machinery. Explicitly do not build flight search — rough cost context via web search is enough to frame the vote.
+10. Just-in-time destination knowledge. When a project lands on Nashville, run your extraction pipeline ad hoc: pull top venues/activities via Places + web search, extract your attribute schema on the fly, cache per-destination with provisional-tier hedging. The NYC corpus stays your deep home-market moat; JIT extraction is how trips don't break it. This reuses extraction.ts nearly wholesale — the new part is triggering and caching per-project rather than via population runs.
+11. Lodging + travel coordination. Airbnb/VRBO/hotel deep links with per-person split math feeding the ledger (extends bookingLinks.ts), plus an arrival matrix — flight details collected via private DM rails, assembled into "who lands when" for the group. Collection and assembly only; no travel APIs.
+
+Cross-cutting, last but load-bearing:
+12. Organizer digest. A weekly (daily in crunch week) DM: what's decided, what's stalled, who hasn't paid, what's next. This is the reworked "dashboard" — it's the recurring moment the organizer feels the labor being carried, which makes it your retention and willingness-to-pay engine more than any single feature. Pure assembly of state you already track.
