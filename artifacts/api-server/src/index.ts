@@ -1,6 +1,7 @@
 import app from "./app";
 import { logger } from "./lib/logger";
 import { initScheduler } from "./lib/agent/scheduler";
+import { seedAgentRules } from "./lib/agent/seedRules";
 
 const rawPort = process.env["PORT"];
 
@@ -27,4 +28,8 @@ app.listen(port, (err) => {
 
 initScheduler().catch((error) => {
   logger.error({ error }, "Failed to start proactive messaging scheduler");
+});
+
+seedAgentRules().catch((err) => {
+  logger.error({ err }, "Failed to seed agent rules");
 });

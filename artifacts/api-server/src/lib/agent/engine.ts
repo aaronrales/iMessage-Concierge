@@ -1,7 +1,8 @@
 import { openai, CHAT_MODEL } from "../openaiClient";
 import { DEFAULT_PERSONA } from "../../routes/agent-config";
-import { agentConfigTable, db, profilesTable } from "@workspace/db";
-import { eq } from "drizzle-orm";
+import { agentConfigTable, agentRulesTable, db, profilesTable } from "@workspace/db";
+import type { AgentRule } from "@workspace/db";
+import { asc, eq } from "drizzle-orm";
 import type { ThreadContext } from "./context";
 import { logger } from "../logger";
 import { AGENT_TOOLS, executeAgentTool, type VenueCarouselEntry } from "./tools";
@@ -97,6 +98,47 @@ async function getGlobalGuidance(): Promise<string | null> {
  */
 async function getPersona(): Promise<string> {
   return (await getAgentConfigValue("persona")) ?? DEFAULT_PERSONA;
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Agent rules cache
+// ──────────────────────────────────────────────────────────────────────────────
+
+const RULES_CACHE_TTL_MS = 30_000; // 30 seconds
+let rulesCache: { rules: AgentRule[]; fetchedAt: number } | null = null;
+
+/**
+ * Returns all enabled agent rules ordered by sort_order, with a 30-second
+ * TTL in-memory cache so dashboard changes propagate within half a minute
+ * without adding a live DB round-trip to every message turn.
+ */
+async function getEnabledRules(): Promise<AgentRule[]> {
+  const now = Date.now();
+  if (rulesCache && now - rulesCache.fetchedAt < RULES_CACHE_TTL_MS) {
+    return rulesCache.rules;
+  }
+  try {
+    const rules = await db
+      .select()
+      .from(agentRulesTable)
+      .where(eq(agentRulesTable.enabled, true))
+      .orderBy(asc(agentRulesTable.sortOrder), asc(agentRulesTable.id));
+    rulesCache = { rules, fetchedAt: now };
+    return rules;
+  } catch {
+    // On DB error fall back to cached (possibly stale) rules rather than
+    // breaking message processing.
+    return rulesCache?.rules ?? [];
+  }
+}
+
+/**
+ * Invalidates the in-memory rules cache so the next agent turn re-fetches
+ * from the DB. Call this after any write to `agent_rules` if you want changes
+ * to propagate immediately rather than waiting for the 30s TTL.
+ */
+export function invalidateRulesCache(): void {
+  rulesCache = null;
 }
 
 export interface AgentTurnResult {
@@ -250,28 +292,6 @@ You have these capabilities, which you can trigger by filling in the matching fi
 - Starting a project when the conversation reveals a multi-event occasion -- a bachelorette, a milestone birthday, a reunion, a trip, or anything similar that will need several separate events (dinners, activities, outings) planned under one umbrella. Set "project" with its type, the honoree if there is one, and the date range if known. Do this only once per occasion: if the context below already shows an active project, never set "project" again -- new details you learn (dates, honoree) can still be included if you do not see them reflected yet. A single dinner or one-off hangout is NOT a project; leave "project" null for those. Once a project is active, plan each event inside it as its own plan, and feel free to coordinate multiple events at once.
 - Suggesting destinations for a trip project: when the active project is of type "trip" AND the context shows no destination has been set yet, and either the group is discussing where to go OR the organizer asks for destination ideas, set "destination_suggestion_request" to true in your JSON. When you do this, the system will run a web search and send the group a destination shortlist poll automatically -- you do NOT need to list destinations in your "reply". Your reply should simply say something like "Let me pull together some destination options for you." Set this to true only once, only for trip projects with no destination, and only when destination research is genuinely called for. If a destination is already set or the project is not a trip, leave this field null or omit it.
 - Asking a sensitive question privately over DM instead of in the group, by setting "private_question" (group threads only). Use this when the answer is something a person might not want to say in front of the group (e.g. "what's a realistic amount to chip in for the gift?", or a private availability/budget check tied to a group decision). Never ask a sensitive question like this directly in the group -- set "private_question" instead and tell the group in your "reply" that you're checking with everyone individually. Each person will be DMed your exact question, and only a combined, anonymous summary comes back to the group -- you never see who said what.
-
-When a group needs a suggestion (a venue, an activity, a plan), silently satisfy every constraint listed under "Group constraints to satisfy privately" below, if present. Pick something that works for everyone's budget, dietary needs, and preferences simultaneously. NEVER say which person's constraint drove which part of the choice, and never say things like "since Alex is vegetarian" or "to fit Sam's budget" in a group reply -- just make the good choice silently, the way a thoughtful host would.
-
-You can also call the search_venues tool whenever you're about to suggest a specific place, so you never invent a venue that doesn't exist.
-
-You can also call the search_lodging tool whenever someone asks about hotels, places to stay, or lodging options. NEVER say you'll find hotels or "pull together some options" without actually calling this tool first — if you can't call it right now, say so honestly instead of making an unbacked promise.
-
-CAPABILITY BOUNDARY (checked against the actual tool list — update this comment whenever tools change):
-  ✅ Venues/activities: search_venues tool
-  ✅ Hotels/lodging: search_lodging tool
-  ❌ Flights: not available — use deep links and collect arrival info via private_question only
-  ❌ Live pricing / confirmed bookings: not available — provide search links only, never claim a booking is confirmed
-
-ACTIVE PROJECT RULES — when this thread has an active project:
-
-1. Forward motion: Every reply must end with one of (a) a question that moves the plan forward, (b) a concrete proposal (search results, a poll, specific options), or (c) a stated action with a bounded time estimate ("give me a sec"). Never end on a bare "sure!" or "sounds great" with nothing else. If you have no proposal ready, ask for the next thing you need.
-
-2. Act on direct requests: When the user makes a direct, executable request and you have a tool to fulfill it in this turn (e.g. "should we start with hotels?", "find some restaurants"), call the tool and present results — do not ask for permission to proceed. Reserve confirmation only for gated actions (organizer-approval-required proposals, money-adjacent decisions, or truly irreversible actions). The proposal gate already handles those cases structurally.
-
-3. Trip intake: When you set "project" for the first time with type "trip", "bachelorette", or "reunion", your "reply" must immediately ask for the top 1–2 unknowns needed to move forward — in this order of priority: (1) date range if not yet stated, (2) rough headcount, (3) where they're based / destination ideas if the type is trip. Do not end with "let me know if you need anything!" — ask for the specific input.
-
-4. Group thread offer: When a trip/bachelorette/reunion project is being discussed in a 1:1 thread and context shows no group thread has been created yet, include a one-time offer to start a group thread so the whole crew can be involved directly. Only offer this once — if context shows it was already offered or declined, skip it.
 
 Always respond with ONLY a JSON object matching this shape, no prose outside the JSON:
 {
@@ -495,7 +515,11 @@ export async function runAgentTurn(context: ThreadContext, currentUserId: number
     ...(returningMemberNotes.length > 0 ? [returningMemberNotes.join("\n")] : []),
   ].join("\n\n");
 
-  const [globalGuidance, persona] = await Promise.all([getGlobalGuidance(), getPersona()]);
+  const [globalGuidance, persona, rules] = await Promise.all([
+    getGlobalGuidance(),
+    getPersona(),
+    getEnabledRules(),
+  ]);
 
   // When running as an organizer sidebar turn, inject a block that tells the
   // model it is in a private 1:1 with the project organizer, not the group.
@@ -546,6 +570,18 @@ export async function runAgentTurn(context: ThreadContext, currentUserId: number
 
   const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
     { role: "system", content: SYSTEM_PROMPT },
+    // DB-backed behavioral policy rules. Injected before the persona so
+    // functional policies land immediately after the capability/schema block,
+    // mirroring where they used to live in the hardcoded SYSTEM_PROMPT.
+    // Editable from the Settings → Agent rules section without a code deploy.
+    ...(rules.length > 0
+      ? [
+          {
+            role: "system" as const,
+            content: `Agent behavioral rules:\n\n${rules.map((r) => r.content).join("\n\n")}`,
+          },
+        ]
+      : []),
     // Persona block: voice, tone, and behavioral principles. Injected after
     // functional instructions but before ops corrections so identity is
     // established first. Editable from the Settings page without a code deploy.

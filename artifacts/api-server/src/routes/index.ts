@@ -18,6 +18,7 @@ import privacyRouter from "./privacy";
 import emulatorRouter from "./emulator";
 import projectsRouter from "./projects";
 import jitDestinationExtractionsRouter from "./jitDestinationExtractions";
+import agentRulesRouter from "./agent-rules";
 
 const router: IRouter = Router();
 
@@ -45,5 +46,6 @@ router.use(privacyRouter);
 router.use(emulatorRouter);
 router.use(projectsRouter);
 router.use(jitDestinationExtractionsRouter);
+router.use(agentRulesRouter);
 
 export default router;
