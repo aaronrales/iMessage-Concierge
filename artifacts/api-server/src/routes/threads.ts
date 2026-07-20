@@ -235,6 +235,8 @@ async function getActiveProjectSummary(
     headcountLockedCount: project.headcountLockedCount ?? null,
     lodgingPerPersonCents: project.lodgingPerPersonCents ?? null,
     arrivalCollectionRequestId: project.arrivalCollectionRequestId ?? null,
+    closeoutPromptSentAt: project.closeoutPromptSentAt ?? null,
+    closedAt: project.closedAt ?? null,
     childPlanCount: childCount?.value ?? 0,
     timeline,
     ledger,

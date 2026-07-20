@@ -1,5 +1,5 @@
 import { PgBoss } from "pg-boss";
-import { and, eq, inArray, lt } from "drizzle-orm";
+import { and, eq, inArray, isNull, lt } from "drizzle-orm";
 import { db, pendingDeliverablesTable, profilesTable, projectsTable, threadParticipantsTable, threadsTable, usersTable, PROJECT_ACTIVE_STATUSES } from "@workspace/db";
 import { logger } from "../logger";
 import { canSendProactiveMessage, recordProactiveSend } from "./messagingBudget";
@@ -64,6 +64,7 @@ import { getOnboardingStep } from "./onboarding";
 import { DEFAULT_CITY, daysUntilNextSaturday, getForecastForDay } from "./weather";
 import { ensureRevalidationConfigSeeded, runRevalidationScan } from "./venueCorpus/revalidation";
 import { hasValidJITCache, isNYCDestination, runAndPersistJITExtraction } from "./venueCorpus/jitExtraction";
+import { getNow } from "./clock";
 
 const QUEUES = {
   pollNudge: "poll-nudge",
@@ -83,6 +84,7 @@ const QUEUES = {
   commitmentDeadlineScan: "commitment-deadline-scan",
   jitVenueExtraction: "jit-venue-extraction",
   pendingDeliverableScan: "pending-deliverable-scan",
+  projectCloseoutScan: "project-closeout-scan",
 } as const;
 
 const NON_VOTER_NUDGE_DELAY_SECONDS = 4 * 60 * 60; // 4 hours after a poll opens
@@ -135,6 +137,12 @@ const COMMITMENT_DEADLINE_SCAN_CRON = "0 10 * * *"; // daily at 10:00 local
 // an honest fallback message. Timezone-agnostic — 2-minute windows are short
 // enough that time-of-day gating is not meaningful here.
 const PENDING_DELIVERABLE_SCAN_CRON = "*/2 * * * *";
+// Project closeout scan: runs daily at 1pm local. Sends a closeout prompt to
+// the organizer of any project past its end date, re-nudges after 3 days, and
+// auto-closes after 7 days of silence.
+const PROJECT_CLOSEOUT_SCAN_CRON = "0 13 * * *";
+const PROJECT_CLOSEOUT_FOLLOWUP_DAYS = 3;
+const PROJECT_CLOSEOUT_AUTO_CLOSE_DAYS = 7;
 // A group has to have gone quiet for a real stretch before an unprompted
 // suggestion is worth the interruption -- this is what keeps it feeling
 // rare and well-timed instead of naggy.
@@ -337,6 +345,7 @@ async function handlePendingDeliverableScan(): Promise<void> {
 }
 
 async function handlePollNudge({ data }: { data: PollNudgeJobData }): Promise<void> {
+  // ORGANIZER CONTRACT: participation nudges fire to all non-voters regardless — no change needed.
   const open = await getOpenPoll(data.threadId);
   if (!open || open.poll.id !== data.pollId) return; // already closed/replaced -- nothing to nudge about
 
@@ -346,7 +355,10 @@ async function handlePollNudge({ data }: { data: PollNudgeJobData }): Promise<vo
     .where(eq(threadParticipantsTable.threadId, data.threadId));
   const voterCount = await countDistinctVoters(data.pollId);
   if (voterCount < participantRows.length) {
-    if (await canSendProactiveMessage(data.threadId, "nudge")) {
+    const sendCheck = await canSendProactiveMessage(data.threadId, "nudge");
+    if (!sendCheck.allowed) {
+      if (sendCheck.reason === "quiet_hours") { logger.info({ reason: "quiet_hours" }, "Proactive send deferred — quiet hours"); }
+    } else {
       await sendToThread(
         data.threadId,
         `Friendly nudge -- still waiting on ${participantRows.length - voterCount} of you for "${open.poll.question}". Reply with your pick when you get a sec.`,
@@ -386,18 +398,39 @@ async function handlePollTiebreakAnnounce({ data }: { data: PollTiebreakJobData 
   // even via the tiebreak path (which bypasses canSendProactiveMessage).
   if (await threadHasOptedOutParticipant(data.threadId)) return;
 
+  // Check if there's an active project with an organizer; if so, defer to them
+  // via DM instead of broadcasting the executive decision to the whole group.
+  const project = await getActiveProject(data.threadId);
+  const organizer = project ? await getOrganizerForProject(project) : null;
+
   await announceTiebreak(data.pollId, leading.id);
-  await sendToThread(
-    data.threadId,
-    `Executive decision: ${leading.label}. Object within the hour or it's locked in.`,
-  );
+
+  let lockDelaySeconds: number;
+
+  if (project && organizer) {
+    // Route tiebreak to organizer's DM — 24h window for them to weigh in.
+    const { thread: orgThread } = await findOrCreateDirectThread(organizer.phoneNumber);
+    const voteCount = voterCount;
+    await sendToThread(
+      orgThread.id,
+      `The "${open.poll.question}" poll is tied (${voteCount} votes for ${leading.label}). Want to make the call? I'll go with ${leading.label} in 24h if I don't hear from you.`,
+    );
+    lockDelaySeconds = 24 * 60 * 60;
+  } else {
+    // No project/organizer: fall back to the group announcement.
+    await sendToThread(
+      data.threadId,
+      `Executive decision: ${leading.label}. Object within the hour or it's locked in.`,
+    );
+    lockDelaySeconds = TIEBREAK_OBJECTION_WINDOW_SECONDS;
+  }
 
   if (boss) {
     await boss.sendAfter(
       QUEUES.pollTiebreakLock,
       { threadId: data.threadId, pollId: data.pollId },
       null,
-      clampedDelaySeconds(TIEBREAK_OBJECTION_WINDOW_SECONDS),
+      clampedDelaySeconds(lockDelaySeconds),
     );
   }
 }
@@ -434,11 +467,16 @@ async function handlePollTiebreakLock({ data }: { data: PollTiebreakJobData }): 
   // Opted-out participants must not receive the lock-in announcement.
   if (await threadHasOptedOutParticipant(data.threadId)) return;
 
+  // Check for active project to determine announcement phrasing.
+  const lockProject = await getActiveProject(data.threadId);
+
   await sendToThread(
     data.threadId,
     destProject && option
       ? `${option.label} it is — destination locked since nobody objected.`
-      : `Locking in ${option?.label ?? "that pick"} since nobody objected. Moving forward with it.`,
+      : lockProject && option
+        ? `Locking in ${option.label} so we can keep moving.`
+        : `Locking in ${option?.label ?? "that pick"} since nobody objected. Moving forward with it.`,
   );
 }
 
@@ -446,7 +484,8 @@ async function handlePlanReminder({ data }: { data: PlanReminderJobData }): Prom
   const plan = await getPlanById(data.planId);
   if (!plan || plan.status !== "confirmed") return; // cancelled or never confirmed -- nothing to remind about
 
-  if (!(await canSendProactiveMessage(data.threadId, "plan_reminder"))) return;
+  const sendCheck0 = await canSendProactiveMessage(data.threadId, "plan_reminder");
+  if (!sendCheck0.allowed) { if (sendCheck0.reason === "quiet_hours") { logger.info({ reason: "quiet_hours" }, "Proactive send deferred — quiet hours"); } return; }
 
   const link = buildGoogleCalendarLink(plan);
   const message = `Reminder: "${plan.title}" is tomorrow (${describePlanSchedule(plan)}).${
@@ -457,10 +496,12 @@ async function handlePlanReminder({ data }: { data: PlanReminderJobData }): Prom
 }
 
 async function handlePlanRevive(): Promise<void> {
+  // ORGANIZER CONTRACT: revival messages go to group regardless — no change needed.
   const stalled = await getStalledPlans(STALLED_PLAN_THRESHOLD_MS);
   for (const plan of stalled) {
     try {
-      if (!(await canSendProactiveMessage(plan.threadId, "nudge"))) continue;
+      const sendCheckRevive = await canSendProactiveMessage(plan.threadId, "nudge");
+      if (!sendCheckRevive.allowed) { if (sendCheckRevive.reason === "quiet_hours") { logger.info({ reason: "quiet_hours" }, "Proactive send deferred — quiet hours"); } continue; }
       await sendToThread(
         plan.threadId,
         `Hey -- "${plan.title}" has been sitting for a bit. Still want to lock something in, or should we drop it?`,
@@ -481,7 +522,8 @@ async function handleFeedbackScan(): Promise<void> {
       // user's next reply) unless we're actually about to send the prompt
       // asking for it. The plan stays "confirmed" so the next scan retries
       // it once budget allows.
-      if (!(await canSendProactiveMessage(plan.threadId, "nudge"))) continue;
+      const sendCheckFeedback = await canSendProactiveMessage(plan.threadId, "nudge");
+      if (!sendCheckFeedback.allowed) { if (sendCheckFeedback.reason === "quiet_hours") { logger.info({ reason: "quiet_hours" }, "Proactive send deferred — quiet hours"); } continue; }
 
       // Mark done and flag the thread *before* sending: if the process
       // crashes between this write and the send below, the worst case is a
@@ -511,9 +553,21 @@ async function handleOccasionScan(): Promise<void> {
   const due = await getOccasionsDueForReminder(OCCASION_REMINDER_WINDOW_MS);
   for (const occasion of due) {
     try {
+      // B3: skip if there's already an active project for this thread whose
+      // honoree matches this occasion's subject — the project already covers it.
+      const activeProject = await getActiveProject(occasion.threadId);
+      if (activeProject && activeProject.honoreeUserId !== null && activeProject.honoreeUserId === occasion.aboutUserId) {
+        continue;
+      }
+      // B3: skip if this occasion was already linked to a project via acceptance.
+      if (occasion.projectId !== null) {
+        continue;
+      }
+
       // Budget gating first, same reasoning as feedback prompts: don't mark
       // an occasion "reminded" unless we're actually about to send.
-      if (!(await canSendProactiveMessage(occasion.threadId, "occasion_reminder"))) continue;
+      const occasionBudget = await canSendProactiveMessage(occasion.threadId, "occasion_reminder");
+      if (!occasionBudget.allowed) continue;
 
       // Marked *before* the send so a crash in between skips this occasion's
       // reminder (retried never) rather than sending it twice on the next
@@ -551,6 +605,7 @@ async function handleOccasionScan(): Promise<void> {
  * what keeps this feeling like an occasional delight instead of a nag.
  */
 async function handleSerendipityScan(): Promise<void> {
+  // ORGANIZER CONTRACT: serendipity only fires when no active plan exists — no change needed.
   const threadIds = await getAllGroupThreadIds();
 
   for (const threadId of threadIds) {
@@ -564,7 +619,8 @@ async function handleSerendipityScan(): Promise<void> {
       const daysSinceLastPlan = lastPlanAt ? (Date.now() - lastPlanAt.getTime()) / (24 * 60 * 60 * 1000) : Infinity;
       if (daysSinceLastPlan < SERENDIPITY_MIN_DAYS_SINCE_LAST_PLAN) continue;
 
-      if (!(await canSendProactiveMessage(threadId, "serendipity"))) continue;
+      const sendCheckSerendipity = await canSendProactiveMessage(threadId, "serendipity");
+      if (!sendCheckSerendipity.allowed) { if (sendCheckSerendipity.reason === "quiet_hours") { logger.info({ reason: "quiet_hours" }, "Proactive send deferred — quiet hours"); } continue; }
 
       const [threadRow] = await db.select({ homeCity: threadsTable.homeCity }).from(threadsTable).where(eq(threadsTable.id, threadId));
       const city = threadRow?.homeCity || DEFAULT_CITY;
@@ -683,6 +739,7 @@ export async function scheduleDayBeforeReminder(threadId: number, planId: number
  * (guarded by `weatherRescueSentAt`).
  */
 async function handleWeatherRescueScan(): Promise<void> {
+  // ORGANIZER CONTRACT: weather warnings are safety-relevant, override project status — no change needed.
   const plans = await getConfirmedPlansForWeatherCheck(WEATHER_RESCUE_WINDOW_MS);
 
   for (const plan of plans) {
@@ -705,7 +762,8 @@ async function handleWeatherRescueScan(): Promise<void> {
       if (!forecast) continue;
       if (forecast.precipitationChance < WEATHER_RESCUE_PRECIPITATION_THRESHOLD) continue;
 
-      if (!(await canSendProactiveMessage(plan.threadId, "nudge"))) continue;
+      const sendCheckWeather = await canSendProactiveMessage(plan.threadId, "nudge");
+      if (!sendCheckWeather.allowed) { if (sendCheckWeather.reason === "quiet_hours") { logger.info({ reason: "quiet_hours" }, "Proactive send deferred — quiet hours"); } continue; }
 
       const alternatives = await lookupIndoorAlternatives(city, plan.venue, 3);
       const altText =
@@ -757,6 +815,7 @@ async function handleVenueRevalidationScan(): Promise<void> {
  * debt-collector language.
  */
 async function handlePaymentNudgeScan(): Promise<void> {
+  // ACTIVE_STATUS guard: filters via getActiveProject
   const outstanding = await getOutstandingBalancesForNudge();
   if (outstanding.length === 0) return;
 
@@ -770,7 +829,8 @@ async function handlePaymentNudgeScan(): Promise<void> {
       const { thread: memberThread } = await findOrCreateDirectThread(member.phoneNumber);
 
       // Budget gate.
-      if (!(await canSendProactiveMessage(memberThread.id, "payment_nudge"))) continue;
+      const sendCheckPayment = await canSendProactiveMessage(memberThread.id, "payment_nudge");
+      if (!sendCheckPayment.allowed) { if (sendCheckPayment.reason === "quiet_hours") { logger.info({ reason: "quiet_hours" }, "Proactive send deferred — quiet hours"); } continue; }
 
       // Mark before send (fail toward under-send).
       await markPaymentNudgeSent(item.projectId, member.userId);
@@ -813,6 +873,7 @@ async function handlePaymentNudgeScan(): Promise<void> {
  * and calling findOrCreateDirectThread.
  */
 async function handleProjectTimelineScan(): Promise<void> {
+  // ACTIVE_STATUS guard: getActiveProjectsWithTimelines filters by active status
   const projectIds = await getActiveProjectsWithTimelines();
   if (projectIds.length === 0) return;
 
@@ -851,7 +912,8 @@ async function handleProjectTimelineScan(): Promise<void> {
       const { thread: orgThread } = await findOrCreateDirectThread(organizer.phoneNumber);
 
       // Budget gate: use the organizer's 1:1 thread id.
-      if (!(await canSendProactiveMessage(orgThread.id, "timeline_nudge"))) continue;
+      const sendCheckTimeline = await canSendProactiveMessage(orgThread.id, "timeline_nudge");
+      if (!sendCheckTimeline.allowed) { if (sendCheckTimeline.reason === "quiet_hours") { logger.info({ reason: "quiet_hours" }, "Proactive send deferred — quiet hours"); } continue; }
 
       // Mark before send (fail toward under-send, per project convention).
       await markStepNotified(step.id);
@@ -878,6 +940,7 @@ async function handleProjectTimelineScan(): Promise<void> {
  * Each item is nudged at most once (guarded by notifiedAt).
  */
 async function handleActionItemDueScan(): Promise<void> {
+  // ACTIVE_STATUS guard: findDueActionItems scopes to active projects
   const items = await findDueActionItems();
   if (items.length === 0) return;
 
@@ -887,7 +950,8 @@ async function handleActionItemDueScan(): Promise<void> {
     try {
       const { thread: ownerThread } = await findOrCreateDirectThread(item.ownerPhone);
 
-      if (!(await canSendProactiveMessage(ownerThread.id, "nudge"))) continue;
+      const sendCheckAction = await canSendProactiveMessage(ownerThread.id, "nudge");
+      if (!sendCheckAction.allowed) { if (sendCheckAction.reason === "quiet_hours") { logger.info({ reason: "quiet_hours" }, "Proactive send deferred — quiet hours"); } continue; }
 
       const dueStr = item.dueAt.toLocaleDateString("en-US", {
         weekday: "long",
@@ -922,7 +986,84 @@ async function handleActionItemDueScan(): Promise<void> {
  *
  * Mark-before-send on individual nudges; lock write before group announcement.
  */
+/**
+ * Daily scan: for every active project past its end date, sends a closeout
+ * prompt to the organizer's sidebar DM, re-nudges after 3 days, and
+ * auto-closes after 7 days of silence.
+ */
+async function handleProjectCloseoutScan(): Promise<void> {
+  const now = getNow();
+  const oneDayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+
+  const projects = await db
+    .select()
+    .from(projectsTable)
+    .where(
+      and(
+        inArray(projectsTable.status, [...PROJECT_ACTIVE_STATUSES]),
+        lt(projectsTable.dateRangeEnd, oneDayAgo),
+        isNull(projectsTable.closedAt),
+      ),
+    );
+
+  if (projects.length === 0) return;
+  logger.info({ count: projects.length }, "Project closeout scan: found projects past end date");
+
+  for (const project of projects) {
+    try {
+      const organizer = await getOrganizerForProject(project);
+      if (!organizer) continue;
+
+      const { thread: orgThread } = await findOrCreateDirectThread(organizer.phoneNumber);
+
+      // Auto-close if past the auto-close deadline.
+      if (project.dateRangeEnd && now.getTime() > project.dateRangeEnd.getTime() + PROJECT_CLOSEOUT_AUTO_CLOSE_DAYS * 24 * 60 * 60 * 1000) {
+        await db
+          .update(projectsTable)
+          .set({ status: "done", closedAt: now })
+          .where(eq(projectsTable.id, project.id));
+        logger.info({ projectId: project.id }, "Project auto-closed after closeout window elapsed");
+        continue;
+      }
+
+      // Re-nudge if already prompted and past the follow-up window.
+      if (project.closeoutPromptSentAt && now.getTime() > project.closeoutPromptSentAt.getTime() + PROJECT_CLOSEOUT_FOLLOWUP_DAYS * 24 * 60 * 60 * 1000) {
+        const sendCheckCloseout1 = await canSendProactiveMessage(orgThread.id, "nudge");
+        if (!sendCheckCloseout1.allowed) { if (sendCheckCloseout1.reason === "quiet_hours") { logger.info({ reason: "quiet_hours" }, "Proactive send deferred — quiet hours"); } continue; }
+        await sendToThread(
+          orgThread.id,
+          `How did ${project.honoree ? project.honoree + "'s " + project.type : project.type} go? Reply **close it out** to wrap things up, or let me know what's still open.`,
+        );
+        await recordProactiveSend(orgThread.id, "nudge");
+        await db
+          .update(projectsTable)
+          .set({ closeoutPromptSentAt: now })
+          .where(eq(projectsTable.id, project.id));
+        continue;
+      }
+
+      // First-time prompt.
+      if (!project.closeoutPromptSentAt) {
+        const sendCheckCloseout2 = await canSendProactiveMessage(orgThread.id, "nudge");
+        if (!sendCheckCloseout2.allowed) { if (sendCheckCloseout2.reason === "quiet_hours") { logger.info({ reason: "quiet_hours" }, "Proactive send deferred — quiet hours"); } continue; }
+        await sendToThread(
+          orgThread.id,
+          `How did ${project.honoree ? project.honoree + "'s " + project.type : project.type} go? Reply **close it out** to wrap things up, or let me know what's still open.`,
+        );
+        await recordProactiveSend(orgThread.id, "nudge");
+        await db
+          .update(projectsTable)
+          .set({ closeoutPromptSentAt: now })
+          .where(eq(projectsTable.id, project.id));
+      }
+    } catch (error) {
+      logger.error({ error, projectId: project.id }, "Failed to process project closeout scan item; continuing with rest of batch");
+    }
+  }
+}
+
 async function handleCommitmentDeadlineScan(): Promise<void> {
+  // ACTIVE_STATUS guard: getProjectsDueForPreDeadlineNudge / getProjectsDueForLock filter by active status
   const [nudgeRows, lockRows] = await Promise.all([
     getProjectsDueForPreDeadlineNudge(),
     getProjectsDueForLock(),
@@ -937,7 +1078,8 @@ async function handleCommitmentDeadlineScan(): Promise<void> {
       for (const participant of status.uncommitted) {
         try {
           const { thread: ownerThread } = await findOrCreateDirectThread(participant.phoneNumber);
-          if (!(await canSendProactiveMessage(ownerThread.id, "commitment_nudge"))) continue;
+          const sendCheckCommitment = await canSendProactiveMessage(ownerThread.id, "commitment_nudge");
+          if (!sendCheckCommitment.allowed) { if (sendCheckCommitment.reason === "quiet_hours") { logger.info({ reason: "quiet_hours" }, "Proactive send deferred — quiet hours"); } continue; }
 
           const deadlineStr = status.deadline.toLocaleDateString("en-US", {
             weekday: "long", month: "long", day: "numeric", timeZone: CONCIERGE_TIMEZONE,
@@ -1076,6 +1218,8 @@ export async function initScheduler(): Promise<void> {
   await boss.schedule(QUEUES.commitmentDeadlineScan, COMMITMENT_DEADLINE_SCAN_CRON, {}, tzOpt);
   // Pending-deliverable backstop is timezone-agnostic (every 2 min).
   await boss.schedule(QUEUES.pendingDeliverableScan, PENDING_DELIVERABLE_SCAN_CRON, {});
+  await boss.work(QUEUES.projectCloseoutScan, async () => { await handleProjectCloseoutScan(); });
+  await boss.schedule(QUEUES.projectCloseoutScan, PROJECT_CLOSEOUT_SCAN_CRON, {}, tzOpt);
 
   logger.info("Proactive messaging scheduler started");
 }

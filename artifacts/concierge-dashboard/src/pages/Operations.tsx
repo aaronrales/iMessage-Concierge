@@ -5,7 +5,7 @@ import { format } from "date-fns";
 import {
   Check, X, Clock, CalendarClock, Building2, MapPin, ChevronRight,
   AlertTriangle, Ban, RefreshCw, CheckSquare, TrendingUp, Users, MessageCircle,
-  Signal, ShieldAlert,
+  Signal, ShieldAlert, DollarSign,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -74,6 +74,72 @@ function ActivationCard() {
             <p className="text-[10px] text-muted-foreground mt-0.5">
               {data.onboardingCompleted} of {data.totalInvites} onboarded
             </p>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── LLM Cost card ─────────────────────────────────────────────────────────
+
+interface CostSummary {
+  totalCents7d: number;
+  costPerDay: { day: string; cents: number }[];
+  topThreads: { threadId: number | null; threadTitle: string | null; totalCents: number }[];
+}
+
+async function fetchCostSummary(): Promise<CostSummary> {
+  const res = await fetch("/api/cost-summary");
+  if (!res.ok) throw new Error("Failed to fetch cost summary");
+  return res.json() as Promise<CostSummary>;
+}
+
+function LlmCostCard() {
+  const { data, isLoading } = useQuery({
+    queryKey: ["cost-summary"],
+    queryFn: fetchCostSummary,
+    refetchInterval: 60_000,
+  });
+
+  const totalDollars = data ? (data.totalCents7d / 100).toFixed(2) : null;
+
+  return (
+    <div className="rounded-xl border border-border bg-card p-4 mb-4 shrink-0">
+      <div className="flex items-center gap-2 mb-3">
+        <DollarSign className="h-4 w-4 text-primary" />
+        <h2 className="text-sm font-semibold">LLM Cost — last 7 days</h2>
+      </div>
+      {isLoading ? (
+        <div className="grid grid-cols-2 gap-3">
+          {[...Array(2)].map((_, i) => (
+            <div key={i} className="h-14 rounded-lg bg-muted/50 animate-pulse" />
+          ))}
+        </div>
+      ) : !data ? (
+        <p className="text-xs text-muted-foreground">Could not load cost data.</p>
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div className="rounded-lg bg-muted/40 px-3 py-2.5">
+            <span className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium block mb-1">Total (7d)</span>
+            <p className="text-2xl font-bold leading-none">${totalDollars}</p>
+          </div>
+          <div>
+            <span className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium block mb-2">Top threads</span>
+            {data.topThreads.length === 0 ? (
+              <p className="text-xs text-muted-foreground">No data yet.</p>
+            ) : (
+              <ul className="space-y-1">
+                {data.topThreads.slice(0, 3).map((t, i) => (
+                  <li key={i} className="flex justify-between text-xs">
+                    <span className="text-foreground truncate max-w-[180px]">
+                      {t.threadTitle ?? `Thread ${t.threadId ?? "?"}`}
+                    </span>
+                    <span className="text-muted-foreground tabular-nums ml-2">${(t.totalCents / 100).toFixed(2)}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
         </div>
       )}
@@ -567,6 +633,7 @@ export function OperationsPage() {
 
       <div className="flex-1 p-8 overflow-hidden flex flex-col max-w-6xl mx-auto w-full">
         <ActivationCard />
+        <LlmCostCard />
         <DeliveryHealthCard />
         <div className="flex items-center gap-1 border-b border-border mb-6 shrink-0">
           <button

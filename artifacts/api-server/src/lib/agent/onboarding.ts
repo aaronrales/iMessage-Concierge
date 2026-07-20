@@ -15,6 +15,7 @@
 
 import { openai, CHAT_MODEL } from "../openaiClient";
 import { logger } from "../logger";
+import { logLlmCost } from "./costLogger";
 
 // ---------------------------------------------------------------------------
 // Message templates
@@ -125,6 +126,7 @@ export async function extractName(content: string): Promise<string | null> {
         { role: "user", content },
       ],
     });
+    logLlmCost("onboarding", CHAT_MODEL, res.usage);
     const raw = (res.choices[0]?.message?.content ?? "").trim();
     if (!raw || raw.toLowerCase() === "null") return null;
     // Basic sanity: treat suspiciously long responses as extraction failure
@@ -153,6 +155,7 @@ export async function extractPractical(content: string): Promise<{ budget: strin
     });
     const raw = (res.choices[0]?.message?.content ?? "").trim();
     // Strip markdown code fences if the model wrapped it
+    logLlmCost("onboarding", CHAT_MODEL, res.usage);
     const cleaned = raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
     const parsed = JSON.parse(cleaned) as { budget?: string | null; dietaryNeeds?: string | null };
     return {
@@ -180,6 +183,7 @@ export async function extractPersonality(content: string): Promise<string[]> {
         { role: "user", content },
       ],
     });
+    logLlmCost("onboarding", CHAT_MODEL, res.usage);
     const raw = (res.choices[0]?.message?.content ?? "").trim();
     const cleaned = raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
     const parsed = JSON.parse(cleaned) as unknown;

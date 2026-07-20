@@ -8,6 +8,7 @@ import {
 } from "@workspace/db";
 import { openai, CHAT_MODEL } from "../openaiClient";
 import { logger } from "../logger";
+import { logLlmCost } from "./costLogger";
 
 /**
  * Private aggregation over DM: collects sensitive input from each group
@@ -112,6 +113,7 @@ export async function aggregatePrivateInput(request: PrivateInputRequest): Promi
         },
       ],
     });
+    logLlmCost("private_input", CHAT_MODEL, completion.usage);
     const text = completion.choices[0]?.message?.content?.trim();
     return text || "Got everyone's input -- ready to move forward.";
   } catch (error) {

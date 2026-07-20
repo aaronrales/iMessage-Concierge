@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // Mock the DB before importing the module under test so the DB calls are fully
 // isolated -- these tests cover the budget logic, not the persistence layer.
@@ -56,6 +56,15 @@ function mockBudgetRows(budgetRows: object[]) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Disable quiet-hours for budget unit tests so time-of-day doesn't flake them.
+  // Use an impossible hour (99) for start so the quiet window never triggers.
+  process.env["QUIET_HOURS_START"] = "99";
+  process.env["QUIET_HOURS_END"] = "0";
+});
+
+afterEach(() => {
+  delete process.env["QUIET_HOURS_START"];
+  delete process.env["QUIET_HOURS_END"];
 });
 
 describe("PROACTIVE_CATEGORY_PRIORITY", () => {
@@ -69,14 +78,14 @@ describe("PROACTIVE_CATEGORY_PRIORITY", () => {
 });
 
 describe("canSendProactiveMessage", () => {
-  it("returns true when category and daily counts are both under their caps", async () => {
+  it("returns allowed:true when category and daily counts are both under their caps", async () => {
     // 0 budget rows → both counts are 0 → under all caps
     mockBudgetRows([]);
     const result = await canSendProactiveMessage(1, "nudge");
-    expect(result).toBe(true);
+    expect(result).toEqual({ allowed: true });
   });
 
-  it("returns false when the category cap is reached", async () => {
+  it("returns allowed:false/budget when the category cap is reached", async () => {
     // nudge cap is 2 per day; first budget call returns 2 rows (category at cap).
     let budgetCallCount = 0;
     let totalCallCount = 0;
@@ -92,10 +101,10 @@ describe("canSendProactiveMessage", () => {
     });
 
     const result = await canSendProactiveMessage(1, "nudge");
-    expect(result).toBe(false);
+    expect(result).toEqual({ allowed: false, reason: "budget" });
   });
 
-  it("returns false when the daily thread ceiling is reached", async () => {
+  it("returns allowed:false/budget when the daily thread ceiling is reached", async () => {
     let budgetCallCount = 0;
     let totalCallCount = 0;
     (db.select as ReturnType<typeof vi.fn>).mockImplementation(() => {
@@ -109,10 +118,10 @@ describe("canSendProactiveMessage", () => {
     });
 
     const result = await canSendProactiveMessage(1, "serendipity");
-    expect(result).toBe(false);
+    expect(result).toEqual({ allowed: false, reason: "budget" });
   });
 
-  it("returns true when only the category count is 0 and daily is under ceiling", async () => {
+  it("returns allowed:true when only the category count is 0 and daily is under ceiling", async () => {
     let budgetCallCount = 0;
     let totalCallCount = 0;
     (db.select as ReturnType<typeof vi.fn>).mockImplementation(() => {
@@ -126,10 +135,10 @@ describe("canSendProactiveMessage", () => {
     });
 
     const result = await canSendProactiveMessage(1, "plan_reminder");
-    expect(result).toBe(true);
+    expect(result).toEqual({ allowed: true });
   });
 
-  it("returns false when an opted-out participant is in the thread", async () => {
+  it("returns allowed:false/budget when an opted-out participant is in the thread", async () => {
     // threadHasOptedOutParticipant returns one row → opted out → block send
     let totalCallCount = 0;
     (db.select as ReturnType<typeof vi.fn>).mockImplementation(() => {
@@ -138,6 +147,6 @@ describe("canSendProactiveMessage", () => {
     });
 
     const result = await canSendProactiveMessage(1, "nudge");
-    expect(result).toBe(false);
+    expect(result).toEqual({ allowed: false, reason: "budget" });
   });
 });

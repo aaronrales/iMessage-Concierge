@@ -1,11 +1,8 @@
 import { Router, type IRouter } from "express";
 import { z } from "zod";
 import { db, threadParticipantsTable, threadsTable, usersTable } from "@workspace/db";
-import { eq, and } from "drizzle-orm";
-import { findOrCreateUser, findOrCreateDirectThread, loadThreadContext, recordMessage } from "../lib/agent/context";
-import { applyProfileUpdates, runAgentTurn } from "../lib/agent/engine";
-import { sendToThread } from "../lib/agent/delivery";
-import { emulatorStorage } from "../lib/agent/emulatorContext";
+import { eq } from "drizzle-orm";
+import { runEmulatorTurn } from "../lib/agent/runEmulatorTurn";
 import { logger } from "../lib/logger";
 
 const router: IRouter = Router();
@@ -45,60 +42,8 @@ router.post("/emulator/message", async (req, res) => {
   }
 
   try {
-    // Find or create the user represented by the sender phone.
-    const { user: senderUser } = await findOrCreateUser(senderPhone);
-
-    // Ensure the sender is a participant of this thread (add them if missing,
-    // so the agent context can resolve them as a known participant).
-    const [existingParticipant] = await db
-      .select()
-      .from(threadParticipantsTable)
-      .where(
-        and(
-          eq(threadParticipantsTable.threadId, threadId),
-          eq(threadParticipantsTable.userId, senderUser.id),
-        ),
-      );
-    if (!existingParticipant) {
-      await db.insert(threadParticipantsTable).values({
-        threadId,
-        userId: senderUser.id,
-        role: "user",
-      });
-    }
-
-    // Persist the inbound message so the agent's context load picks it up.
-    await recordMessage({
-      threadId,
-      userId: senderUser.id,
-      direction: "inbound",
-      role: "user",
-      content,
-    });
-
-    // Run the agent turn inside the emulator storage context so all
-    // sendToThread calls are captured instead of going to Sendblue.
-    const store = { captured: [] as Array<{ threadId: number; content: string; mediaUrl?: string }> };
-
-    await emulatorStorage.run(store, async () => {
-      const context = await loadThreadContext(threadId);
-      const result = await runAgentTurn(context, senderUser.id);
-
-      if (result.profileUpdates) {
-        await applyProfileUpdates(senderUser.id, result.profileUpdates);
-      }
-      if (result.displayName) {
-        await db
-          .update(usersTable)
-          .set({ displayName: result.displayName })
-          .where(eq(usersTable.id, senderUser.id));
-      }
-
-      // Send the reply (captured, not actually sent).
-      await sendToThread(threadId, result.reply);
-    });
-
-    res.json({ messages: store.captured });
+    const result = await runEmulatorTurn(threadId, senderPhone, content);
+    res.json({ messages: result.messages });
   } catch (error) {
     logger.error({ error, threadId }, "Emulator turn failed");
     res.status(500).json({ error: "Emulator turn failed" });

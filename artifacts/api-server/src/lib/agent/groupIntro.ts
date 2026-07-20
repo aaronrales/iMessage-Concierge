@@ -3,6 +3,7 @@ import { db, messagesTable } from "@workspace/db";
 import { eq, desc } from "drizzle-orm";
 import { logger } from "../logger";
 import { privacyPolicyUrl } from "../publicUrl";
+import { logLlmCost } from "./costLogger";
 
 /**
  * Builds the static fallback intro, optionally appending the privacy URL.
@@ -70,6 +71,7 @@ export async function generateGroupIntroMessage(threadId: number): Promise<strin
       ],
     });
 
+    logLlmCost("group_intro", CHAT_MODEL, completion.usage);
     const text = completion.choices[0]?.message?.content?.trim() ?? "";
 
     if (!text || text.toUpperCase() === "STATIC" || text.length < 15) {

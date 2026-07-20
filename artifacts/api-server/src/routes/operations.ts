@@ -1,6 +1,6 @@
 import { Router, type IRouter } from "express";
-import { and, gte, inArray, isNotNull } from "drizzle-orm";
-import { db, messageDeliveryLogTable, threadsTable } from "@workspace/db";
+import { and, desc, gte, inArray, isNotNull, sql } from "drizzle-orm";
+import { db, llmCostLogTable, messageDeliveryLogTable, threadsTable } from "@workspace/db";
 import { GetDeliveryHealthResponse } from "@workspace/api-zod";
 
 const router: IRouter = Router();
@@ -109,6 +109,66 @@ router.get("/operations/delivery-health", async (req, res): Promise<void> => {
   };
 
   res.json(GetDeliveryHealthResponse.parse(summary));
+});
+
+/**
+ * GET /api/cost-summary
+ * Returns LLM cost totals for the last 7 days.
+ */
+router.get("/api/cost-summary", async (_req, res): Promise<void> => {
+  const since7d = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+
+  // Total cost in last 7 days
+  const [totalRow] = await db
+    .select({ totalCents: sql<number>`coalesce(sum(${llmCostLogTable.estimatedCostCents}), 0)` })
+    .from(llmCostLogTable)
+    .where(gte(llmCostLogTable.createdAt, since7d));
+  const totalCents7d = Number(totalRow?.totalCents ?? 0);
+
+  // Cost per day (last 7 days)
+  const perDayRows = await db
+    .select({
+      day: sql<string>`date_trunc('day', ${llmCostLogTable.createdAt})::text`,
+      cents: sql<number>`coalesce(sum(${llmCostLogTable.estimatedCostCents}), 0)`,
+    })
+    .from(llmCostLogTable)
+    .where(gte(llmCostLogTable.createdAt, since7d))
+    .groupBy(sql`date_trunc('day', ${llmCostLogTable.createdAt})`)
+    .orderBy(sql`date_trunc('day', ${llmCostLogTable.createdAt})`);
+  const costPerDay = perDayRows.map((r) => ({ day: r.day, cents: Number(r.cents) }));
+
+  // Top threads by cost
+  const topThreadRows = await db
+    .select({
+      threadId: llmCostLogTable.threadId,
+      totalCents: sql<number>`coalesce(sum(${llmCostLogTable.estimatedCostCents}), 0)`,
+    })
+    .from(llmCostLogTable)
+    .where(and(gte(llmCostLogTable.createdAt, since7d), isNotNull(llmCostLogTable.threadId)))
+    .groupBy(llmCostLogTable.threadId)
+    .orderBy(desc(sql`sum(${llmCostLogTable.estimatedCostCents})`))
+    .limit(5);
+
+  // Resolve thread titles
+  const threadIds = topThreadRows.map((r) => r.threadId).filter((id): id is number => id !== null);
+  const titleMap = new Map<number, string | null>();
+  if (threadIds.length > 0) {
+    const threadRows = await db
+      .select({ id: threadsTable.id, title: threadsTable.title, primaryPhoneNumber: threadsTable.primaryPhoneNumber })
+      .from(threadsTable)
+      .where(inArray(threadsTable.id, threadIds));
+    for (const t of threadRows) {
+      titleMap.set(t.id, t.title ?? t.primaryPhoneNumber ?? null);
+    }
+  }
+
+  const topThreads = topThreadRows.map((r) => ({
+    threadId: r.threadId,
+    threadTitle: r.threadId !== null ? (titleMap.get(r.threadId) ?? null) : null,
+    totalCents: Number(r.totalCents),
+  }));
+
+  res.json({ totalCents7d, costPerDay, topThreads });
 });
 
 export default router;

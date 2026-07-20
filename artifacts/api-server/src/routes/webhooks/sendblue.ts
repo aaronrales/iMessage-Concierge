@@ -112,6 +112,7 @@ import { scheduleDayBeforeReminder, scheduleNonVoterNudge, enqueueJITExtractionI
 import { buildReservationLinks, describeReservationLinks } from "../../lib/agent/bookingLinks";
 import { buildPlanCardMediaUrl } from "../../lib/agent/planCard";
 import { captureOccasion } from "../../lib/agent/occasions";
+import { getNow } from "../../lib/agent/clock";
 import { recordPastChoice } from "../../lib/agent/tasteEngine";
 import { findVenueIdByName, logIgnoredVenuesForThread, markVenuePicked, recordVenueFeedback } from "../../lib/agent/venueCorpus/recommendationLog";
 import {
@@ -130,6 +131,18 @@ import { fetchGooglePlacesPhotos, findGooglePlaceIdByName, type VenueCarouselEnt
 import { logger } from "../../lib/logger";
 import { recordActivationEvent } from "../../lib/agent/activation";
 import { buildPublicUrl, privacyPolicyUrl } from "../../lib/publicUrl";
+
+// ─── ARCHITECTURE NOTE ───────────────────────────────────────────────────────
+// Pipeline: parse → dedupe → deterministic commands → etiquette gate → agent turn
+//
+// STANDING RULE: Deterministic command handlers (mute, forget, approvals,
+// tiebreak replies, group-creation, arrival, tapbacks, close-it-out) should
+// migrate to lib/agent/commands/ as { matcher, handler } pairs as they are
+// touched. Target: this file ≤600 lines covering only parse → commands →
+// gates → agent turn. Full gate/turn extraction is post-pilot.
+//
+// Adding a new hardcoded command? Put it in lib/agent/commands/ instead.
+// ─────────────────────────────────────────────────────────────────────────────
 
 /** iMessage tapback text on this poll's own announcement bubbles counts as a vote (Phase 2 texting UX polish). */
 const OBJECTION_PATTERN = /\b(no|nope|wait|hold on|object|objection|don'?t lock|actually)\b/i;
@@ -848,6 +861,9 @@ async function processAgentTurn(threadId: number, senderUserId: number): Promise
       label: result.occasion.label,
       occasionDate: result.occasion.date,
     });
+    // TODO: on acceptance, create project + link via occasions.projectId
+    // When the organizer replies "yes" to an occasion reminder, create a project
+    // and then: await db.update(occasionsTable).set({ projectId: newProject.id }).where(eq(occasionsTable.id, occasion.id));
   }
 
   if (result.privateQuestion && isGroup) {
@@ -1152,6 +1168,7 @@ router.post("/webhooks/sendblue/:secret", async (req, res): Promise<void> => {
 
     // 1. Deterministic commands that must always work regardless of mute
     // state or LLM behavior: mute/unmute and "what do you know about me".
+    // TODO: migrate to lib/agent/commands/ registry — see lib/agent/commands/index.ts
     const muteCommand = detectMuteCommand(event.content);
     if (muteCommand) {
       await setParticipantMuted(threadId, senderUserId, muteCommand === "mute");
@@ -1423,6 +1440,17 @@ router.post("/webhooks/sendblue/:secret", async (req, res): Promise<void> => {
               return;
             }
           }
+        }
+
+        // "Close it out" shortcut: organizer wraps up the project immediately.
+        const normalizedContent = event.content.trim();
+        if (/\bclose\s+it\s+out\b/i.test(normalizedContent) && organizerProject) {
+          const now = getNow();
+          await db.update(projectsTable).set({ status: "done", closedAt: now }).where(eq(projectsTable.id, organizerProject.id));
+          await sendToThread(threadId, "Got it — wrapping things up! 🎉");
+          await sendToThread(organizerProject.threadId, "That's a wrap on " + (organizerProject.honoree ? organizerProject.honoree + "'s " + (organizerProject.type ?? "event") : organizerProject.type ?? "the event") + "! Thanks everyone. 🎉");
+          res.status(200).json({ received: true });
+          return;
         }
 
         // Fall through: organizer sidebar turn with project context injected.

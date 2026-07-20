@@ -5,57 +5,8 @@
     {
       "idx": 0,
       "version": "7",
-      "when": 1784488408302,
-      "tag": "0000_add_source_origin_thread_activation_events",
-      "breakpoints": true
-    },
-    {
-      "idx": 1,
-      "version": "7",
-      "when": 1784489542245,
-      "tag": "0001_massive_spacker_dave",
-      "breakpoints": true
-    },
-    {
-      "idx": 2,
-      "version": "7",
-      "when": 1784490352808,
-      "tag": "0002_jazzy_inertia",
-      "breakpoints": true
-    },
-    {
-      "idx": 3,
-      "version": "7",
-      "when": 1784491106078,
-      "tag": "0003_demonic_sugar_man",
-      "breakpoints": true
-    },
-    {
-      "idx": 4,
-      "version": "7",
-      "when": 1784491855907,
-      "tag": "0004_sad_hemingway",
-      "breakpoints": true
-    },
-    {
-      "idx": 5,
-      "version": "7",
-      "when": 1784492878797,
-      "tag": "0005_stormy_justin_hammer",
-      "breakpoints": true
-    },
-    {
-      "idx": 6,
-      "version": "7",
-      "when": 1784508491723,
-      "tag": "0006_blushing_angel",
-      "breakpoints": true
-    },
-    {
-      "idx": 7,
-      "version": "7",
-      "when": 1784509155476,
-      "tag": "0007_curvy_sue_storm",
+      "when": 1784516435831,
+      "tag": "0000_0000_baseline",
       "breakpoints": true
     }
   ]

@@ -72,6 +72,8 @@ export const projectsTable = pgTable("projects", {
    * dashboard to show the per-person cost without recomputing from the ledger.
    */
   lodgingPerPersonCents: integer("lodging_per_person_cents"),
+  closeoutPromptSentAt: timestamp("closeout_prompt_sent_at", { withTimezone: true }),
+  closedAt: timestamp("closed_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true })
     .notNull()

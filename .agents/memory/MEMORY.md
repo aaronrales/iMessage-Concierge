@@ -8,3 +8,5 @@
 - [drizzle-kit push in a non-TTY shell](drizzle-kit-push-non-tty.md) — destructive-change prompts crash without a TTY; apply the one risky DDL statement by hand, then re-run push.
 - [Mark-before-send ordering](mark-before-send-ordering.md) — for one-shot proactive sends, persist the "already sent" marker before the send, not after, to fail toward under- not double-sending.
 - [One-active-row invariants](one-active-row-invariants.md) — enforce "one active X per thread" via partial unique index + 23505 merge-fallback; never re-parent confirmed plans into new projects.
+- [Pre-pilot cleanup wave](pre-pilot-cleanup.md) — B/C/D/E waves completed; key contracts, scenario runner, cost logging, quiet hours, command registry all in place.
+- [Drizzle meta journal reset](drizzle-meta-journal-reset.md) — after archiving drizzle/*.sql migrations, recreate meta/_journal.json as empty entries JSON before running drizzle-kit generate.

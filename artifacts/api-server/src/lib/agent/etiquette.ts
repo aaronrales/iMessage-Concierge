@@ -7,6 +7,7 @@
 
 import { openai, CHAT_MODEL } from "../openaiClient";
 import { logger } from "../logger";
+import { logLlmCost } from "./costLogger";
 
 const MUTE_PATTERN = /\b(mute (you|yourself|the bot|concierge)|be quiet|stop responding|pause( yourself)?)\b/i;
 const UNMUTE_PATTERN = /\b(unmute (you|yourself|the bot|concierge)|start responding again|you can talk again)\b/i;
@@ -74,6 +75,7 @@ export async function checkPlanningIntentWithLLM(content: string): Promise<boole
         { role: "user", content },
       ],
     });
+    logLlmCost("etiquette", CHAT_MODEL, completion.usage);
     const answer = (completion.choices[0]?.message?.content ?? "").trim().toLowerCase();
     return answer.startsWith("yes");
   } catch (err) {

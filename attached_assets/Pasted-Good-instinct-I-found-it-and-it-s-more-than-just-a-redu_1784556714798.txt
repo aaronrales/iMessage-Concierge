@@ -1,0 +1,27 @@
+Good instinct — I found it, and it's more than just a redundancy. There's an actual **contradiction**, plus a live landmine sitting next to it. Here's the full picture.
+
+**The core finding: two independently-authored personas get concatenated into every single prompt.**
+
+`engine.ts`'s `SYSTEM_PROMPT` opens with a hardcoded, one-sentence voice definition: *"You are warm, concise, and text like a helpful friend, not a corporate assistant... never use emojis."* That's baked directly into the same giant string as every functional instruction (tools, JSON schema, project rules) — it's never been touched since this was a simpler bot.
+
+Separately, `routes/agent-config.ts` defines a much richer `DEFAULT_PERSONA` — a full document describing a witty, opinionated, teasing "friend in the group chat" with specific rules for reading the room, handling money topics gently, owning mistakes, and dropping the act when someone's genuinely upset. This is clearly the *intended* real persona — it's thoughtful and well-designed. It's injected as a second system message right after `SYSTEM_PROMPT`, and it's meant to be the editable single source of truth via the Settings page.
+
+**They actively disagree, not just overlap:**
+- **Emoji policy:** SYSTEM_PROMPT says *never*. The persona doc says *"keep emoji use light"* — implying occasional use is fine. The model gets both, back to back, every turn.
+- **Message length:** SYSTEM_PROMPT says *"usually under 3 sentences."* The persona doc explicitly says the opposite: *"Message length adapts to content... don't compress something that needs room."*
+- **Register:** one is generic customer-service warmth; the other is a specific, opinionated, occasionally-profane personality. These aren't two phrasings of the same idea — they're two different bots, layered into one call.
+
+That's the exact bug family you asked about: instructions defined in more than one place, drifting because only one of the two ever gets touched when someone iterates on "the personality." `groupIntro.ts`'s own separate "no emojis" rule is a third, smaller data point — it at least agrees with SYSTEM_PROMPT, which just underscores that DEFAULT_PERSONA is the outlier that never got reconciled against the older hardcoded rules scattered elsewhere.
+
+**The more urgent one — this isn't hypothetical, it's a hair-trigger:** I traced the actual wiring. `engine.ts`'s runtime code only injects the persona block if a `persona` row already exists in the `agent_config` table — if nobody's ever saved Settings, it's correctly skipped. But `DEFAULT_PERSONA` is written as a *template*, with literal, unresolved `[BOT NAME]` / `[bot name]` placeholders and an editor's note ("swap in the final name wherever this appears") — and the Settings page pre-populates the textarea with exactly that unedited text. The moment anyone opens Settings and clicks Save without editing (a completely natural first action when testing a new page), the literal string `[bot name]` gets written to the DB and starts shipping into every live production conversation, permanently, until someone happens to notice the bot referring to itself as "[bot name]." There's no validation catching this anywhere.
+
+**What I'd actually do about it, in order:**
+
+1. **Merge into one persona, one location.** Move SYSTEM_PROMPT's opening sentence out entirely — delete it — and let the real voice live only in the persona block. SYSTEM_PROMPT should keep only functional instructions (capabilities, JSON schema, project rules); voice belongs in exactly one place.
+2. **Resolve the contradictions explicitly** when merging — decide for real whether emoji use is "never" or "light," and whether message length is a hard 3-sentence cap or adaptive (the persona doc's adaptive framing reads like the more deliberate, recent decision — I'd keep that one and drop the hardcoded cap).
+3. **Fix the placeholder landmine before anyone touches Settings again:** either hardcode the bot's actual name into `DEFAULT_PERSONA` now (simplest), or add a startup/save-time check that rejects a save containing `[BOT NAME]`/`[bot name]` literally. Do this even before the merge — it's the one that can bite you silently in production.
+4. **Add a code comment at both call sites** (SYSTEM_PROMPT's future top and the persona-injection line) pointing at each other, so the next person editing "the bot's tone" can't miss that there's only one place to do it.
+
+For the rest of "similar issues" — I specifically checked for duplicated logic elsewhere (tiebreak leading-option calculation, quiet-hours-style time checks) and those are clean: single implementation, imported everywhere it's used. This persona split looks like the one real instance of the pattern, not a symptom of a wider habit — which is good news for how much cleanup this actually needs.
+
+Want this folded into a short addendum to the existing pre-pilot plan, or is this small enough to just hand the developer directly as-is?

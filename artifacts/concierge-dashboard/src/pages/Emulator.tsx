@@ -51,6 +51,17 @@ interface LogEntry {
   timestamp: Date;
 }
 
+// D5: Golden scenario reference data
+const GOLDEN_SCENARIOS = [
+  { name: "lake-como-trip", desc: "Trip intent → lodging search → options delivered (regression: flow-fixes)" },
+  { name: "bachelorette-happy-path", desc: "Occasion → project → intake → proposal flow" },
+  { name: "organizer-tiebreak", desc: "Stalled poll → organizer DM only → 24h → neutral lock" },
+  { name: "project-closeout", desc: "Past event → closeout DM → \"close it out\" → wrap-up" },
+  { name: "etiquette-silence", desc: "Group banter → zero agent sends" },
+  { name: "privacy-scrub", desc: "Private budget DM → group proposal has no budget mention" },
+  { name: "occasion-to-project", desc: "Occasion acceptance → linked project + intake question" },
+] as const;
+
 // ── API calls ──────────────────────────────────────────────────────────────
 
 async function fetchEmulatorThreads(): Promise<EmulatorThread[]> {
@@ -156,6 +167,31 @@ function MessageBubble({ entry }: { entry: LogEntry }) {
   );
 }
 
+// D5: Scenario reference panel component
+function ScenarioReferencePanel() {
+  return (
+    <details className="group border border-border rounded-lg overflow-hidden">
+      <summary className="flex items-center justify-between px-3 py-2 text-xs font-medium cursor-pointer select-none bg-muted/40 hover:bg-muted/70 transition-colors list-none">
+        <span>📋 Scenario reference</span>
+        <ChevronDown className="h-3 w-3 text-muted-foreground transition-transform group-open:rotate-180" />
+      </summary>
+      <div className="px-3 py-2 space-y-1.5 bg-background">
+        {GOLDEN_SCENARIOS.map((s) => (
+          <div key={s.name} className="flex flex-col gap-0.5">
+            <span className="text-[10px] font-mono font-semibold text-primary">{s.name}</span>
+            <span className="text-[10px] text-muted-foreground leading-tight">{s.desc}</span>
+          </div>
+        ))}
+        <div className="pt-1.5 border-t border-border mt-1.5">
+          <code className="text-[9px] text-muted-foreground bg-muted px-2 py-1 rounded block font-mono">
+            pnpm --filter @workspace/api-server test:scenarios
+          </code>
+        </div>
+      </div>
+    </details>
+  );
+}
+
 // ── Main page ──────────────────────────────────────────────────────────────
 
 export function EmulatorPage() {
@@ -173,12 +209,22 @@ export function EmulatorPage() {
 
   const selectedThread = threads?.find((t) => t.id === selectedThreadId) ?? null;
 
-  // Auto-set sender to first participant when thread changes.
-  useEffect(() => {
-    if (selectedThread && selectedThread.participants.length > 0) {
-      const first = selectedThread.participants[0];
-      setSenderPhone(first?.phoneNumber ?? "");
+  // D5: Derive non-bot participants for persona switcher default
+  const nonBotParticipants = selectedThread?.participants.filter(
+    (p) => {
+      const name = (p.displayName ?? "").toLowerCase();
+      return name !== "concierge" && name !== "bot";
     }
+  ) ?? [];
+
+  // Auto-set sender to first non-bot participant when thread changes.
+  useEffect(() => {
+    if (selectedThread) {
+      const defaultParticipant =
+        nonBotParticipants[0] ?? selectedThread.participants[0];
+      setSenderPhone(defaultParticipant?.phoneNumber ?? "");
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedThread?.id]);
 
   // Scroll to bottom after new log entries.
@@ -258,6 +304,48 @@ export function EmulatorPage() {
     return user?.displayName ?? user?.phoneNumber ?? `Thread #${t.id}`;
   };
 
+  // D5: Export scenario draft
+  const handleExportScenarioDraft = () => {
+    const turns = log
+      .filter((e) => e.kind !== "system")
+      .map((e) => {
+        if (e.kind === "sent") {
+          return `    { role: "user" as const, phone: ${JSON.stringify(e.senderPhone ?? "")}, content: ${JSON.stringify(e.content)} }`;
+        } else {
+          return `    { role: "agent" as const, content: ${JSON.stringify(e.content)} }`;
+        }
+      })
+      .join(",\n");
+
+    const content = `// Auto-generated scenario draft — add assertions before committing
+// Save to: artifacts/api-server/src/testing/scenarios/my-scenario.scenario.ts
+import { scenario } from "../../testing/scenarioRunner";
+import { seedUser, seedDirectThread, cleanupSeededData } from "../../testing/seed";
+
+scenario({
+  name: "my-scenario",
+  async seed() {
+    const alice = await seedUser("Alice", "+1XXXXXXXXXX");
+    const bot = await seedUser("Concierge", "+1XXXXXXXXXX");
+    const thread = await seedDirectThread(alice, bot);
+    return { threadId: thread.id, users: { alice, bot }, cleanup: () => cleanupSeededData({ userIds: [alice.id, bot.id], threadIds: [thread.id] }) };
+  },
+  turns: [
+${turns}
+  ],
+});
+`;
+
+    const blob = new Blob([content], { type: "text/typescript" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `scenario-draft-${Date.now()}.scenario.ts`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast.success("Scenario draft downloaded");
+  };
+
   return (
     <div className="flex flex-col h-[100dvh] overflow-hidden">
       {/* Header */}
@@ -329,9 +417,10 @@ export function EmulatorPage() {
 
             {selectedThread && (
               <>
+                {/* D5: Persona switcher — populated from thread participants, defaults to first non-bot */}
                 <div className="space-y-1.5">
                   <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                    Sender
+                    Send as
                   </label>
                   <Select value={senderPhone} onValueChange={setSenderPhone}>
                     <SelectTrigger className="w-full text-sm">
@@ -399,6 +488,9 @@ export function EmulatorPage() {
                 Select a thread to start testing
               </p>
             )}
+
+            {/* D5: Scenario reference panel */}
+            <ScenarioReferencePanel />
           </div>
         </div>
 
@@ -433,6 +525,36 @@ export function EmulatorPage() {
               {/* Input area */}
               <div className="border-t border-border bg-card p-4 shrink-0">
                 <div className="max-w-2xl mx-auto">
+                  {/* D5: Inline persona switcher near message input */}
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="text-xs text-muted-foreground shrink-0">Send as:</span>
+                    <Select value={senderPhone} onValueChange={setSenderPhone}>
+                      <SelectTrigger className="h-7 text-xs flex-1">
+                        <SelectValue placeholder="Pick participant…" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {selectedThread.participants.map((p) => (
+                          <SelectItem key={p.phoneNumber} value={p.phoneNumber}>
+                            <span className="text-xs">
+                              {p.displayName ?? p.phoneNumber}
+                            </span>
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    {/* D5: Export scenario draft button */}
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-7 text-xs shrink-0 gap-1"
+                      onClick={handleExportScenarioDraft}
+                      disabled={log.filter((e) => e.kind !== "system").length === 0}
+                      title="Export conversation as a scenario draft .ts file"
+                    >
+                      📤 Export draft
+                    </Button>
+                  </div>
+
                   <div className="flex items-end gap-3">
                     <Textarea
                       value={messageText}

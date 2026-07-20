@@ -9,7 +9,9 @@
     "start": "node --enable-source-maps ./dist/index.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "populate-venues": "tsx src/scripts/populateVenues.ts",
-    "test": "vitest run"
+    "test": "vitest run --project=unit",
+    "test:all": "vitest run",
+    "test:scenarios": "vitest run --project=integration"
   },
   "dependencies": {
     "@workspace/api-zod": "workspace:*",

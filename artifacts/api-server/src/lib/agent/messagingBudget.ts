@@ -4,6 +4,8 @@ import { isEmulatorMode } from "./emulatorContext";
 
 export type ProactiveMessageCategory = "occasion_reminder" | "plan_reminder" | "nudge" | "serendipity" | "timeline_nudge" | "payment_nudge" | "commitment_nudge";
 
+export type ProactiveMessageCheck = { allowed: true } | { allowed: false; reason: "budget" | "quiet_hours"; nextAllowedAt?: Date };
+
 /**
  * Priority order, highest first. Nothing in Phase 0 consults this ordering
  * directly (no proactive sends exist yet), but it's the contract every later
@@ -93,27 +95,38 @@ async function threadHasOptedOutParticipant(threadId: number): Promise<boolean> 
 export async function canSendProactiveMessage(
   threadId: number,
   category: ProactiveMessageCategory,
-): Promise<boolean> {
+): Promise<ProactiveMessageCheck> {
   // In emulator mode all proactive sends are allowed; the budget governor
   // should never block a test run or consume daily limits.
-  if (isEmulatorMode()) return true;
+  if (isEmulatorMode()) return { allowed: true };
+
+  // Quiet-hours check: no proactive sends during the configured night window.
+  const tz = process.env["CONCIERGE_TIMEZONE"] ?? "America/New_York";
+  const quietStart = parseInt(process.env["QUIET_HOURS_START"] ?? "21", 10);
+  const quietEnd = parseInt(process.env["QUIET_HOURS_END"] ?? "9", 10);
+  const localHour = parseInt(new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "numeric", hour12: false }).format(new Date()), 10);
+  const isQuiet = localHour >= quietStart || localHour < quietEnd;
+  if (isQuiet) {
+    const minutesUntilEnd = ((quietEnd - localHour + 24) % 24) * 60 + 5;
+    return { allowed: false, reason: "quiet_hours", nextAllowedAt: new Date(Date.now() + minutesUntilEnd * 60_000) };
+  }
 
   const rule = CATEGORY_RULES[category];
 
   // Never send proactive messages to a thread that contains an opted-out user.
   // Group iMessage cannot target individual recipients, so the entire thread
   // must be suppressed when any member has invoked their right to be forgotten.
-  if (await threadHasOptedOutParticipant(threadId)) return false;
+  if (await threadHasOptedOutParticipant(threadId)) return { allowed: false, reason: "budget" };
 
   const [categoryCount, dailyCount] = await Promise.all([
     countSendsSince(threadId, windowStart(rule.windowDays), category),
     countSendsSince(threadId, windowStart(1)),
   ]);
 
-  if (categoryCount >= rule.maxPerWindow) return false;
-  if (dailyCount >= DAILY_THREAD_CEILING) return false;
+  if (categoryCount >= rule.maxPerWindow) return { allowed: false, reason: "budget" };
+  if (dailyCount >= DAILY_THREAD_CEILING) return { allowed: false, reason: "budget" };
 
-  return true;
+  return { allowed: true };
 }
 
 /**

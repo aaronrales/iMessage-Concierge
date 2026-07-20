@@ -17,6 +17,7 @@
 import type OpenAI from "openai";
 import { openai, CHAT_MODEL } from "../openaiClient";
 import { logger } from "../logger";
+import { logLlmCost } from "./costLogger";
 import { db, projectsTable } from "@workspace/db";
 import { eq, and, inArray } from "drizzle-orm";
 import { PROJECT_ACTIVE_STATUSES, type Project } from "@workspace/db";
@@ -139,6 +140,7 @@ export async function suggestDestinations(
       },
     });
 
+    logLlmCost("destination_suggestions", CHAT_MODEL, response.usage ? { prompt_tokens: response.usage.input_tokens, completion_tokens: response.usage.output_tokens } : null);
     const raw = response.output_text;
     if (!raw) {
       logger.warn("Destination suggestion returned no output text");

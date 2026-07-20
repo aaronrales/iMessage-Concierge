@@ -4,6 +4,7 @@ import { eq } from "drizzle-orm";
 import type { ThreadContext } from "./context";
 import { logger } from "../logger";
 import { AGENT_TOOLS, executeAgentTool, type VenueCarouselEntry } from "./tools";
+import { logLlmCost } from "./costLogger";
 import { showTypingIndicator } from "./delivery";
 import { buildGroupConstraintSummary, describeReturningMember, extractGroupConstraints, type GroupConstraints } from "./tasteEngine";
 import { buildProjectPromptSummary, getActiveProject, getProjectChildPlans, parseProjectField, type CreateProjectInput } from "./projects";
@@ -406,6 +407,8 @@ async function runTurnWithTools(
       tools: AGENT_TOOLS,
       messages,
     });
+
+    logLlmCost("engine", CHAT_MODEL, completion.usage, threadId);
 
     const message = completion.choices[0]?.message;
     if (!message) {

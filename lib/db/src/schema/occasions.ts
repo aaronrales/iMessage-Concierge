@@ -28,6 +28,8 @@ export const occasionsTable = pgTable("occasions", {
   // Set once the proactive "hey, X is coming up" prompt has actually been
   // sent, so the scan never double-fires for the same occasion.
   remindedAt: timestamp("reminded_at", { withTimezone: true }),
+  // Linked project created after the organizer accepts the occasion reminder.
+  projectId: integer("project_id"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
