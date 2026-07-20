@@ -1,5 +1,5 @@
 import { Link, useLocation } from "wouter";
-import { Users, MessageSquare, ConciergeBell, UtensilsCrossed, Activity, Settings } from "lucide-react";
+import { Users, MessageSquare, ConciergeBell, UtensilsCrossed, Activity, Settings, Terminal } from "lucide-react";
 import {
   Sidebar,
   SidebarContent,
@@ -17,6 +17,7 @@ const NAV = [
   { href: "/threads",    label: "Threads",     Icon: MessageSquare,  match: (l: string) => l.startsWith("/threads") },
   { href: "/venues",     label: "Venues",      Icon: UtensilsCrossed,match: (l: string) => l.startsWith("/venues") },
   { href: "/operations", label: "Operations",  Icon: Activity,       match: (l: string) => l.startsWith("/operations") || l.startsWith("/approvals") || l.startsWith("/delivery") },
+  { href: "/emulator",   label: "Emulator",    Icon: Terminal,       match: (l: string) => l.startsWith("/emulator") },
   { href: "/settings",   label: "Settings",    Icon: Settings,       match: (l: string) => l.startsWith("/settings") },
 ];
 

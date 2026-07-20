@@ -15,6 +15,7 @@ import conciergeVcfRouter from "./conciergeVcf";
 import activationRouter from "./activation";
 import operationsRouter from "./operations";
 import privacyRouter from "./privacy";
+import emulatorRouter from "./emulator";
 
 const router: IRouter = Router();
 
@@ -39,5 +40,6 @@ router.use(operationsRouter);
 // Express route is registered as /privacy here. The URL helper (publicUrl.ts)
 // produces https://<domain>/api/privacy accordingly.
 router.use(privacyRouter);
+router.use(emulatorRouter);
 
 export default router;

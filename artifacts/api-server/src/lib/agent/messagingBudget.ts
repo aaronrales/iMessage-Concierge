@@ -1,5 +1,6 @@
 import { and, eq, gte } from "drizzle-orm";
 import { db, proactiveMessageSendsTable, threadParticipantsTable, usersTable, type ProactiveMessageSend } from "@workspace/db";
+import { isEmulatorMode } from "./emulatorContext";
 
 export type ProactiveMessageCategory = "occasion_reminder" | "plan_reminder" | "nudge" | "serendipity" | "timeline_nudge" | "payment_nudge";
 
@@ -89,6 +90,10 @@ export async function canSendProactiveMessage(
   threadId: number,
   category: ProactiveMessageCategory,
 ): Promise<boolean> {
+  // In emulator mode all proactive sends are allowed; the budget governor
+  // should never block a test run or consume daily limits.
+  if (isEmulatorMode()) return true;
+
   const rule = CATEGORY_RULES[category];
 
   // Never send proactive messages to a thread that contains an opted-out user.
@@ -107,12 +112,17 @@ export async function canSendProactiveMessage(
   return true;
 }
 
-/** Records a proactive send after it goes out, so future budget checks see it. */
+/**
+ * Records a proactive send after it goes out, so future budget checks see it.
+ * No-op in emulator mode — test runs must never consume daily send limits.
+ */
 export async function recordProactiveSend(
   threadId: number,
   category: ProactiveMessageCategory,
   userId?: number | null,
-): Promise<ProactiveMessageSend> {
+): Promise<ProactiveMessageSend | null> {
+  if (isEmulatorMode()) return null;
+
   const [row] = await db
     .insert(proactiveMessageSendsTable)
     .values({ threadId, category, userId: userId ?? null })

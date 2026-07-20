@@ -4,6 +4,7 @@ import { logger } from "../logger";
 import { sendDirectMessage, sendGroupMessage, sendTypingIndicator } from "../sendblue";
 import type { TapbackReaction } from "../sendblue";
 import { recordMessage } from "./context";
+import { isEmulatorMode, captureEmulatorMessage } from "./emulatorContext";
 
 const MAX_BUBBLE_CHARS = 220;
 const MAX_BUBBLES = 3;
@@ -85,26 +86,31 @@ export async function sendToThread(
     const bubbleMediaUrl = isLast ? mediaUrl : undefined;
     const bubbleSendStyle = isLast ? sendStyle : undefined;
 
-    try {
-      if (thread?.isGroup && thread.sendblueGroupId) {
-        await sendGroupMessage({
-          groupId: thread.sendblueGroupId,
-          content: bubbleContent,
-          mediaUrl: bubbleMediaUrl,
-          sendStyle: bubbleSendStyle,
-        });
-      } else if (thread?.primaryPhoneNumber) {
-        await sendDirectMessage({
-          to: thread.primaryPhoneNumber,
-          content: bubbleContent,
-          mediaUrl: bubbleMediaUrl,
-          sendStyle: bubbleSendStyle,
-        });
-      } else {
-        logger.warn({ threadId }, "Cannot send outbound message: thread has no known transport");
+    if (isEmulatorMode()) {
+      // Emulator mode: capture the message instead of sending it via Sendblue.
+      captureEmulatorMessage(threadId, bubbleContent, bubbleMediaUrl);
+    } else {
+      try {
+        if (thread?.isGroup && thread.sendblueGroupId) {
+          await sendGroupMessage({
+            groupId: thread.sendblueGroupId,
+            content: bubbleContent,
+            mediaUrl: bubbleMediaUrl,
+            sendStyle: bubbleSendStyle,
+          });
+        } else if (thread?.primaryPhoneNumber) {
+          await sendDirectMessage({
+            to: thread.primaryPhoneNumber,
+            content: bubbleContent,
+            mediaUrl: bubbleMediaUrl,
+            sendStyle: bubbleSendStyle,
+          });
+        } else {
+          logger.warn({ threadId }, "Cannot send outbound message: thread has no known transport");
+        }
+      } catch (error) {
+        logger.error({ error, threadId }, "Failed to send outbound Sendblue message");
       }
-    } catch (error) {
-      logger.error({ error, threadId }, "Failed to send outbound Sendblue message");
     }
 
     await recordMessage({ threadId, userId: null, direction: "outbound", role: "assistant", content: bubbleContent });

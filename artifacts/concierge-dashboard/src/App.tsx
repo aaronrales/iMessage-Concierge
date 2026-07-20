@@ -9,6 +9,7 @@ import { ThreadsPage } from '@/pages/Threads';
 import { VenuesPage } from '@/pages/Venues';
 import { OperationsPage } from '@/pages/Operations';
 import { SettingsPage } from '@/pages/Settings';
+import { EmulatorPage } from '@/pages/Emulator';
 
 const queryClient = new QueryClient();
 
@@ -22,6 +23,7 @@ function Router() {
         <Route path="/venues" component={VenuesPage} />
         <Route path="/operations" component={OperationsPage} />
         <Route path="/settings" component={SettingsPage} />
+        <Route path="/emulator" component={EmulatorPage} />
         {/* Legacy redirects — preserve bookmarks and deep-links */}
         <Route path="/turns" component={() => <Redirect to="/threads?tab=turns" />} />
         <Route path="/populate" component={() => <Redirect to="/venues?tab=populate" />} />

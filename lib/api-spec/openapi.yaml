@@ -22,6 +22,8 @@ tags:
     description: Activation funnel metrics
   - name: operations
     description: Operational health and monitoring metrics
+  - name: emulator
+    description: In-app conversation emulator (test mode — no real iMessages sent)
 paths:
   /healthz:
     get:
@@ -481,6 +483,57 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ActivationSummary"
+
+  /emulator/threads:
+    get:
+      operationId: listEmulatorThreads
+      tags: [emulator]
+      summary: List threads for the conversation emulator
+      description: Returns all threads with participants for populating the emulator thread selector.
+      responses:
+        "200":
+          description: Threads with participants
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/EmulatorThread"
+
+  /emulator/message:
+    post:
+      operationId: sendEmulatorMessage
+      tags: [emulator]
+      summary: Inject a message into a thread and run the agent
+      description: >
+        Persists the inbound message, runs the agent synchronously (no debounce),
+        and returns all outbound messages that were captured. Sendblue is never
+        called and the proactive-message budget is not consumed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EmulatorMessageRequest"
+      responses:
+        "200":
+          description: Captured outbound messages
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EmulatorMessageResponse"
+        "400":
+          description: Invalid request body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Thread not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 
   /venue-population-runs:
     get:
@@ -1182,6 +1235,67 @@ components:
         conversionRate:
           type: ["number", "null"]
           description: Percent 0–100 (one decimal). Null when totalInvites is 0.
+
+    EmulatorParticipant:
+      type: object
+      required: [userId, phoneNumber, threadId]
+      properties:
+        userId:
+          type: integer
+        phoneNumber:
+          type: string
+        displayName:
+          type: ["string", "null"]
+        threadId:
+          type: integer
+
+    EmulatorThread:
+      type: object
+      required: [id, isGroup, participants]
+      properties:
+        id:
+          type: integer
+        isGroup:
+          type: boolean
+        title:
+          type: ["string", "null"]
+        primaryPhoneNumber:
+          type: ["string", "null"]
+        participants:
+          type: array
+          items:
+            $ref: "#/components/schemas/EmulatorParticipant"
+
+    EmulatorMessageRequest:
+      type: object
+      required: [threadId, senderPhone, content]
+      properties:
+        threadId:
+          type: integer
+        senderPhone:
+          type: string
+        content:
+          type: string
+
+    EmulatorCapturedMessage:
+      type: object
+      required: [threadId, content]
+      properties:
+        threadId:
+          type: integer
+        content:
+          type: string
+        mediaUrl:
+          type: ["string", "null"]
+
+    EmulatorMessageResponse:
+      type: object
+      required: [messages]
+      properties:
+        messages:
+          type: array
+          items:
+            $ref: "#/components/schemas/EmulatorCapturedMessage"
 
     CreateVenuePopulationRunRequest:
       type: object

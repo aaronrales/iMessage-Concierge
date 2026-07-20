@@ -24,6 +24,9 @@ import type {
   Booking,
   CreateVenuePopulationRunRequest,
   DeliveryHealthSummary,
+  EmulatorMessageRequest,
+  EmulatorMessageResponse,
+  EmulatorThread,
   ErrorResponse,
   GetActivationSummaryParams,
   GetDeliveryHealthParams,
@@ -1591,6 +1594,156 @@ export function useGetActivationSummary<TData = Awaited<ReturnType<typeof getAct
 
 
 
+
+export const getListEmulatorThreadsUrl = () => {
+
+
+
+
+  return `/api/emulator/threads`
+}
+
+/**
+ * Returns all threads with participants for populating the emulator thread selector.
+ * @summary List threads for the conversation emulator
+ */
+export const listEmulatorThreads = async ( options?: RequestInit): Promise<EmulatorThread[]> => {
+
+  return customFetch<EmulatorThread[]>(getListEmulatorThreadsUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getListEmulatorThreadsQueryKey = () => {
+    return [
+    `/api/emulator/threads`
+    ] as const;
+    }
+
+
+export const getListEmulatorThreadsQueryOptions = <TData = Awaited<ReturnType<typeof listEmulatorThreads>>, TError = ErrorType<unknown>>( options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listEmulatorThreads>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getListEmulatorThreadsQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof listEmulatorThreads>>> = ({ signal }) => listEmulatorThreads({ signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof listEmulatorThreads>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type ListEmulatorThreadsQueryResult = NonNullable<Awaited<ReturnType<typeof listEmulatorThreads>>>
+export type ListEmulatorThreadsQueryError = ErrorType<unknown>
+
+
+/**
+ * @summary List threads for the conversation emulator
+ */
+
+export function useListEmulatorThreads<TData = Awaited<ReturnType<typeof listEmulatorThreads>>, TError = ErrorType<unknown>>(
+  options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listEmulatorThreads>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getListEmulatorThreadsQueryOptions(options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export const getSendEmulatorMessageUrl = () => {
+
+
+
+
+  return `/api/emulator/message`
+}
+
+/**
+ * Persists the inbound message, runs the agent synchronously (no debounce), and returns all outbound messages that were captured. Sendblue is never called and the proactive-message budget is not consumed.
+ * @summary Inject a message into a thread and run the agent
+ */
+export const sendEmulatorMessage = async (emulatorMessageRequest: EmulatorMessageRequest, options?: RequestInit): Promise<EmulatorMessageResponse> => {
+
+  return customFetch<EmulatorMessageResponse>(getSendEmulatorMessageUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(emulatorMessageRequest)
+  }
+);}
+
+
+
+
+
+export const getSendEmulatorMessageMutationOptions = <TError = ErrorType<ErrorResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof sendEmulatorMessage>>, TError,{data: BodyType<EmulatorMessageRequest>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof sendEmulatorMessage>>, TError,{data: BodyType<EmulatorMessageRequest>}, TContext> => {
+
+const mutationKey = ['sendEmulatorMessage'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof sendEmulatorMessage>>, {data: BodyType<EmulatorMessageRequest>}> = (props) => {
+          const {data} = props ?? {};
+
+          return  sendEmulatorMessage(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type SendEmulatorMessageMutationResult = NonNullable<Awaited<ReturnType<typeof sendEmulatorMessage>>>
+    export type SendEmulatorMessageMutationBody = BodyType<EmulatorMessageRequest>
+    export type SendEmulatorMessageMutationError = ErrorType<ErrorResponse>
+
+    /**
+ * @summary Inject a message into a thread and run the agent
+ */
+export const useSendEmulatorMessage = <TError = ErrorType<ErrorResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof sendEmulatorMessage>>, TError,{data: BodyType<EmulatorMessageRequest>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof sendEmulatorMessage>>,
+        TError,
+        {data: BodyType<EmulatorMessageRequest>},
+        TContext
+      > => {
+      return useMutation(getSendEmulatorMessageMutationOptions(options));
+    }
 
 export const getListVenuePopulationRunsUrl = () => {
 

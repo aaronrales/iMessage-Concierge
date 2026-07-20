@@ -567,6 +567,44 @@ export const GetActivationSummaryResponse = zod.object({
 
 
 /**
+ * Returns all threads with participants for populating the emulator thread selector.
+ * @summary List threads for the conversation emulator
+ */
+export const ListEmulatorThreadsResponseItem = zod.object({
+  "id": zod.number(),
+  "isGroup": zod.boolean(),
+  "title": zod.string().nullish(),
+  "primaryPhoneNumber": zod.string().nullish(),
+  "participants": zod.array(zod.object({
+  "userId": zod.number(),
+  "phoneNumber": zod.string(),
+  "displayName": zod.string().nullish(),
+  "threadId": zod.number()
+}))
+})
+export const ListEmulatorThreadsResponse = zod.array(ListEmulatorThreadsResponseItem)
+
+
+/**
+ * Persists the inbound message, runs the agent synchronously (no debounce), and returns all outbound messages that were captured. Sendblue is never called and the proactive-message budget is not consumed.
+ * @summary Inject a message into a thread and run the agent
+ */
+export const SendEmulatorMessageBody = zod.object({
+  "threadId": zod.number(),
+  "senderPhone": zod.string(),
+  "content": zod.string()
+})
+
+export const SendEmulatorMessageResponse = zod.object({
+  "messages": zod.array(zod.object({
+  "threadId": zod.number(),
+  "content": zod.string(),
+  "mediaUrl": zod.string().nullish()
+}))
+})
+
+
+/**
  * Returns the 50 most recent venue population runs, ordered by createdAt DESC.
  * @summary List recent venue population runs
  */

@@ -495,6 +495,41 @@ export interface ActivationSummary {
   conversionRate: number | null;
 }
 
+export interface EmulatorParticipant {
+  userId: number;
+  phoneNumber: string;
+  /** @nullable */
+  displayName?: string | null;
+  threadId: number;
+}
+
+export interface EmulatorThread {
+  id: number;
+  isGroup: boolean;
+  /** @nullable */
+  title?: string | null;
+  /** @nullable */
+  primaryPhoneNumber?: string | null;
+  participants: EmulatorParticipant[];
+}
+
+export interface EmulatorMessageRequest {
+  threadId: number;
+  senderPhone: string;
+  content: string;
+}
+
+export interface EmulatorCapturedMessage {
+  threadId: number;
+  content: string;
+  /** @nullable */
+  mediaUrl?: string | null;
+}
+
+export interface EmulatorMessageResponse {
+  messages: EmulatorCapturedMessage[];
+}
+
 export type CreateVenuePopulationRunRequestVenueType = typeof CreateVenuePopulationRunRequestVenueType[keyof typeof CreateVenuePopulationRunRequestVenueType];
 
 
