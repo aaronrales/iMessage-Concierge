@@ -1,0 +1,108 @@
+# Implementation Plan: Conversational Flow Fixes
+
+**Source:** Lake Como trip transcript review (see attached screenshot / prior chat).
+**Goal:** Eliminate three failure classes observed in live use — (1) promised work that's never delivered, (2) turns that end without forward motion, (3) unnecessary re-confirmation of direct requests — without regressing existing gated-proposal or etiquette behavior.
+
+Ordered by priority. Items 1–2 are pre-pilot blockers (any trip project can hit them). Items 3–6 are quality-of-flow fixes.
+
+---
+
+## 1. Promised-deliverable invariant (blocker)
+
+**Problem:** When a turn hands off to async work (JIT venue/lodging extraction), nothing tracks that a promise was made, and nothing delivers the result back to the thread. The agent says "I'll pull together a few hotel options" and the thread never hears from it again.
+
+**Schema — new table `pending_deliverables`:**
+```
+id, threadId, projectId (nullable), kind (text: "lodging_options" | "venue_options" | "destination_options" | ...),
+promisedText (text, what the agent told the user), createdAt,
+expectedByAt (timestamp — createdAt + short SLA, e.g. 3 min),
+deliveredAt (nullable), deliveryContent (jsonb, nullable), status (text: pending | delivered | failed | timed_out)
+```
+
+**Write path:** Any time an engine turn's reply contains a forward-looking commitment tied to an async tool call (JIT extraction, lodging search once built — see #2), insert a row before the async job is enqueued. Practically: gate this on the *tool call*, not on regexing the reply text — i.e., whenever `runAndPersistJITExtraction` / the new lodging search is enqueued from a live user turn (not a population run), write the row in the same function that enqueues the job.
+
+**Delivery path:** The JIT extraction worker (`venueCorpus/jitExtraction.ts`, and the new lodging worker) must, on completion, look up any `pending_deliverables` row for that thread/kind and:
+- On success: run a short follow-up agent turn (or a templated message using the returned candidates + carousel renderer) that posts real results to the thread, then mark `delivered`.
+- On failure/empty result: post an honest "still didn't find great options for X — want me to try a different area/budget?" rather than silence. Mark `failed`.
+
+**Safety net:** A scheduler scan (same pattern as `weatherRescueScan`, `venueRevalidationScan`) runs every ~2 min, finds `pending` rows past `expectedByAt`, and either re-triggers delivery (if the underlying job actually finished but delivery failed) or sends a fallback "sorry, that's taking longer than expected" message. This is the backstop for the case above — nothing should ever go permanently silent after a promise.
+
+**Files touched:** new schema file `lib/db/src/schema/pendingDeliverables.ts`; `lib/agent/venueCorpus/jitExtraction.ts` (write on enqueue, deliver on completion); `lib/agent/scheduler.ts` (new `pendingDeliverableScan` queue + cron); `lib/agent/engine.ts` (system prompt: forward-looking commitments about async lookups must go through this path, not be asserted as already-done).
+
+---
+
+## 2. `search_lodging` tool (blocker)
+
+**Problem:** The system prompt/engine lets the LLM claim it can find hotels; no tool exists to do so. This is the root cause of the Lake Como silence — the promise was unbackable from the start.
+
+**Build:** New tool in `lib/agent/tools.ts`, modeled directly on the existing venue-search tool:
+- Input: destination, price band (budget/mid/luxury or $ range), date range if known, party size.
+- Source: Google Places (lodging types: `lodging`, `hotel`) for candidates; web search for rough nightly-rate context where Places pricing is thin (mirrors how `destinationSuggestions.ts` already gets "rough cost context" for destinations).
+- Output: 2–3 options per requested price band, each with name, rough price/night, link (booking.com/Airbnb/hotel site search URL — no scraping, same deep-link posture as `bookingLinks.ts`/`lodgingLinks.ts`).
+- Render via the existing venue-carousel path (`planCard.ts` / carousel renderer) so results look and feel consistent with restaurant recommendations.
+- Register the tool in the engine's tool list, gated the same way venue search is gated (non-NYC destinations still get JIT-style on-demand extraction rather than a pre-built corpus — no need to build a lodging corpus).
+
+**Prompt update:** In `engine.ts`, explicitly enumerate what the agent *can* and *cannot* currently do in one place (venues: yes; lodging: yes once this ships; flights: no — deep-link/collect-only; activities: yes via venue corpus/JIT). This turns "audit every implied capability against the tool list" into a standing checklist rather than a one-time fix — add a code comment flagging this as a required review point whenever the system prompt is edited.
+
+**Files touched:** `lib/agent/tools.ts` (new tool + registration), `lib/agent/venueCorpus/jitExtraction.ts` or a new `lib/agent/lodgingSearch.ts` (extraction logic, reusing JIT caching pattern per destination), `lib/agent/engine.ts` (capability list in system prompt).
+
+---
+
+## 3. Trip intake as the playbook's first live step
+
+**Problem:** Project creation ends in a bare acknowledgment ("I'll treat this as a trip project…") instead of asking for the specific unknowns the playbook already knows it needs (dates, headcount, budget, base).
+
+**Build:** In `lib/agent/projects.ts` (or wherever project creation currently finalizes), after a trip project is created, call into `playbooks.ts` to get the ordered list of intake fields still null on the project (`dateRangeStart`/`dateRangeEnd`, `headcountTarget`, budget signal, `destination`/base). Append a targeted question for the top 1–2 unknowns to the creation reply — not a generic "let me know!" but the specific next input needed, matching the playbook's own step ordering (lock dates → collect budgets → destination/base, etc., per `projectTimeline.ts`).
+
+**Guardrail:** This must not fire for non-trip project types where the current flow already asks well (verify against `onboardingFlow.ts` intake patterns), and must not double-ask if the user already supplied dates/headcount in the same message that triggered project creation.
+
+**Files touched:** `lib/agent/projects.ts` (post-creation hook), `lib/agent/playbooks.ts` (expose "next unknown intake fields" as a callable helper if not already available), `lib/agent/engine.ts` (reply composition for the creation turn).
+
+---
+
+## 4. Forward-motion rule in the engine prompt
+
+**Problem:** Turns are allowed to end on a flat statement with no question, proposal, or delivery commitment — the direct cause of the "you had to prompt twice" stall.
+
+**Build:** Add an explicit constraint to the engine system prompt for any thread with an active project: every reply must end in one of (a) a question, (b) a concrete proposal (poll, venue/lodging options, a specific next step), or (c) a stated action *with a bounded delivery expectation* ("give me a couple minutes") — and (c) is only valid if it's backed by #1's pending-deliverable tracking, so the promise can't go unbacked again.
+
+**Validation hook:** Since `/turns` already exists as a review surface, add a lightweight heuristic flag (not a hard block) on turns that end without a question mark, a poll/proposal artifact, or a delivery record — surfaced as a filter in the Turns dashboard so this is auditable over the pilot, not just prompt-and-hope.
+
+**Files touched:** `lib/agent/engine.ts` (prompt constraint), `routes/turns.ts` / `concierge-dashboard/src/pages/Turns.tsx` (optional flag/filter).
+
+---
+
+## 5. Act on direct requests instead of re-confirming
+
+**Problem:** User directly asked "should we start with hotels?"; agent asked "want me to pull a few options?" instead of doing it. Unnecessary round trip.
+
+**Build:** Prompt rule in `engine.ts`: if the user's message is a direct, executable request and a tool exists to fulfill it in-turn, execute and present results rather than asking for confirmation to proceed. Reserve confirmation for actions that are gated (organizer-approval-required proposals — already handled structurally by the proposal gate), money-adjacent, or irreversible. This is a narrow, low-risk prompt change since the existing proposal gate already handles the cases that *should* require confirmation.
+
+**Files touched:** `lib/agent/engine.ts` only.
+
+---
+
+## 6. Offer the group thread when a trip is planned 1:1
+
+**Problem:** User said "with friends" in a 1:1 thread; the agent never offered to spin up the group thread it's fully capable of creating.
+
+**Build:** Engine hint: when project type = trip (or bachelorette/reunion) is created or discussed in a 1:1 thread, and no linked group thread exists yet, include a one-time offer ("Want me to start a group thread with the crew so I can collect everyone's dates and budgets directly?"). Reuse the existing instant-group-creation flow on acceptance. Should fire once per project, not repeat if declined.
+
+**Files touched:** `lib/agent/engine.ts` (hint + one-shot tracking, e.g. a boolean/timestamp on the project or a check against existing group-creation events).
+
+---
+
+## Sequencing
+
+| Order | Item | Why here |
+|---|---|---|
+| 1 | #1 Promised-deliverable invariant | Structural fix; prevents silent dead-ends everywhere, not just lodging |
+| 2 | #2 `search_lodging` tool | Makes #1 meaningful for the trip use case specifically; closes the root cause |
+| 3 | #4 Forward-motion rule | Cheap prompt change, immediately reduces stalls across all project types |
+| 4 | #3 Trip intake step | Prompt + small glue code; biggest UX lift for new trip projects |
+| 5 | #5 Act-don't-reconfirm | Cheap prompt change |
+| 6 | #6 Offer group thread | Nice-to-have growth hook, lowest urgency |
+
+## Validation
+
+Once #1–#4 land, replay the Lake Como transcript in the Emulator (hotels request, "sure thing," etc.) as a standing regression case — the fixed conversation should (a) actually ask for dates/headcount up front, (b) either deliver real lodging options or explicitly say it's working on it with a bounded time, and (c) never end a turn on a bare acknowledgment. Add this as a permanent emulator fixture so future prompt/tool changes can't silently reintroduce the same failure mode.

@@ -1408,7 +1408,7 @@ router.post("/webhooks/sendblue/:secret", async (req, res): Promise<void> => {
                   "Destination locked from organizer tiebreak override",
                 );
                 // Enqueue JIT venue extraction for the locked destination (non-NYC only).
-                await enqueueJITExtractionIfNeeded(matched.label);
+                await enqueueJITExtractionIfNeeded(matched.label, { threadId: organizerProject.threadId, projectId: destProject.id });
               }
               await sendToThread(
                 organizerProject.threadId,
@@ -1543,7 +1543,10 @@ router.post("/webhooks/sendblue/:secret", async (req, res): Promise<void> => {
                   "Destination locked from poll auto-close",
                 );
                 // Enqueue JIT venue extraction for the locked destination (non-NYC only).
-                await enqueueJITExtractionIfNeeded(winnerTally.option.label);
+                await enqueueJITExtractionIfNeeded(winnerTally.option.label, {
+                  threadId,
+                  projectId: destProject?.id,
+                });
               }
               await sendToThread(
                 threadId,

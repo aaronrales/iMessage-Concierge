@@ -13,8 +13,9 @@
 import type OpenAI from "openai";
 import { openai, CHAT_MODEL } from "../../openaiClient";
 import { logger } from "../../logger";
-import { db, destinationVenueExtractionsTable } from "@workspace/db";
+import { db, destinationVenueExtractionsTable, pendingDeliverablesTable } from "@workspace/db";
 import { and, desc, eq, gt } from "drizzle-orm";
+import { sendToThread } from "../delivery";
 import { EXTRACTION_SCHEMA_VERSION } from "./constants";
 
 export { EXTRACTION_SCHEMA_VERSION };
@@ -246,6 +247,9 @@ export async function runAndPersistJITExtraction(destination: string): Promise<v
       })
       .where(eq(destinationVenueExtractionsTable.destination, normalised));
     logger.warn({ destination }, "JIT extraction failed or returned thin results");
+
+    // Notify any waiting threads about the failure so no promise goes silent.
+    await deliverPendingPromises(normalised, null);
     return;
   }
 
@@ -265,6 +269,61 @@ export async function runAndPersistJITExtraction(destination: string): Promise<v
     .where(eq(destinationVenueExtractionsTable.destination, normalised));
 
   logger.info({ destination, venueCount: result.venues.length }, "JIT venue extraction completed");
+
+  // Deliver results to any threads that were waiting for this extraction.
+  await deliverPendingPromises(normalised, result.venues);
+}
+
+/**
+ * Finds pending_deliverables rows for this destination and either delivers
+ * the venue results or sends an honest failure message. Called both on
+ * success and on extraction failure so no promise ever goes permanently silent.
+ */
+async function deliverPendingPromises(destinationKey: string, venues: JITVenue[] | null): Promise<void> {
+  const pending = await db
+    .select()
+    .from(pendingDeliverablesTable)
+    .where(
+      and(
+        eq(pendingDeliverablesTable.destinationKey, destinationKey),
+        eq(pendingDeliverablesTable.kind, "venue_options"),
+        eq(pendingDeliverablesTable.status, "pending"),
+      ),
+    );
+
+  if (pending.length === 0) return;
+
+  const now = new Date();
+
+  for (const row of pending) {
+    try {
+      if (venues && venues.length > 0) {
+        const lines = venues
+          .slice(0, 5)
+          .map((v) => `• ${v.name} [${v.venueType}] — ${v.vibe} (${v.roughPrice})`);
+        const msg =
+          `Here are some places and activities to check out in ${destinationKey}:\n` +
+          lines.join("\n") +
+          `\n\nThese come from a web search rather than our usual hand-vetted list — good starting points to explore.`;
+        await sendToThread(row.threadId, msg);
+        await db
+          .update(pendingDeliverablesTable)
+          .set({ status: "delivered", deliveredAt: now, deliveryContent: venues })
+          .where(eq(pendingDeliverablesTable.id, row.id));
+      } else {
+        await sendToThread(
+          row.threadId,
+          `I wasn't able to find great venue options for ${destinationKey} this time. Ask me directly and I'll look things up for you.`,
+        );
+        await db
+          .update(pendingDeliverablesTable)
+          .set({ status: "failed", deliveredAt: now })
+          .where(eq(pendingDeliverablesTable.id, row.id));
+      }
+    } catch (err) {
+      logger.warn({ err, deliverableId: row.id, destinationKey }, "Failed to deliver pending promise; continuing");
+    }
+  }
 }
 
 // ── Cache validity check (used before enqueuing) ──────────────────────────────

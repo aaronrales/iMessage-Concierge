@@ -101,6 +101,16 @@ export async function findGooglePlaceIdByName(venueName: string, neighborhood?: 
  * unchanged from the original design so the calling convention in `engine.ts`
  * never needs to change.
  */
+// ─── CAPABILITY AUDIT ────────────────────────────────────────────────────────
+// REQUIRED REVIEW: whenever the system prompt in engine.ts is edited, verify
+// this list matches every tool/capability the agent can actually invoke.
+// Mismatches are the #1 source of promise-without-delivery failures.
+//
+//   ✅ search_venues   — corpus + Google Places fallback
+//   ✅ search_lodging  — Google Places hotel search + booking links
+//   ❌ search_flights  — NOT available; use deep-link / collect-only pattern
+//   ✅ JIT extraction  — async background venue extraction for non-NYC destinations
+
 export const AGENT_TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
   {
     type: "function",
@@ -121,6 +131,41 @@ export const AGENT_TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           },
         },
         required: ["query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "search_lodging",
+      description:
+        "Look up real hotel and lodging options for a destination. Call this whenever the user asks about hotels, places to stay, or where to book — never promise lodging results without calling this first so you don't invent options that don't exist.",
+      parameters: {
+        type: "object",
+        properties: {
+          destination: {
+            type: "string",
+            description: "City or destination to search in, e.g. 'Lake Como, Italy' or 'Nashville, TN'.",
+          },
+          price_band: {
+            type: "string",
+            enum: ["budget", "mid", "luxury"],
+            description: "Target price tier. Omit to return a spread across tiers.",
+          },
+          checkin: {
+            type: "string",
+            description: "Check-in date in ISO format (YYYY-MM-DD), if known.",
+          },
+          checkout: {
+            type: "string",
+            description: "Check-out date in ISO format (YYYY-MM-DD), if known.",
+          },
+          guests: {
+            type: "number",
+            description: "Number of guests, if known.",
+          },
+        },
+        required: ["destination"],
       },
     },
   },
@@ -287,6 +332,105 @@ export async function listVenueCandidates(query: string, location: string, limit
   }
 }
 
+// ─── Lodging search ───────────────────────────────────────────────────────────
+
+interface LodgingResult {
+  name: string;
+  category: string;
+  priceLevel: string;
+  address: string;
+  googleMapsLink: string;
+}
+
+/** Maps price level to rough nightly cost band for context. */
+function mapPriceLevelBand(level: string): string {
+  switch (level) {
+    case "$": return "budget";
+    case "$": return "mid-range";
+    case "$$": return "upscale";
+    case "$$": return "luxury";
+    default: return "unknown";
+  }
+}
+
+/** Builds a hotel-specific Booking.com search URL (deep link, no scraping). */
+function buildHotelBookingUrl(
+  hotelName: string,
+  destination: string,
+  checkin: string | null,
+  checkout: string | null,
+  guests: number | null,
+): string {
+  const url = new URL("https://www.booking.com/searchresults.html");
+  url.searchParams.set("ss", `${hotelName} ${destination}`);
+  if (checkin) url.searchParams.set("checkin", checkin);
+  if (checkout) url.searchParams.set("checkout", checkout);
+  if (guests) {
+    url.searchParams.set("group_adults", String(guests));
+    url.searchParams.set("no_rooms", "1");
+  }
+  return url.toString();
+}
+
+/**
+ * Searches Google Places for hotels/lodging at a destination.
+ * Uses the Places Text Search API with lodging-type types.
+ * Returns null on any failure so the caller can degrade gracefully.
+ */
+async function searchLodgingViaGooglePlaces(args: {
+  destination: string;
+  priceBand: string | null;
+}): Promise<LodgingResult[] | null> {
+  const apiKey = process.env["GOOGLE_PLACES_API_KEY"];
+  if (!apiKey) {
+    logger.warn("GOOGLE_PLACES_API_KEY not configured; lodging search unavailable");
+    return null;
+  }
+
+  const bandModifier = args.priceBand === "budget" ? "affordable " : args.priceBand === "luxury" ? "luxury " : "";
+  const textQuery = `${bandModifier}hotels in ${args.destination}`;
+
+  try {
+    const response = await fetch(PLACES_TEXT_SEARCH_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": apiKey,
+        "X-Goog-FieldMask":
+          "places.id,places.displayName,places.formattedAddress,places.types,places.priceLevel,places.googleMapsUri",
+      },
+      body: JSON.stringify({
+        textQuery,
+        maxResultCount: 5,
+        includedTypes: ["hotel", "lodging", "extended_stay_hotel", "bed_and_breakfast"],
+      }),
+    });
+
+    if (!response.ok) {
+      logger.error({ status: response.status, destination: args.destination }, "Google Places lodging search failed");
+      return null;
+    }
+
+    const data = (await response.json()) as GoogleTextSearchResponse;
+    const places = data.places ?? [];
+    if (places.length === 0) return null;
+
+    return places
+      .filter((p) => p.displayName?.text)
+      .slice(0, 3) // cap at 3 options so the message stays readable
+      .map((place) => ({
+        name: place.displayName!.text!,
+        category: mapPriceLevelBand(mapGooglePriceLevel(place.priceLevel)),
+        priceLevel: mapGooglePriceLevel(place.priceLevel),
+        address: place.formattedAddress ?? "",
+        googleMapsLink: place.googleMapsUri ?? "",
+      }));
+  } catch (error) {
+    logger.error({ error, destination: args.destination }, "Google Places lodging search threw an error");
+    return null;
+  }
+}
+
 // ─── Tool executor ─────────────────────────────────────────────────────────────
 
 /**
@@ -381,6 +525,41 @@ export async function executeAgentTool(
         };
       }
       return { results, note: "These come from a general lookup, not our curated corpus -- speak about them slightly more tentatively than a vetted recommendation." };
+    }
+    case "search_lodging": {
+      const destination = typeof args["destination"] === "string" ? args["destination"] : "";
+      const priceBand = typeof args["price_band"] === "string" ? args["price_band"] : null;
+      const checkin = typeof args["checkin"] === "string" ? args["checkin"] : null;
+      const checkout = typeof args["checkout"] === "string" ? args["checkout"] : null;
+      const guests = typeof args["guests"] === "number" ? Math.round(args["guests"]) : null;
+
+      const results = await searchLodgingViaGooglePlaces({ destination, priceBand });
+      if (!results || results.length === 0) {
+        return {
+          results: [],
+          note: `No lodging data found for "${destination}". Suggest the user search Airbnb, VRBO, or Booking.com directly — the system can generate search deep links.`,
+        };
+      }
+
+      // Build a Booking.com search URL for the destination (deep link, not an API).
+      const bookingBase = new URL("https://www.booking.com/searchresults.html");
+      bookingBase.searchParams.set("ss", destination);
+      if (checkin) bookingBase.searchParams.set("checkin", checkin);
+      if (checkout) bookingBase.searchParams.set("checkout", checkout);
+      if (guests) {
+        bookingBase.searchParams.set("group_adults", String(guests));
+        bookingBase.searchParams.set("no_rooms", "1");
+      }
+      const bookingSearchUrl = bookingBase.toString();
+
+      return {
+        results: results.map((r) => ({
+          ...r,
+          bookingSearchUrl: buildHotelBookingUrl(r.name, destination, checkin, checkout, guests),
+        })),
+        searchUrl: bookingSearchUrl,
+        note: "From Google Places — speak tentatively (e.g. 'Here are a few options I found') and note that prices/availability should be confirmed on the booking site.",
+      };
     }
     default:
       return { error: `Unknown tool: ${name}` };

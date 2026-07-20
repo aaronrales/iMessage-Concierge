@@ -1,6 +1,6 @@
 import { PgBoss } from "pg-boss";
-import { eq, inArray } from "drizzle-orm";
-import { db, profilesTable, projectsTable, threadParticipantsTable, threadsTable, usersTable, PROJECT_ACTIVE_STATUSES } from "@workspace/db";
+import { and, eq, inArray, lt } from "drizzle-orm";
+import { db, pendingDeliverablesTable, profilesTable, projectsTable, threadParticipantsTable, threadsTable, usersTable, PROJECT_ACTIVE_STATUSES } from "@workspace/db";
 import { logger } from "../logger";
 import { canSendProactiveMessage, recordProactiveSend } from "./messagingBudget";
 import { sendToThread } from "./delivery";
@@ -82,6 +82,7 @@ const QUEUES = {
   actionItemDueScan: "action-item-due-scan",
   commitmentDeadlineScan: "commitment-deadline-scan",
   jitVenueExtraction: "jit-venue-extraction",
+  pendingDeliverableScan: "pending-deliverable-scan",
 } as const;
 
 const NON_VOTER_NUDGE_DELAY_SECONDS = 4 * 60 * 60; // 4 hours after a poll opens
@@ -129,6 +130,11 @@ const ACTION_ITEM_DUE_SCAN_CRON = "0 9 * * *"; // daily at 09:00 local
 // pre-deadline nudge (one 1:1 nudge per uncommitted participant) and the
 // deadline lock announcement to the group thread.
 const COMMITMENT_DEADLINE_SCAN_CRON = "0 10 * * *"; // daily at 10:00 local
+// Backstop scan: runs every 2 minutes, finds promised deliverables past their
+// SLA and either re-tries delivery (if the underlying job finished) or sends
+// an honest fallback message. Timezone-agnostic — 2-minute windows are short
+// enough that time-of-day gating is not meaningful here.
+const PENDING_DELIVERABLE_SCAN_CRON = "*/2 * * * *";
 // A group has to have gone quiet for a real stretch before an unprompted
 // suggestion is worth the interruption -- this is what keeps it feeling
 // rare and well-timed instead of naggy.
@@ -226,8 +232,16 @@ async function handleJITVenueExtraction(data: JITVenueExtractionJobData): Promis
  * the cache is warm. Does nothing for NYC destinations (the curated corpus
  * covers those). Also does nothing when the scheduler is not running (e.g.
  * during tests or when DATABASE_URL is not set).
+ *
+ * Pass `liveContext` when enqueueing from a live user turn (not a background
+ * population run). When provided, a `pending_deliverables` row is written so
+ * the completion handler can deliver results back to the thread and no promise
+ * goes permanently silent.
  */
-export async function enqueueJITExtractionIfNeeded(destination: string): Promise<void> {
+export async function enqueueJITExtractionIfNeeded(
+  destination: string,
+  liveContext?: { threadId: number; projectId?: number },
+): Promise<void> {
   if (isNYCDestination(destination)) return;
   if (!boss) {
     logger.debug({ destination }, "JIT extraction skipped: scheduler not running");
@@ -240,6 +254,86 @@ export async function enqueueJITExtractionIfNeeded(destination: string): Promise
   }
   await boss.send(QUEUES.jitVenueExtraction, { destination });
   logger.info({ destination }, "JIT venue extraction enqueued");
+
+  // Record the pending promise so delivery is guaranteed even if the worker
+  // crashes. Only written for live user turns (liveContext provided).
+  if (liveContext?.threadId) {
+    const expectedByAt = new Date(Date.now() + 5 * 60 * 1000); // 5-minute SLA
+    await db.insert(pendingDeliverablesTable).values({
+      threadId: liveContext.threadId,
+      projectId: liveContext.projectId ?? null,
+      kind: "venue_options",
+      promisedText: `I'll put together a list of places and activities to check out in ${destination}.`,
+      destinationKey: destination.toLowerCase(),
+      expectedByAt,
+    });
+    logger.info({ destination, threadId: liveContext.threadId }, "Pending deliverable recorded for JIT extraction");
+  }
+}
+
+/**
+ * Backstop scanner for pending deliverables that have exceeded their SLA.
+ * Runs every 2 minutes. For venue_options rows: if the underlying JIT cache
+ * is now available, delivers the results to the thread. If not, sends an
+ * honest fallback message so no promise ever goes permanently silent.
+ */
+async function handlePendingDeliverableScan(): Promise<void> {
+  const now = new Date();
+  const overdueRows = await db
+    .select()
+    .from(pendingDeliverablesTable)
+    .where(and(
+      eq(pendingDeliverablesTable.status, "pending"),
+      lt(pendingDeliverablesTable.expectedByAt, now),
+    ))
+    .limit(20);
+
+  if (overdueRows.length === 0) return;
+  logger.info({ count: overdueRows.length }, "Pending deliverable scan: found overdue rows");
+
+  for (const row of overdueRows) {
+    try {
+      if (row.kind === "venue_options" && row.destinationKey) {
+        const { getJITVenuesForDestination } = await import("./venueCorpus/jitExtraction");
+        const cache = await getJITVenuesForDestination(row.destinationKey);
+
+        if (cache && cache.venues.length > 0) {
+          // JIT extraction finished; delivery handler should have caught this,
+          // but deliver now as a backstop.
+          const lines = cache.venues
+            .slice(0, 5)
+            .map((v) => `• ${v.name} [${v.venueType}] — ${v.vibe} (${v.roughPrice})`);
+          const msg =
+            `Here are some places to check out in ${row.destinationKey}:\n` +
+            lines.join("\n") +
+            `\n\nThese come from a web search — good starting points to look into.`;
+          await sendToThread(row.threadId, msg);
+          await db
+            .update(pendingDeliverablesTable)
+            .set({ status: "delivered", deliveredAt: now })
+            .where(eq(pendingDeliverablesTable.id, row.id));
+        } else {
+          // Background job didn't finish in time — send honest fallback.
+          await sendToThread(
+            row.threadId,
+            `I wasn't able to pull together venue ideas for ${row.destinationKey} in time. Ask me directly and I'll look up options for you now.`,
+          );
+          await db
+            .update(pendingDeliverablesTable)
+            .set({ status: "timed_out", deliveredAt: now })
+            .where(eq(pendingDeliverablesTable.id, row.id));
+        }
+      } else {
+        // Unknown kind — mark timed_out without sending a message.
+        await db
+          .update(pendingDeliverablesTable)
+          .set({ status: "timed_out", deliveredAt: now })
+          .where(eq(pendingDeliverablesTable.id, row.id));
+      }
+    } catch (err) {
+      logger.error({ err, deliverableId: row.id }, "Failed to process overdue pending deliverable; continuing");
+    }
+  }
 }
 
 async function handlePollNudge({ data }: { data: PollNudgeJobData }): Promise<void> {
@@ -962,6 +1056,9 @@ export async function initScheduler(): Promise<void> {
       await handleJITVenueExtraction(job.data);
     }
   });
+  await boss.work(QUEUES.pendingDeliverableScan, async () => {
+    await handlePendingDeliverableScan();
+  });
 
   // All time-of-day crons are interpreted in CONCIERGE_TIMEZONE so reminders
   // fire at the right local time regardless of where the server is hosted.
@@ -977,6 +1074,8 @@ export async function initScheduler(): Promise<void> {
   await boss.schedule(QUEUES.paymentNudgeScan, PAYMENT_NUDGE_SCAN_CRON, {}, tzOpt);
   await boss.schedule(QUEUES.actionItemDueScan, ACTION_ITEM_DUE_SCAN_CRON, {}, tzOpt);
   await boss.schedule(QUEUES.commitmentDeadlineScan, COMMITMENT_DEADLINE_SCAN_CRON, {}, tzOpt);
+  // Pending-deliverable backstop is timezone-agnostic (every 2 min).
+  await boss.schedule(QUEUES.pendingDeliverableScan, PENDING_DELIVERABLE_SCAN_CRON, {});
 
   logger.info("Proactive messaging scheduler started");
 }
