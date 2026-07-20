@@ -318,6 +318,100 @@ export async function buildLedgerPromptSection(projectId: number): Promise<strin
   );
 }
 
+// ── Headcount recomputation ────────────────────────────────────────────────────
+
+/**
+ * When the commitment round locks, recompute per-person estimates so that
+ * total project cost is conserved and correctly distributed across the
+ * confirmed attendees (committed users), while zeroing out estimates for
+ * those who declined or never responded.
+ *
+ * Accounting model — uses reversal entries so `getLedgerBalances` (which
+ * sums all rows per member) remains correct after reopen/relock cycles:
+ *
+ *   For each member who was previously estimated:
+ *     - Insert a NEGATIVE reversal row to zero out their current estimate.
+ *   For each COMMITTED member:
+ *     - Insert a POSITIVE new estimate at (totalProjectCost / lockedCount).
+ *
+ * This preserves the invariant: total estimated across all members =
+ * lockedCount × newPerPersonCents (within rounding). Members who didn't
+ * commit have their estimates cancelled to $0 (they're no longer coming).
+ *
+ * @param projectId       - project to update
+ * @param lockedCount     - number of committed participants (denominator for new share)
+ * @param committedUserIds - user IDs of members who voted "I'm in". When empty
+ *                          (nobody committed), existing estimates are still reversed
+ *                          to zero — stale balances must not persist after lock.
+ */
+export async function recomputeEstimatesForHeadcount(
+  projectId: number,
+  lockedCount: number,
+  committedUserIds: number[],
+): Promise<number> {
+  // lockedCount=0 or no committed users is a valid state: we still must zero
+  // out any existing estimates so the ledger reflects the locked reality.
+  // The function runs to completion; it just skips the new-estimate insertion.
+
+  // Read NET per-member amounts: accounts for all prior estimates + reversals.
+  const currentBalances = await getLedgerBalances(projectId);
+  if (currentBalances.length === 0) return 0;
+
+  // Total project cost inferred from what all members are currently estimated to owe.
+  const totalCents = currentBalances.reduce((sum, b) => sum + b.estimatedCents, 0);
+  if (totalCents === 0) return committedUserIds.length; // no estimates to adjust
+
+  // New per-person share for committed attendees only. Guard against divide-by-zero.
+  const newPerPersonCents = lockedCount > 0 ? Math.round(totalCents / lockedCount) : 0;
+  const noteBase = `headcount locked at ${lockedCount}`;
+
+  const committedSet = new Set(committedUserIds);
+
+  const rows: {
+    projectId: number;
+    kind: "estimate";
+    userId: number;
+    amountCents: number;
+    note: string;
+  }[] = [];
+
+  // Reverse every currently-estimated member's balance (zero them all out).
+  for (const balance of currentBalances) {
+    if (balance.estimatedCents !== 0) {
+      rows.push({
+        projectId,
+        kind: "estimate",
+        userId: balance.userId,
+        amountCents: -balance.estimatedCents,
+        note: `reversal — ${noteBase}`,
+      });
+    }
+  }
+
+  // Apply new estimates only to the committed set (skip when none committed).
+  if (newPerPersonCents > 0) {
+    for (const userId of committedUserIds) {
+      rows.push({
+        projectId,
+        kind: "estimate",
+        userId,
+        amountCents: newPerPersonCents,
+        note: noteBase,
+      });
+    }
+  }
+
+  if (rows.length === 0) return 0;
+
+  await db.insert(projectLedgerEntriesTable).values(rows);
+
+  logger.info(
+    { projectId, lockedCount, newPerPersonCents, committedCount: committedUserIds.length },
+    "Estimates recomputed for locked headcount",
+  );
+  return committedUserIds.length;
+}
+
 // ── Scheduler helpers ─────────────────────────────────────────────────────────
 
 /** Grace period before the first payment nudge fires after an estimate is recorded. */

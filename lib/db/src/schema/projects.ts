@@ -39,6 +39,17 @@ export const projectsTable = pgTable("projects", {
    * triggered project creation (the first person to discuss the occasion).
    */
   organizerUserId: integer("organizer_user_id").references(() => usersTable.id, { onDelete: "set null" }),
+  /**
+   * Headcount commitment round fields. Set by the organizer via sidebar DM.
+   * `commitmentPollId` references the open "I'm in / I'm out" poll in the
+   * group thread. `headcountLockedAt` + `headcountLockedCount` are stamped
+   * when the deadline passes and the agent announces the final headcount.
+   */
+  commitmentDeadline: timestamp("commitment_deadline", { withTimezone: true }),
+  headcountTarget: integer("headcount_target"),
+  commitmentPollId: integer("commitment_poll_id"),
+  headcountLockedAt: timestamp("headcount_locked_at", { withTimezone: true }),
+  headcountLockedCount: integer("headcount_locked_count"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true })
     .notNull()

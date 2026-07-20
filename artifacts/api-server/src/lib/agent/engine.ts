@@ -7,12 +7,57 @@ import { AGENT_TOOLS, executeAgentTool, type VenueCarouselEntry } from "./tools"
 import { showTypingIndicator } from "./delivery";
 import { buildGroupConstraintSummary, describeReturningMember, extractGroupConstraints, type GroupConstraints } from "./tasteEngine";
 import { buildProjectPromptSummary, getActiveProject, getProjectChildPlans, parseProjectField, type CreateProjectInput } from "./projects";
+import { CONCIERGE_TIMEZONE } from "./calendar";
 import type { ProjectProposal } from "@workspace/db";
 import type OpenAI from "openai";
 import type { Project } from "@workspace/db";
 
 /** Safety valve against a runaway tool-call loop; one turn should need at most a couple of round trips. */
 const MAX_TOOL_ITERATIONS = 3;
+
+/**
+ * Parses a commitment deadline string provided by the LLM, which may be either
+ * a full ISO-8601 datetime or a date-only "YYYY-MM-DD" string.
+ *
+ * Date-only strings (e.g. "2026-07-25") are treated as **end-of-day
+ * (23:59:59) in CONCIERGE_TIMEZONE** rather than UTC midnight. This avoids an
+ * off-by-one-day bug: `new Date("2026-07-25")` parses as UTC midnight which is
+ * July 24 at 8pm ET — the wrong calendar day for pre-deadline nudges and lock.
+ *
+ * Technique: format a noon-UTC probe date in the target timezone, compute how
+ * many seconds remain until 23:59:59 of that local day, and add them to the
+ * probe. This works correctly across DST transitions without any library.
+ */
+function parseCommitmentDeadline(raw: string): Date | null {
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    // Date-only → interpret as 23:59:59 in CONCIERGE_TIMEZONE.
+    // Use noon UTC on that date as a stable probe point that lands on the same
+    // calendar day as the target in any timezone within ±12h of UTC.
+    const probeUTC = new Date(`${raw}T12:00:00Z`);
+    if (Number.isNaN(probeUTC.getTime())) return null;
+
+    // Ask Intl what local hour/minute/second this UTC probe maps to.
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: CONCIERGE_TIMEZONE,
+      hour: "numeric",
+      minute: "numeric",
+      second: "numeric",
+      hour12: false,
+    }).formatToParts(probeUTC);
+    const get = (type: string) => parseInt(parts.find((p) => p.type === type)?.value ?? "0", 10);
+    const localH = get("hour");
+    const localM = get("minute");
+    const localS = get("second");
+
+    // Seconds from the probe point to 23:59:59 of that local day.
+    const secondsToEndOfDay = (23 - localH) * 3600 + (59 - localM) * 60 + (59 - localS);
+    return new Date(probeUTC.getTime() + secondsToEndOfDay * 1000);
+  }
+
+  // Full ISO datetime (e.g. "2026-07-25T18:00:00Z") — parse directly.
+  const d = new Date(raw);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
 
 /**
  * Fetches the `globalGuidance` ops instruction block from `agent_config`. This
@@ -129,6 +174,16 @@ export interface AgentTurnResult {
     ownerName: string | null;
     dueDate: Date | null;
   } | null;
+  /**
+   * Set only in organizer sidebar turns when the organizer opens or reopens
+   * a headcount commitment round ("lock headcount at 8 by Friday"). Null
+   * everywhere else.
+   */
+  commitmentAction: {
+    kind: "open" | "reopen";
+    deadline: Date;
+    headcountTarget: number | null;
+  } | null;
 }
 
 const SYSTEM_PROMPT = `You are a personal AI concierge that lives inside iMessage. You help one person or a small group plan the stuff of everyday life -- dinners, weekend trips, birthdays, "where should we all meet". You are warm, concise, and text like a helpful friend, not a corporate assistant. Keep replies short enough for a text message (usually under 3 sentences) and never use emojis.
@@ -209,6 +264,11 @@ interface RawAgentResponse {
     title?: unknown;
     owner_name?: unknown;
     due_date?: unknown;
+  } | null;
+  commitment_action?: {
+    kind?: unknown;
+    deadline?: unknown;
+    headcount_target?: unknown;
   } | null;
 }
 
@@ -370,6 +430,12 @@ export async function runAgentTurn(context: ThreadContext, currentUserId: number
             `Never address the organizer as if you are speaking to the full group.\n` +
             `If the organizer says "yes", "looks good", or similar, and context shows a proposal is waiting, treat it as approval.\n` +
             `If the organizer names a specific poll option (e.g. "go with the rooftop"), treat it as a tiebreak override for the group's current poll.\n\n` +
+            `COMMITMENT ROUND — when the organizer wants to lock headcount by a deadline, set "commitment_action" in your JSON:\n` +
+            `  • Open: "Lock headcount at 8 by Friday" or "Start a commitment round, deadline Thursday"\n` +
+            `    → kind: "open", deadline: ISO date string (e.g. "2026-07-25"), headcount_target: 8 (or null if not specified).\n` +
+            `  • Reopen: "Reopen the commitment round" or "Reset headcount lock"\n` +
+            `    → kind: "reopen", deadline: new ISO date, headcount_target: new target or null.\n` +
+            `  Do not set commitment_action when answering questions about the commitment status — just answer.\n\n` +
             `ACTION ITEMS — when the organizer creates or closes a task for a group member, set "task_action" in your JSON:\n` +
             `  • Create: organizer says "Jake needs to book the party bus by Thursday" or "add an item: Sarah is finding the makeup artist"\n` +
             `    → kind: "create", title: short task description (e.g. "Book party bus deposit"), owner_name: "Jake", due_date: ISO date string (e.g. "2026-07-24") or null if no date given.\n` +
@@ -528,6 +594,22 @@ export async function runAgentTurn(context: ThreadContext, currentUserId: number
         }
       : null;
 
+  // Parse commitment_action from sidebar turns.
+  const rawCa = parsed.commitment_action;
+  const commitmentActionKinds = new Set(["open", "reopen"]);
+  const commitmentAction =
+    rawCa && typeof rawCa === "object" && typeof rawCa.kind === "string" && commitmentActionKinds.has(rawCa.kind) && typeof rawCa.deadline === "string"
+      ? (() => {
+          const deadline = parseCommitmentDeadline(rawCa.deadline);
+          if (!deadline) return null;
+          const headcountTarget =
+            typeof rawCa.headcount_target === "number" && rawCa.headcount_target > 0
+              ? Math.round(rawCa.headcount_target)
+              : null;
+          return { kind: rawCa.kind as "open" | "reopen", deadline, headcountTarget };
+        })()
+      : null;
+
   // Parse task_action from sidebar turns (null-safe; non-sidebar turns leave it null).
   const rawTa = parsed.task_action;
   const taskActionKinds = new Set(["create", "close"]);
@@ -563,6 +645,7 @@ export async function runAgentTurn(context: ThreadContext, currentUserId: number
     organizerTiebreakDecision: null,
     ledgerAction,
     taskAction,
+    commitmentAction,
   };
 }
 

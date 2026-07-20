@@ -11,6 +11,7 @@ import {
 import { buildTimelinePromptSection } from "./projectTimeline";
 import { buildLedgerPromptSection } from "./ledger";
 import { buildActionItemsPromptSection } from "./actionItems";
+import { getCommitmentStatus } from "./commitmentPoll";
 
 /**
  * Projects: the grouping layer above plans for multi-event occasions
@@ -284,17 +285,36 @@ export async function buildProjectPromptSummary(project: Project, childPlans: Pl
 
   const eventsBlock = lines.length > 0 ? `\nEvents in this project so far:\n${lines.join("\n")}` : "\nNo events created for it yet.";
 
-  const [timelineSection, ledgerSection, actionItemsSection] = await Promise.all([
+  const [timelineSection, ledgerSection, actionItemsSection, commitmentStatus] = await Promise.all([
     buildTimelinePromptSection(project.id),
     buildLedgerPromptSection(project.id),
     buildActionItemsPromptSection(project.id),
+    getCommitmentStatus(project),
   ]);
+
+  let commitmentSection: string | null = null;
+  if (commitmentStatus) {
+    const fmtDate = (d: Date) => d.toISOString().slice(0, 10);
+    if (commitmentStatus.lockedAt) {
+      commitmentSection = `Headcount locked at ${commitmentStatus.lockedCount} (as of ${fmtDate(commitmentStatus.lockedAt)}).`;
+    } else {
+      const committed = commitmentStatus.committed.map((c) => c.displayName ?? c.phoneNumber);
+      const uncommitted = commitmentStatus.uncommitted.map((c) => c.displayName ?? c.phoneNumber);
+      const total = commitmentStatus.totalParticipants;
+      const target = commitmentStatus.headcountTarget ? ` (target: ${commitmentStatus.headcountTarget})` : "";
+      commitmentSection =
+        `Commitment round${target}, deadline: ${fmtDate(commitmentStatus.deadline)} (${commitmentStatus.committed.length}/${total} committed).\n` +
+        (committed.length > 0 ? `  In (${committed.length}): ${committed.join(", ")}\n` : `  No one has committed yet.\n`) +
+        (uncommitted.length > 0 ? `  Not yet in (${uncommitted.length}): ${uncommitted.join(", ")}` : `  Everyone is committed.`);
+    }
+  }
 
   return (
     `${header}${eventsBlock}\n` +
     (timelineSection ? `\n${timelineSection}\n` : "") +
     (ledgerSection ? `\n${ledgerSection}\n` : "") +
     (actionItemsSection ? `\n${actionItemsSection}\n` : "") +
+    (commitmentSection ? `\n${commitmentSection}\n` : "") +
     `Plan within this project frame: multiple events can be in motion at once, so suggesting or coordinating a new event is fine even while another is undecided. Do not set "project" again for this occasion -- it already exists.`
   );
 }

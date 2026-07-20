@@ -5,6 +5,7 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+import type { ProjectSummaryCommitment } from './projectSummaryCommitment';
 import type { ProjectSummaryLedger } from './projectSummaryLedger';
 import type { ProjectSummaryTimeline } from './projectSummaryTimeline';
 
@@ -49,5 +50,10 @@ export interface ProjectSummary {
   ledger?: ProjectSummaryLedger;
   /** Number of open (pending or in_progress) organizer-created action items for this project. */
   openActionItemCount?: number;
+  /**
+     * Active commitment round for this project, if any. Null when no round has been started.
+     * @nullable
+     */
+  commitment?: ProjectSummaryCommitment;
   createdAt: Date;
 }

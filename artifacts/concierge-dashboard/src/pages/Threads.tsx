@@ -784,6 +784,30 @@ export function ThreadsPage() {
                         <span>open {threadDetail.project.openActionItemCount === 1 ? "item" : "items"}</span>
                       </div>
                     )}
+                    {threadDetail.project.commitment && (() => {
+                      const c = threadDetail.project!.commitment!;
+                      if (c.lockedAt) {
+                        return (
+                          <div className="flex items-center gap-1.5 text-xs font-medium text-green-700 dark:text-green-400">
+                            <span className="inline-flex items-center justify-center h-4 w-4 rounded-full bg-green-100 dark:bg-green-900/30 font-bold text-[10px]">
+                              {c.lockedCount ?? 0}
+                            </span>
+                            <span>locked in</span>
+                          </div>
+                        );
+                      }
+                      const deadlineDate = new Date(c.deadline);
+                      const hoursLeft = Math.round((deadlineDate.getTime() - Date.now()) / (60 * 60 * 1000));
+                      const isUrgent = hoursLeft <= 24;
+                      return (
+                        <div className={`flex items-center gap-1.5 text-xs font-medium ${isUrgent ? "text-red-600 dark:text-red-400" : "text-blue-600 dark:text-blue-400"}`}>
+                          <span className={`inline-flex items-center justify-center h-4 w-4 rounded-full font-bold text-[10px] ${isUrgent ? "bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400" : "bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400"}`}>
+                            {c.committedCount}
+                          </span>
+                          <span>{c.committedCount}/{c.totalCount} in · locks {format(deadlineDate, "MMM d")}</span>
+                        </div>
+                      );
+                    })()}
                     <span className="text-xs font-medium text-muted-foreground ml-auto shrink-0">
                       {threadDetail.project.childPlanCount} {threadDetail.project.childPlanCount === 1 ? "event" : "events"}
                     </span>

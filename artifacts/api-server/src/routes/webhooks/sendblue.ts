@@ -80,6 +80,7 @@ import {
   closeActionItem,
   findMemberByNameInThread,
 } from "../../lib/agent/actionItems";
+import { createCommitmentPoll, isCommitmentPoll, COMMITMENT_IN_LABEL, COMMITMENT_OUT_LABEL } from "../../lib/agent/commitmentPoll";
 import {
   createProposal,
   getOldestPendingProposal,
@@ -416,6 +417,37 @@ async function processOrganizerSidebarTurn(
       if (!closed) {
         logger.warn({ projectId: organizerProject.id, title: action.title }, "No matching open action item found to close");
       }
+    }
+  }
+
+  // ── Commitment action handling ─────────────────────────────────────────────
+  if (result.commitmentAction) {
+    const action = result.commitmentAction;
+    const groupThreadId = organizerProject.threadId;
+    try {
+      const pollId = await createCommitmentPoll(
+        organizerProject.id,
+        groupThreadId,
+        action.deadline,
+        action.headcountTarget,
+      );
+
+      // Announce the commitment round to the group thread.
+      const deadlineStr = action.deadline.toLocaleDateString("en-US", {
+        weekday: "long",
+        month: "long",
+        day: "numeric",
+        timeZone: "America/New_York",
+      });
+      const targetLine = action.headcountTarget ? ` (target: ${action.headcountTarget} people)` : "";
+      await sendToThread(
+        groupThreadId,
+        `Are you in for the trip?${targetLine} Reply by ${deadlineStr}.\n1. ${COMMITMENT_IN_LABEL}\n2. ${COMMITMENT_OUT_LABEL}`,
+      );
+
+      logger.info({ projectId: organizerProject.id, pollId, deadline: action.deadline }, "Commitment round opened via organizer sidebar");
+    } catch (err) {
+      logger.error({ err, projectId: organizerProject.id }, "Failed to create commitment poll");
     }
   }
 
@@ -1189,16 +1221,18 @@ router.post("/webhooks/sendblue/:secret", async (req, res): Promise<void> => {
             void sendReaction(event.message_handle, "like");
           }
 
-          const tally = await tallyPoll(openPoll.poll.id, openPoll.options);
-          const voterCount = await countDistinctVoters(openPoll.poll.id);
-          const participantRows = await db
-            .select()
-            .from(threadParticipantsTable)
-            .where(eq(threadParticipantsTable.threadId, threadId));
+          const [tally, voterCount, participantRows, isCommitPoll] = await Promise.all([
+            tallyPoll(openPoll.poll.id, openPoll.options),
+            countDistinctVoters(openPoll.poll.id),
+            db.select().from(threadParticipantsTable).where(eq(threadParticipantsTable.threadId, threadId)),
+            // Commitment polls are governed by the deadline scanner, not vote totals.
+            // Suppress winner-based auto-close so votes remain editable until lock.
+            isCommitmentPoll(openPoll.poll.id),
+          ]);
 
           const tallyLine = tally.map((t) => `${t.option.label}: ${t.voteCount}`).join(", ");
 
-          if (voterCount >= participantRows.length) {
+          if (!isCommitPoll && voterCount >= participantRows.length) {
             const winnerTally = [...tally].sort((a, b) => b.voteCount - a.voteCount)[0];
             if (winnerTally) {
               await closePollWithWinner(openPoll.poll.id, winnerTally.option.id);

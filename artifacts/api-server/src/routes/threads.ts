@@ -21,6 +21,7 @@ import { GetThreadParams, GetThreadResponse, ListThreadsResponse } from "@worksp
 import { getTimelineSummary } from "../lib/agent/projectTimeline";
 import { getLedgerSummary } from "../lib/agent/ledger";
 import { countOpenActionItems } from "../lib/agent/actionItems";
+import { getCommitmentStatus } from "../lib/agent/commitmentPoll";
 
 const router: IRouter = Router();
 
@@ -180,7 +181,7 @@ router.get("/threads/:id", async (req, res): Promise<void> => {
 /** The thread's active project with its child plan count, shaped for the ThreadDetail response. */
 async function getActiveProjectSummary(
   threadId: number,
-): Promise<(Omit<Project, "updatedAt"> & { childPlanCount: number; organizerDisplayName: string | null; timeline: { total: number; done: number; nextStep: { title: string; dueAt: Date | null } | null } | null; ledger: { totalEstimatedCents: number; totalCollectedCents: number; outstandingCount: number } | null; openActionItemCount: number }) | null> {
+): Promise<(Omit<Project, "updatedAt"> & { childPlanCount: number; organizerDisplayName: string | null; timeline: { total: number; done: number; nextStep: { title: string; dueAt: Date | null } | null } | null; ledger: { totalEstimatedCents: number; totalCollectedCents: number; outstandingCount: number } | null; openActionItemCount: number; commitment: { deadline: Date; headcountTarget: number | null; committedCount: number; totalCount: number; lockedAt: Date | null; lockedCount: number | null } | null }) | null> {
   const [project] = await db
     .select()
     .from(projectsTable)
@@ -189,7 +190,7 @@ async function getActiveProjectSummary(
     .limit(1);
   if (!project) return null;
 
-  const [[childCount], organizerRow, timeline, ledgerRaw, openActionItemCount] = await Promise.all([
+  const [[childCount], organizerRow, timeline, ledgerRaw, openActionItemCount, commitmentStatus] = await Promise.all([
     db.select({ value: count() }).from(plansTable).where(eq(plansTable.projectId, project.id)),
     project.organizerUserId
       ? db
@@ -201,6 +202,7 @@ async function getActiveProjectSummary(
     getTimelineSummary(project.id),
     getLedgerSummary(project.id),
     countOpenActionItems(project.id),
+    getCommitmentStatus(project),
   ]);
 
   const ledger = ledgerRaw
@@ -222,10 +224,25 @@ async function getActiveProjectSummary(
     dateRangeStart: project.dateRangeStart,
     dateRangeEnd: project.dateRangeEnd,
     status: project.status,
+    commitmentDeadline: project.commitmentDeadline ?? null,
+    headcountTarget: project.headcountTarget ?? null,
+    commitmentPollId: project.commitmentPollId ?? null,
+    headcountLockedAt: project.headcountLockedAt ?? null,
+    headcountLockedCount: project.headcountLockedCount ?? null,
     childPlanCount: childCount?.value ?? 0,
     timeline,
     ledger,
     openActionItemCount,
+    commitment: commitmentStatus
+      ? {
+          deadline: commitmentStatus.deadline,
+          headcountTarget: commitmentStatus.headcountTarget,
+          committedCount: commitmentStatus.committed.length,
+          totalCount: commitmentStatus.totalParticipants,
+          lockedAt: commitmentStatus.lockedAt,
+          lockedCount: commitmentStatus.lockedCount,
+        }
+      : null,
     createdAt: project.createdAt,
   };
 }

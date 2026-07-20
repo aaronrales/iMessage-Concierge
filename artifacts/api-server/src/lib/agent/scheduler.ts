@@ -49,6 +49,13 @@ import {
   markPaymentNudgeSent,
 } from "./ledger";
 import { findDueActionItems, markActionItemNotified } from "./actionItems";
+import {
+  getProjectsDueForPreDeadlineNudge,
+  getProjectsDueForLock,
+  getCommitmentStatus,
+  lockHeadcount,
+} from "./commitmentPoll";
+import { recomputeEstimatesForHeadcount } from "./ledger";
 import { getOnboardingStep } from "./onboarding";
 import { DEFAULT_CITY, daysUntilNextSaturday, getForecastForDay } from "./weather";
 import { ensureRevalidationConfigSeeded, runRevalidationScan } from "./venueCorpus/revalidation";
@@ -68,6 +75,7 @@ const QUEUES = {
   projectTimelineScan: "project-timeline-scan",
   paymentNudgeScan: "payment-nudge-scan",
   actionItemDueScan: "action-item-due-scan",
+  commitmentDeadlineScan: "commitment-deadline-scan",
 } as const;
 
 const NON_VOTER_NUDGE_DELAY_SECONDS = 4 * 60 * 60; // 4 hours after a poll opens
@@ -111,6 +119,10 @@ const PAYMENT_NUDGE_SCAN_CRON = "0 11 * * *"; // daily at 11:00 local
 // the action item's owner in their 1:1 thread. Fires at most once per item
 // (guarded by notifiedAt). Budget-gated under "nudge".
 const ACTION_ITEM_DUE_SCAN_CRON = "0 9 * * *"; // daily at 09:00 local
+// Commitment deadline scan: runs daily at 10am local. Handles both the 24h
+// pre-deadline nudge (one 1:1 nudge per uncommitted participant) and the
+// deadline lock announcement to the group thread.
+const COMMITMENT_DEADLINE_SCAN_CRON = "0 10 * * *"; // daily at 10:00 local
 // A group has to have gone quiet for a real stretch before an unprompted
 // suggestion is worth the interruption -- this is what keeps it feeling
 // rare and well-timed instead of naggy.
@@ -756,6 +768,80 @@ async function handleActionItemDueScan(): Promise<void> {
   }
 }
 
+/**
+ * Daily scan for commitment deadline events:
+ *   1. Pre-deadline nudge (24h window): sends each uncommitted participant a
+ *      1:1 DM reminding them the headcount locks tomorrow.
+ *   2. Deadline lock: announces the final committed headcount to the group
+ *      thread, closes the poll, and recomputes ledger estimates if active.
+ *
+ * Mark-before-send on individual nudges; lock write before group announcement.
+ */
+async function handleCommitmentDeadlineScan(): Promise<void> {
+  const [nudgeRows, lockRows] = await Promise.all([
+    getProjectsDueForPreDeadlineNudge(),
+    getProjectsDueForLock(),
+  ]);
+
+  // ── Pre-deadline nudges ─────────────────────────────────────────────────────
+  for (const { project } of nudgeRows) {
+    try {
+      const status = await getCommitmentStatus(project);
+      if (!status || status.uncommitted.length === 0) continue;
+
+      for (const participant of status.uncommitted) {
+        try {
+          const { thread: ownerThread } = await findOrCreateDirectThread(participant.phoneNumber);
+          if (!(await canSendProactiveMessage(ownerThread.id, "commitment_nudge"))) continue;
+
+          const deadlineStr = status.deadline.toLocaleDateString("en-US", {
+            weekday: "long", month: "long", day: "numeric", timeZone: CONCIERGE_TIMEZONE,
+          });
+          const nudge = participant.displayName
+            ? `Hey ${participant.displayName} — the trip headcount locks tomorrow (${deadlineStr}). Reply to the group with "I'm in" or "I'm out" so we can finalize numbers.`
+            : `Hey — the trip headcount locks tomorrow (${deadlineStr}). Reply to the group with "I'm in" or "I'm out" so we can finalize numbers.`;
+
+          await sendToThread(ownerThread.id, nudge);
+          await recordProactiveSend(ownerThread.id, "commitment_nudge");
+          logger.info({ projectId: project.id, userId: participant.userId }, "Commitment pre-deadline nudge sent");
+        } catch (err) {
+          logger.error({ err, projectId: project.id, userId: participant.userId }, "Failed to send commitment nudge; continuing");
+        }
+      }
+    } catch (error) {
+      logger.error({ error, projectId: project.id }, "Failed to process commitment pre-deadline scan for project; continuing");
+    }
+  }
+
+  // ── Deadline lock + group announcement ────────────────────────────────────
+  for (const { project } of lockRows) {
+    try {
+      const status = await getCommitmentStatus(project);
+
+      // Mark-before-send: lock first, then announce.
+      const lockedCount = await lockHeadcount(project);
+
+      const committedNames = status?.committed.map((c) => c.displayName ?? c.phoneNumber) ?? [];
+      const nameList = committedNames.length > 0 ? ` Here's who's in: ${committedNames.join(", ")}.` : "";
+      const announcement = `Headcount locked at ${lockedCount} 🎉${nameList}`;
+
+      await sendToThread(project.threadId, announcement);
+
+      // Recompute ledger estimates — always run so non-committed members' estimates
+      // are zeroed out even when lockedCount is 0 (nobody committed).
+      const committedUserIds = status?.committed.map((c) => c.userId) ?? [];
+      const updated = await recomputeEstimatesForHeadcount(project.id, lockedCount, committedUserIds);
+      if (updated > 0) {
+        logger.info({ projectId: project.id, lockedCount, updated }, "Ledger estimates recomputed after headcount lock");
+      }
+
+      logger.info({ projectId: project.id, lockedCount }, "Headcount lock announced to group");
+    } catch (error) {
+      logger.error({ error, projectId: project.id }, "Failed to process commitment lock for project; continuing");
+    }
+  }
+}
+
 export async function initScheduler(): Promise<void> {
   if (boss) return;
 
@@ -817,6 +903,9 @@ export async function initScheduler(): Promise<void> {
   await boss.work(QUEUES.actionItemDueScan, async () => {
     await handleActionItemDueScan();
   });
+  await boss.work(QUEUES.commitmentDeadlineScan, async () => {
+    await handleCommitmentDeadlineScan();
+  });
 
   // All time-of-day crons are interpreted in CONCIERGE_TIMEZONE so reminders
   // fire at the right local time regardless of where the server is hosted.
@@ -831,6 +920,7 @@ export async function initScheduler(): Promise<void> {
   await boss.schedule(QUEUES.projectTimelineScan, PROJECT_TIMELINE_SCAN_CRON, {}, tzOpt);
   await boss.schedule(QUEUES.paymentNudgeScan, PAYMENT_NUDGE_SCAN_CRON, {}, tzOpt);
   await boss.schedule(QUEUES.actionItemDueScan, ACTION_ITEM_DUE_SCAN_CRON, {}, tzOpt);
+  await boss.schedule(QUEUES.commitmentDeadlineScan, COMMITMENT_DEADLINE_SCAN_CRON, {}, tzOpt);
 
   logger.info("Proactive messaging scheduler started");
 }

@@ -36,6 +36,7 @@ export * from './pollSummary';
 export * from './pollSummaryStatus';
 export * from './profile';
 export * from './projectSummary';
+export * from './projectSummaryCommitment';
 export * from './projectSummaryLedger';
 export * from './projectSummaryTimeline';
 export * from './projectSummaryTimelineNextStep';

@@ -220,6 +220,34 @@ export type ProjectSummaryLedger = {
 } | null;
 
 /**
+ * Active commitment round for this project, if any. Null when no round has been started.
+ * @nullable
+ */
+export type ProjectSummaryCommitment = {
+  /** When headcount locks. */
+  deadline: string;
+  /**
+     * Target committed count the organizer specified, or null if not set.
+     * @nullable
+     */
+  headcountTarget: number | null;
+  /** Number of participants who have replied I'm in. */
+  committedCount: number;
+  /** Total participant count (committed + uncommitted). */
+  totalCount: number;
+  /**
+     * When the headcount was locked, or null if not yet locked.
+     * @nullable
+     */
+  lockedAt: string | null;
+  /**
+     * The final locked headcount, or null if not yet locked.
+     * @nullable
+     */
+  lockedCount: number | null;
+} | null;
+
+/**
  * A multi-event occasion (bachelorette, trip, ...) grouping several plans in a thread. `type` and `status` are open text vocabularies.
  */
 export interface ProjectSummary {
@@ -260,6 +288,11 @@ export interface ProjectSummary {
   ledger?: ProjectSummaryLedger;
   /** Number of open (pending or in_progress) organizer-created action items for this project. */
   openActionItemCount?: number;
+  /**
+     * Active commitment round for this project, if any. Null when no round has been started.
+     * @nullable
+     */
+  commitment?: ProjectSummaryCommitment;
   createdAt: string;
 }
 

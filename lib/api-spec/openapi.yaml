@@ -911,6 +911,31 @@ components:
         openActionItemCount:
           type: integer
           description: Number of open (pending or in_progress) organizer-created action items for this project.
+        commitment:
+          type: ["object", "null"]
+          description: Active commitment round for this project, if any. Null when no round has been started.
+          required: [deadline, headcountTarget, committedCount, totalCount, lockedAt, lockedCount]
+          properties:
+            deadline:
+              type: string
+              format: date-time
+              description: When headcount locks.
+            headcountTarget:
+              type: ["integer", "null"]
+              description: Target committed count the organizer specified, or null if not set.
+            committedCount:
+              type: integer
+              description: Number of participants who have replied I'm in.
+            totalCount:
+              type: integer
+              description: Total participant count (committed + uncommitted).
+            lockedAt:
+              type: ["string", "null"]
+              format: date-time
+              description: When the headcount was locked, or null if not yet locked.
+            lockedCount:
+              type: ["integer", "null"]
+              description: The final locked headcount, or null if not yet locked.
         createdAt:
           type: string
           format: date-time
