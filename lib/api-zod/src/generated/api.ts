@@ -214,6 +214,7 @@ export const GetThreadResponse = zod.object({
   "totalCollectedCents": zod.number().describe('Sum of all confirmed payment entries in cents.'),
   "outstandingCount": zod.number().describe('Number of members with an outstanding balance greater than zero.')
 }).nullish().describe('Payment ledger summary for this project, when cost tracking is active.'),
+  "openActionItemCount": zod.number().optional().describe('Number of open (pending or in_progress) organizer-created action items for this project.'),
   "createdAt": zod.coerce.date()
 }).describe('A multi-event occasion (bachelorette, trip, ...) grouping several plans in a thread. `type` and `status` are open text vocabularies.\n'),zod.null()]).describe('The thread\'s active multi-event project, or null when none is in flight.'),
   "participants": zod.array(zod.object({

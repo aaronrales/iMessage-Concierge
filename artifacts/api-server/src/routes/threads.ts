@@ -20,6 +20,7 @@ import {
 import { GetThreadParams, GetThreadResponse, ListThreadsResponse } from "@workspace/api-zod";
 import { getTimelineSummary } from "../lib/agent/projectTimeline";
 import { getLedgerSummary } from "../lib/agent/ledger";
+import { countOpenActionItems } from "../lib/agent/actionItems";
 
 const router: IRouter = Router();
 
@@ -179,7 +180,7 @@ router.get("/threads/:id", async (req, res): Promise<void> => {
 /** The thread's active project with its child plan count, shaped for the ThreadDetail response. */
 async function getActiveProjectSummary(
   threadId: number,
-): Promise<(Omit<Project, "updatedAt"> & { childPlanCount: number; organizerDisplayName: string | null; timeline: { total: number; done: number; nextStep: { title: string; dueAt: Date | null } | null } | null; ledger: { totalEstimatedCents: number; totalCollectedCents: number; outstandingCount: number } | null }) | null> {
+): Promise<(Omit<Project, "updatedAt"> & { childPlanCount: number; organizerDisplayName: string | null; timeline: { total: number; done: number; nextStep: { title: string; dueAt: Date | null } | null } | null; ledger: { totalEstimatedCents: number; totalCollectedCents: number; outstandingCount: number } | null; openActionItemCount: number }) | null> {
   const [project] = await db
     .select()
     .from(projectsTable)
@@ -188,7 +189,7 @@ async function getActiveProjectSummary(
     .limit(1);
   if (!project) return null;
 
-  const [[childCount], organizerRow, timeline, ledgerRaw] = await Promise.all([
+  const [[childCount], organizerRow, timeline, ledgerRaw, openActionItemCount] = await Promise.all([
     db.select({ value: count() }).from(plansTable).where(eq(plansTable.projectId, project.id)),
     project.organizerUserId
       ? db
@@ -199,6 +200,7 @@ async function getActiveProjectSummary(
       : Promise.resolve(null),
     getTimelineSummary(project.id),
     getLedgerSummary(project.id),
+    countOpenActionItems(project.id),
   ]);
 
   const ledger = ledgerRaw
@@ -223,6 +225,7 @@ async function getActiveProjectSummary(
     childPlanCount: childCount?.value ?? 0,
     timeline,
     ledger,
+    openActionItemCount,
     createdAt: project.createdAt,
   };
 }

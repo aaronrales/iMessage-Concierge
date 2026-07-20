@@ -48,6 +48,7 @@ import {
   formatDollars,
   markPaymentNudgeSent,
 } from "./ledger";
+import { findDueActionItems, markActionItemNotified } from "./actionItems";
 import { getOnboardingStep } from "./onboarding";
 import { DEFAULT_CITY, daysUntilNextSaturday, getForecastForDay } from "./weather";
 import { ensureRevalidationConfigSeeded, runRevalidationScan } from "./venueCorpus/revalidation";
@@ -66,6 +67,7 @@ const QUEUES = {
   weatherRescueScan: "weather-rescue-scan",
   projectTimelineScan: "project-timeline-scan",
   paymentNudgeScan: "payment-nudge-scan",
+  actionItemDueScan: "action-item-due-scan",
 } as const;
 
 const NON_VOTER_NUDGE_DELAY_SECONDS = 4 * 60 * 60; // 4 hours after a poll opens
@@ -105,6 +107,10 @@ const TIMELINE_NUDGE_LOOKAHEAD_MS = 14 * 24 * 60 * 60 * 1000; // 14-day lead win
 // gentle per-member reminders for outstanding balances past the 3-day grace
 // period. Category budget (1 per 5 days) prevents nagging.
 const PAYMENT_NUDGE_SCAN_CRON = "0 11 * * *"; // daily at 11:00 local
+// Action-item due scan: once per day, sends a 24h-before deadline nudge to
+// the action item's owner in their 1:1 thread. Fires at most once per item
+// (guarded by notifiedAt). Budget-gated under "nudge".
+const ACTION_ITEM_DUE_SCAN_CRON = "0 9 * * *"; // daily at 09:00 local
 // A group has to have gone quiet for a real stretch before an unprompted
 // suggestion is worth the interruption -- this is what keeps it feeling
 // rare and well-timed instead of naggy.
@@ -707,6 +713,49 @@ async function handleProjectTimelineScan(): Promise<void> {
   }
 }
 
+/**
+ * Daily scan: for every open manual action item due within the next 24 hours
+ * that hasn't been notified yet, sends a friendly nudge to the owner's 1:1 DM.
+ *
+ * Mark-before-send (fail toward under-send). Budget-gated under "nudge".
+ * Each item is nudged at most once (guarded by notifiedAt).
+ */
+async function handleActionItemDueScan(): Promise<void> {
+  const items = await findDueActionItems();
+  if (items.length === 0) return;
+
+  logger.info({ count: items.length }, "Action item due scan: items found");
+
+  for (const item of items) {
+    try {
+      const { thread: ownerThread } = await findOrCreateDirectThread(item.ownerPhone);
+
+      if (!(await canSendProactiveMessage(ownerThread.id, "nudge"))) continue;
+
+      const dueStr = item.dueAt.toLocaleDateString("en-US", {
+        weekday: "long",
+        month: "long",
+        day: "numeric",
+        timeZone: CONCIERGE_TIMEZONE,
+      });
+
+      const nudgeText = item.ownerName
+        ? `Hey ${item.ownerName} — just a heads-up that "${item.title}" is due tomorrow (${dueStr}). Let the organizer know when it's sorted!`
+        : `Hey — just a heads-up that "${item.title}" is due tomorrow (${dueStr}). Let the organizer know when it's sorted!`;
+
+      // Mark before send (fail toward under-send).
+      await markActionItemNotified(item.taskId);
+
+      await sendToThread(ownerThread.id, nudgeText);
+      await recordProactiveSend(ownerThread.id, "nudge");
+
+      logger.info({ taskId: item.taskId, ownerUserId: item.ownerUserId }, "Action item due nudge sent");
+    } catch (error) {
+      logger.error({ error, taskId: item.taskId }, "Failed to send action item due nudge; continuing with rest of batch");
+    }
+  }
+}
+
 export async function initScheduler(): Promise<void> {
   if (boss) return;
 
@@ -765,6 +814,9 @@ export async function initScheduler(): Promise<void> {
   await boss.work(QUEUES.paymentNudgeScan, async () => {
     await handlePaymentNudgeScan();
   });
+  await boss.work(QUEUES.actionItemDueScan, async () => {
+    await handleActionItemDueScan();
+  });
 
   // All time-of-day crons are interpreted in CONCIERGE_TIMEZONE so reminders
   // fire at the right local time regardless of where the server is hosted.
@@ -778,6 +830,7 @@ export async function initScheduler(): Promise<void> {
   await boss.schedule(QUEUES.weatherRescueScan, WEATHER_RESCUE_SCAN_CRON, {}, tzOpt);
   await boss.schedule(QUEUES.projectTimelineScan, PROJECT_TIMELINE_SCAN_CRON, {}, tzOpt);
   await boss.schedule(QUEUES.paymentNudgeScan, PAYMENT_NUDGE_SCAN_CRON, {}, tzOpt);
+  await boss.schedule(QUEUES.actionItemDueScan, ACTION_ITEM_DUE_SCAN_CRON, {}, tzOpt);
 
   logger.info("Proactive messaging scheduler started");
 }

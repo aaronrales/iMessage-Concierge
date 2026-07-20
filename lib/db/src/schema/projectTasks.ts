@@ -40,6 +40,13 @@ export const projectTasksTable = pgTable("project_tasks", {
    * The daily scanner checks these and auto-completes eligible steps.
    */
   completionTrigger: text("completion_trigger"),
+  /**
+   * Origin of this task row.
+   * - "manual"   — organizer-created action item via sidebar conversation
+   * - "playbook" — auto-instantiated from a playbook template (legacy rows have null → treat as playbook)
+   * Free text (not pg-enum) so new sources don't require a migration.
+   */
+  source: text("source").notNull().default("manual"),
   /** Timestamp when the organizer sidebar last received a proactive nudge for this step. */
   notifiedAt: timestamp("notified_at", { withTimezone: true }),
   completedAt: timestamp("completed_at", { withTimezone: true }),

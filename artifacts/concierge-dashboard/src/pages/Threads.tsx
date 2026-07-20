@@ -776,6 +776,14 @@ export function ThreadsPage() {
                         </div>
                       );
                     })()}
+                    {typeof threadDetail.project.openActionItemCount === "number" && threadDetail.project.openActionItemCount > 0 && (
+                      <div className="flex items-center gap-1 text-xs font-medium text-orange-600 dark:text-orange-400">
+                        <span className="inline-flex items-center justify-center h-4 w-4 rounded-full bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-400 font-bold text-[10px]">
+                          {threadDetail.project.openActionItemCount}
+                        </span>
+                        <span>open {threadDetail.project.openActionItemCount === 1 ? "item" : "items"}</span>
+                      </div>
+                    )}
                     <span className="text-xs font-medium text-muted-foreground ml-auto shrink-0">
                       {threadDetail.project.childPlanCount} {threadDetail.project.childPlanCount === 1 ? "event" : "events"}
                     </span>

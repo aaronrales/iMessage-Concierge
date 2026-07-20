@@ -65,6 +65,7 @@ export async function instantiateTimeline(project: Project): Promise<ProjectTask
         sourceStep: step.key,
         actionHint: step.actionHint,
         completionTrigger: step.completionTrigger,
+        source: "playbook" as const,
       })),
     )
     .returning();
@@ -94,6 +95,7 @@ export async function recomputeDueDates(project: Project): Promise<void> {
     .where(
       and(
         eq(projectTasksTable.projectId, project.id),
+        eq(projectTasksTable.source, "playbook"),
         inArray(projectTasksTable.status, ["pending", "in_progress"]),
       ),
     );
@@ -135,13 +137,15 @@ export async function recomputeDueDates(project: Project): Promise<void> {
 export async function autoCompleteSteps(project: Project): Promise<number> {
   const threadId = project.threadId;
 
-  // Load pending tasks that have auto-completion triggers.
+  // Load pending playbook tasks that have auto-completion triggers.
+  // Source guard prevents manual action items from being auto-completed by timeline logic.
   const pending = await db
     .select()
     .from(projectTasksTable)
     .where(
       and(
         eq(projectTasksTable.projectId, project.id),
+        eq(projectTasksTable.source, "playbook"),
         inArray(projectTasksTable.status, ["pending", "in_progress"]),
       ),
     );
@@ -278,12 +282,17 @@ export async function autoCompleteSteps(project: Project): Promise<number> {
 
 // ── Query helpers ─────────────────────────────────────────────────────────────
 
-/** All tasks for a project, ordered by dueAt ascending (nulls last), then by creation order. */
+/** All playbook timeline tasks for a project, ordered by dueAt ascending (nulls last), then by creation order. */
 export async function getProjectTimeline(projectId: number): Promise<ProjectTask[]> {
   const all = await db
     .select()
     .from(projectTasksTable)
-    .where(eq(projectTasksTable.projectId, projectId))
+    .where(
+      and(
+        eq(projectTasksTable.projectId, projectId),
+        eq(projectTasksTable.source, "playbook"),
+      ),
+    )
     .orderBy(projectTasksTable.createdAt); // creation order = playbook order
 
   // Sort: tasks with dueAt first (ascending), then undated tasks in playbook order.
@@ -318,13 +327,15 @@ export async function getNextActionableStep(
 ): Promise<ProjectTask | null> {
   const windowEnd = new Date(Date.now() + lookaheadMs);
 
-  // Fetch all pending steps in playbook/creation order to enforce sequencing.
+  // Fetch all pending playbook steps in creation order to enforce sequencing.
+  // Source guard ensures manual action items are never selected as timeline nudge candidates.
   const all = await db
     .select()
     .from(projectTasksTable)
     .where(
       and(
         eq(projectTasksTable.projectId, projectId),
+        eq(projectTasksTable.source, "playbook"),
         inArray(projectTasksTable.status, ["pending", "in_progress"]),
       ),
     )
@@ -423,6 +434,11 @@ export async function getActiveProjectsWithTimelines(): Promise<number[]> {
   const rows = await db
     .selectDistinct({ projectId: projectTasksTable.projectId })
     .from(projectTasksTable)
-    .where(inArray(projectTasksTable.status, ["pending", "in_progress"]));
+    .where(
+      and(
+        eq(projectTasksTable.source, "playbook"),
+        inArray(projectTasksTable.status, ["pending", "in_progress"]),
+      ),
+    );
   return rows.map((r) => r.projectId);
 }

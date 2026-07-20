@@ -76,6 +76,11 @@ import {
   markRequestSent,
 } from "../../lib/agent/ledger";
 import {
+  createActionItem,
+  closeActionItem,
+  findMemberByNameInThread,
+} from "../../lib/agent/actionItems";
+import {
   createProposal,
   getOldestPendingProposal,
   approveProposal,
@@ -386,6 +391,30 @@ async function processOrganizerSidebarTurn(
         if (member) {
           await recordCommitment(organizerProject.id, member.userId, action.note);
         }
+      }
+    }
+  }
+
+  // ── Task action handling ────────────────────────────────────────────────────
+  if (result.taskAction) {
+    const action = result.taskAction;
+    const groupThreadId = organizerProject.threadId;
+
+    if (action.kind === "create") {
+      // Resolve owner by name if provided.
+      let ownerUserId: number | null = null;
+      if (action.ownerName) {
+        const member = await findMemberByNameInThread(groupThreadId, action.ownerName);
+        ownerUserId = member?.userId ?? null;
+        if (!ownerUserId) {
+          logger.warn({ projectId: organizerProject.id, ownerName: action.ownerName }, "Could not resolve action item owner by name");
+        }
+      }
+      await createActionItem(organizerProject.id, action.title, ownerUserId, action.dueDate);
+    } else if (action.kind === "close") {
+      const closed = await closeActionItem(organizerProject.id, action.title);
+      if (!closed) {
+        logger.warn({ projectId: organizerProject.id, title: action.title }, "No matching open action item found to close");
       }
     }
   }

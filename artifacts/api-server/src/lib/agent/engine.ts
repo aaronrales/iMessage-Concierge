@@ -118,6 +118,17 @@ export interface AgentTurnResult {
    * options. Null in all other contexts.
    */
   organizerTiebreakDecision: string | null;
+  /**
+   * Set only in organizer sidebar turns when the organizer creates, updates,
+   * or closes a manual action item ("Jake needs to book the party bus by
+   * Thursday" / "Jake sorted the bus"). Null everywhere else.
+   */
+  taskAction: {
+    kind: "create" | "close";
+    title: string;
+    ownerName: string | null;
+    dueDate: Date | null;
+  } | null;
 }
 
 const SYSTEM_PROMPT = `You are a personal AI concierge that lives inside iMessage. You help one person or a small group plan the stuff of everyday life -- dinners, weekend trips, birthdays, "where should we all meet". You are warm, concise, and text like a helpful friend, not a corporate assistant. Keep replies short enough for a text message (usually under 3 sentences) and never use emojis.
@@ -192,6 +203,12 @@ interface RawAgentResponse {
     note?: unknown;
     member_name?: unknown;
     amount_cents?: unknown;
+  } | null;
+  task_action?: {
+    kind?: unknown;
+    title?: unknown;
+    owner_name?: unknown;
+    due_date?: unknown;
   } | null;
 }
 
@@ -353,6 +370,12 @@ export async function runAgentTurn(context: ThreadContext, currentUserId: number
             `Never address the organizer as if you are speaking to the full group.\n` +
             `If the organizer says "yes", "looks good", or similar, and context shows a proposal is waiting, treat it as approval.\n` +
             `If the organizer names a specific poll option (e.g. "go with the rooftop"), treat it as a tiebreak override for the group's current poll.\n\n` +
+            `ACTION ITEMS — when the organizer creates or closes a task for a group member, set "task_action" in your JSON:\n` +
+            `  • Create: organizer says "Jake needs to book the party bus by Thursday" or "add an item: Sarah is finding the makeup artist"\n` +
+            `    → kind: "create", title: short task description (e.g. "Book party bus deposit"), owner_name: "Jake", due_date: ISO date string (e.g. "2026-07-24") or null if no date given.\n` +
+            `  • Close: organizer says "Jake sorted the bus" or "Mark the party bus as done"\n` +
+            `    → kind: "close", title: the task title (or enough to match it).\n` +
+            `  Do not set task_action for general questions about open items — just answer using the action items context above.\n\n` +
             `MONEY LEDGER — when the organizer reports a cost or payment, set "ledger_action" in your JSON:\n` +
             `  • Estimate: organizer says "the house was $2,400, split across 8" or "add $300 each for the deposit"\n` +
             `    → kind: "estimate", total_cents (e.g. 240000 for $2,400) OR per_person_cents (e.g. 30000 for $300), headcount if given, note: what it's for.\n` +
@@ -505,6 +528,23 @@ export async function runAgentTurn(context: ThreadContext, currentUserId: number
         }
       : null;
 
+  // Parse task_action from sidebar turns (null-safe; non-sidebar turns leave it null).
+  const rawTa = parsed.task_action;
+  const taskActionKinds = new Set(["create", "close"]);
+  const taskAction =
+    rawTa && typeof rawTa === "object" && typeof rawTa.kind === "string" && taskActionKinds.has(rawTa.kind) && typeof rawTa.title === "string" && rawTa.title.trim()
+      ? (() => {
+          const dueDateRaw = typeof rawTa.due_date === "string" ? new Date(rawTa.due_date) : null;
+          const dueDate = dueDateRaw && !Number.isNaN(dueDateRaw.getTime()) ? dueDateRaw : null;
+          return {
+            kind: rawTa.kind as "create" | "close",
+            title: rawTa.title.trim(),
+            ownerName: typeof rawTa.owner_name === "string" && rawTa.owner_name.trim() ? rawTa.owner_name.trim() : null,
+            dueDate,
+          };
+        })()
+      : null;
+
   return {
     reply: typeof parsed.reply === "string" ? parsed.reply : "Got it.",
     displayName: typeof parsed.display_name === "string" && parsed.display_name.trim() ? parsed.display_name.trim() : null,
@@ -522,6 +562,7 @@ export async function runAgentTurn(context: ThreadContext, currentUserId: number
     // before the engine turn runs; this field is always null from the engine.
     organizerTiebreakDecision: null,
     ledgerAction,
+    taskAction,
   };
 }
 

@@ -908,6 +908,9 @@ components:
             outstandingCount:
               type: integer
               description: Number of members with an outstanding balance greater than zero.
+        openActionItemCount:
+          type: integer
+          description: Number of open (pending or in_progress) organizer-created action items for this project.
         createdAt:
           type: string
           format: date-time

@@ -258,6 +258,8 @@ export interface ProjectSummary {
      * @nullable
      */
   ledger?: ProjectSummaryLedger;
+  /** Number of open (pending or in_progress) organizer-created action items for this project. */
+  openActionItemCount?: number;
   createdAt: string;
 }
 
