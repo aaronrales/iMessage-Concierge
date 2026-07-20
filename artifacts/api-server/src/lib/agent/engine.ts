@@ -1,4 +1,5 @@
 import { openai, CHAT_MODEL } from "../openaiClient";
+import { DEFAULT_PERSONA } from "../../routes/agent-config";
 import { agentConfigTable, db, profilesTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import type { ThreadContext } from "./context";
@@ -89,9 +90,13 @@ async function getGlobalGuidance(): Promise<string | null> {
  * Fetches the `persona` block from `agent_config`. This defines the bot's
  * voice, tone, and behavioral principles. Injected between SYSTEM_PROMPT and
  * globalGuidance so identity is established before functional rules layer on.
+ *
+ * Falls back to DEFAULT_PERSONA when no DB row exists (e.g. fresh install
+ * before an admin has saved from the Settings page), so the agent always has
+ * voice/tone guidance even if the persona was never explicitly persisted.
  */
-async function getPersona(): Promise<string | null> {
-  return getAgentConfigValue("persona");
+async function getPersona(): Promise<string> {
+  return (await getAgentConfigValue("persona")) ?? DEFAULT_PERSONA;
 }
 
 export interface AgentTurnResult {
@@ -232,7 +237,7 @@ export interface AgentTurnResult {
   destinationSuggestionRequest: boolean | null;
 }
 
-const SYSTEM_PROMPT = `You are a personal AI concierge that lives inside iMessage. You help one person or a small group plan the stuff of everyday life -- dinners, weekend trips, birthdays, "where should we all meet". You are warm, concise, and text like a helpful friend, not a corporate assistant. Keep replies short enough for a text message (usually under 3 sentences) and never use emojis.
+const SYSTEM_PROMPT = `You are a personal AI concierge that lives inside iMessage. You help one person or a small group plan the stuff of everyday life -- dinners, weekend trips, birthdays, "where should we all meet".
 
 You have these capabilities, which you can trigger by filling in the matching field in your JSON response:
 - Updating what you know about a person (their budget, dietary needs, general preferences, or freeform notes) as you learn it naturally through conversation.
@@ -544,7 +549,9 @@ export async function runAgentTurn(context: ThreadContext, currentUserId: number
     // Persona block: voice, tone, and behavioral principles. Injected after
     // functional instructions but before ops corrections so identity is
     // established first. Editable from the Settings page without a code deploy.
-    ...(persona ? [{ role: "system" as const, content: `Persona (voice, tone, and behavior):\n${persona}` }] : []),
+    // Always present: getPersona() falls back to DEFAULT_PERSONA when no DB row
+    // exists, so a fresh install has voice/tone guidance from the start.
+    { role: "system" as const, content: `Persona (voice, tone, and behavior):\n${persona}` },
     // Ops-authored cross-cutting corrections injected when non-empty.
     ...(globalGuidance ? [{ role: "system" as const, content: `Ops guidance (apply to all threads):\n${globalGuidance}` }] : []),
     { role: "system", content: situational },

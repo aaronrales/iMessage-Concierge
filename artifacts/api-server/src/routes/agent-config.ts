@@ -22,7 +22,7 @@ import { db, agentConfigTable } from "@workspace/db";
 
 const router: IRouter = Router();
 
-const DEFAULT_PERSONA = `# [BOT NAME] — Persona & Behavior System Prompt
+export const DEFAULT_PERSONA = `# [BOT NAME] — Persona & Behavior System Prompt
 
 *This document defines who the agent is and how it behaves. It is meant to sit alongside — not replace — the functional/tool-use instructions (venue lookup, plan state, scheduling mechanics, etc.). Swap in the final name wherever [BOT NAME] / [bot name] appears.*
 
