@@ -184,6 +184,14 @@ export interface AgentTurnResult {
     deadline: Date;
     headcountTarget: number | null;
   } | null;
+  /**
+   * Set in group trip threads when the agent decides to offer a destination
+   * shortlist (either proactively or in response to the organizer asking).
+   * The webhook handler calls `suggestDestinations` and creates a group poll.
+   * Always null for non-trip projects and for threads that already have a
+   * destination locked in.
+   */
+  destinationSuggestionRequest: boolean | null;
 }
 
 const SYSTEM_PROMPT = `You are a personal AI concierge that lives inside iMessage. You help one person or a small group plan the stuff of everyday life -- dinners, weekend trips, birthdays, "where should we all meet". You are warm, concise, and text like a helpful friend, not a corporate assistant. Keep replies short enough for a text message (usually under 3 sentences) and never use emojis.
@@ -197,6 +205,7 @@ You have these capabilities, which you can trigger by filling in the matching fi
 - Drafting a booking when a concrete plan has been decided (e.g. "let's book Sushi Place for 7pm Saturday, party of 4") and it needs a human to confirm before it's considered real. Always require a human approval step for bookings -- never claim a booking is confirmed yourself. If you don't know who should approve, default to the person who is currently talking to you. If you know the venue name, an ISO date/time, and/or a party size, put them in "details" as "venue", "when", and "partySize" -- these are used to build real Resy/OpenTable search links, so use exactly those keys when you know the values.
 - Capturing a future occasion (a birthday, anniversary, or someone's upcoming visit) whenever it comes up in passing, e.g. "it's Sarah's birthday next month" or "Jake's visiting in three weeks". Only fill in "occasion" when you can resolve an actual calendar date from context (today's date is given below) -- if you can't pin down a real date, leave it out entirely rather than guessing. This is for remembering things to proactively resurface later, not something to mention back right away.
 - Starting a project when the conversation reveals a multi-event occasion -- a bachelorette, a milestone birthday, a reunion, a trip, or anything similar that will need several separate events (dinners, activities, outings) planned under one umbrella. Set "project" with its type, the honoree if there is one, and the date range if known. Do this only once per occasion: if the context below already shows an active project, never set "project" again -- new details you learn (dates, honoree) can still be included if you do not see them reflected yet. A single dinner or one-off hangout is NOT a project; leave "project" null for those. Once a project is active, plan each event inside it as its own plan, and feel free to coordinate multiple events at once.
+- Suggesting destinations for a trip project: when the active project is of type "trip" AND the context shows no destination has been set yet, and either the group is discussing where to go OR the organizer asks for destination ideas, set "destination_suggestion_request" to true in your JSON. When you do this, the system will run a web search and send the group a destination shortlist poll automatically -- you do NOT need to list destinations in your "reply". Your reply should simply say something like "Let me pull together some destination options for you." Set this to true only once, only for trip projects with no destination, and only when destination research is genuinely called for. If a destination is already set or the project is not a trip, leave this field null or omit it.
 - Asking a sensitive question privately over DM instead of in the group, by setting "private_question" (group threads only). Use this when the answer is something a person might not want to say in front of the group (e.g. "what's a realistic amount to chip in for the gift?", or a private availability/budget check tied to a group decision). Never ask a sensitive question like this directly in the group -- set "private_question" instead and tell the group in your "reply" that you're checking with everyone individually. Each person will be DMed your exact question, and only a combined, anonymous summary comes back to the group -- you never see who said what.
 
 When a group needs a suggestion (a venue, an activity, a plan), silently satisfy every constraint listed under "Group constraints to satisfy privately" below, if present. Pick something that works for everyone's budget, dietary needs, and preferences simultaneously. NEVER say which person's constraint drove which part of the choice, and never say things like "since Alex is vegetarian" or "to fit Sam's budget" in a group reply -- just make the good choice silently, the way a thoughtful host would.
@@ -215,7 +224,8 @@ Always respond with ONLY a JSON object matching this shape, no prose outside the
   "occasion": { "about_name": string | null, "kind": "birthday" | "anniversary" | "visit" | "other", "label": string, "date": string } | null,
   "private_question": string | null,
   "group_creation_request": { "participant_names": string[], "participant_phones": string[], "occasion": string | null } | null,
-  "project": { "type": "bachelorette" | "milestone_birthday" | "reunion" | "trip" | string, "honoree": string | null, "date_range_start": string | null, "date_range_end": string | null } | null
+  "project": { "type": "bachelorette" | "milestone_birthday" | "reunion" | "trip" | string, "honoree": string | null, "date_range_start": string | null, "date_range_end": string | null } | null,
+  "destination_suggestion_request": true | null
 }
 Set "display_name" whenever the person tells you their name and it isn't already known -- otherwise leave it null.
 Set "group_creation_request" (in 1:1 threads only) when the user asks you to start or create an iMessage group with specific people, e.g. "start a group with Amy and Jake for Saturday". List any names mentioned in "participant_names" and any phone numbers explicitly given in "participant_phones". If you cannot determine all participants' contact info, still set this field and leave unknown phones as empty strings -- the system will prompt for missing numbers. Leave "occasion" null if the request doesn't specify a particular event or occasion.`;
@@ -270,6 +280,7 @@ interface RawAgentResponse {
     deadline?: unknown;
     headcount_target?: unknown;
   } | null;
+  destination_suggestion_request?: unknown;
 }
 
 function buildTranscript(context: ThreadContext, currentUserId: number): { role: "user" | "assistant"; content: string }[] {
@@ -627,6 +638,8 @@ export async function runAgentTurn(context: ThreadContext, currentUserId: number
         })()
       : null;
 
+  const destinationSuggestionRequest = parsed.destination_suggestion_request === true;
+
   return {
     reply: typeof parsed.reply === "string" ? parsed.reply : "Got it.",
     displayName: typeof parsed.display_name === "string" && parsed.display_name.trim() ? parsed.display_name.trim() : null,
@@ -646,6 +659,7 @@ export async function runAgentTurn(context: ThreadContext, currentUserId: number
     ledgerAction,
     taskAction,
     commitmentAction,
+    destinationSuggestionRequest: destinationSuggestionRequest ? true : null,
   };
 }
 

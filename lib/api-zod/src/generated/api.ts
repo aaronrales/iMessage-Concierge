@@ -214,6 +214,7 @@ export const GetThreadResponse = zod.object({
   "totalCollectedCents": zod.number().describe('Sum of all confirmed payment entries in cents.'),
   "outstandingCount": zod.number().describe('Number of members with an outstanding balance greater than zero.')
 }).nullish().describe('Payment ledger summary for this project, when cost tracking is active.'),
+  "destination": zod.string().nullish().describe('Locked destination city\/region for trip projects (e.g. \"Nashville\"). Null when the group has not yet decided on a destination.\n'),
   "openActionItemCount": zod.number().optional().describe('Number of open (pending or in_progress) organizer-created action items for this project.'),
   "commitment": zod.object({
   "deadline": zod.coerce.date().describe('When headcount locks.'),

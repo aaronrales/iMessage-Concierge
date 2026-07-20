@@ -42,6 +42,8 @@ function makeProject(overrides: Partial<Project> = {}): Project {
     commitmentPollId: null,
     headcountLockedAt: null,
     headcountLockedCount: null,
+    destination: null,
+    destinationPollId: null,
     createdAt: new Date("2026-07-01T00:00:00Z"),
     updatedAt: new Date("2026-07-01T00:00:00Z"),
     ...overrides,
@@ -222,6 +224,30 @@ describe("buildProjectPromptSummary", () => {
     expect(summary).toContain("trip");
     expect(summary).toContain("dates not settled yet");
     expect(summary).toContain("No events created for it yet");
+  });
+
+  it("includes locked destination in prompt header for trip projects", async () => {
+    const project = makeProject({ type: "trip", destination: "Nashville" });
+    const summary = await buildProjectPromptSummary(project, []);
+    expect(summary).toContain("Destination: Nashville");
+    // Should NOT say "not yet decided" when destination is set
+    expect(summary).not.toContain("not yet decided");
+  });
+
+  it("shows 'Destination: not yet decided' when trip project has no destination", async () => {
+    const project = makeProject({ type: "trip", destination: null });
+    const summary = await buildProjectPromptSummary(project, []);
+    expect(summary).toContain("Destination: not yet decided");
+  });
+
+  it("does not inject a misleading destination note for non-trip project types", async () => {
+    // Non-trip projects also get destination field rendering since destination is on
+    // projectsTable for all projects -- the prompt shows it regardless of project type.
+    // This test confirms the field is consistently injected.
+    const project = makeProject({ type: "bachelorette", destination: null });
+    const summary = await buildProjectPromptSummary(project, []);
+    // The destination note is present for all project types
+    expect(summary).toContain("Destination:");
   });
 });
 

@@ -48,6 +48,11 @@ export interface ProjectSummary {
      * @nullable
      */
   ledger?: ProjectSummaryLedger;
+  /**
+     * Locked destination city/region for trip projects (e.g. "Nashville"). Null when the group has not yet decided on a destination.
+     * @nullable
+     */
+  destination?: string | null;
   /** Number of open (pending or in_progress) organizer-created action items for this project. */
   openActionItemCount?: number;
   /**

@@ -50,6 +50,14 @@ export const projectsTable = pgTable("projects", {
   commitmentPollId: integer("commitment_poll_id"),
   headcountLockedAt: timestamp("headcount_locked_at", { withTimezone: true }),
   headcountLockedCount: integer("headcount_locked_count"),
+  /**
+   * Destination shortlist and decision fields for trip projects.
+   * `destination` is set once the group decides (poll closes or organizer
+   * overrides). `destinationPollId` tracks the currently-open destination
+   * choice poll so the poll-close path knows to stamp the winner here.
+   */
+  destination: text("destination"),
+  destinationPollId: integer("destination_poll_id"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true })
     .notNull()

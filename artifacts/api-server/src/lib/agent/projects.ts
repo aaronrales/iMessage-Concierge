@@ -269,10 +269,12 @@ export async function buildProjectPromptSummary(project: Project, childPlans: Pl
         ? `starting ${fmt(project.dateRangeStart)}`
         : "dates not settled yet";
 
+  const destinationNote = project.destination ? ` Destination: ${project.destination}.` : " Destination: not yet decided.";
+
   const header = [
     `Active project in this thread: ${formatProjectType(project.type)}`,
     project.honoree ? `for ${project.honoree}` : null,
-    `(${range}, status: ${project.status}).`,
+    `(${range}, status: ${project.status}).${destinationNote}`,
   ]
     .filter(Boolean)
     .join(" ");

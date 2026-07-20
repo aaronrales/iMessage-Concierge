@@ -908,6 +908,11 @@ components:
             outstandingCount:
               type: integer
               description: Number of members with an outstanding balance greater than zero.
+        destination:
+          type: ["string", "null"]
+          description: >
+            Locked destination city/region for trip projects (e.g. "Nashville").
+            Null when the group has not yet decided on a destination.
         openActionItemCount:
           type: integer
           description: Number of open (pending or in_progress) organizer-created action items for this project.

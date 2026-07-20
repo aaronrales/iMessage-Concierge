@@ -724,6 +724,13 @@ export function ThreadsPage() {
                     <Badge variant="outline" className="capitalize bg-background">
                       {threadDetail.project.status}
                     </Badge>
+                    {threadDetail.project.destination ? (
+                      <Badge className="bg-emerald-100 text-emerald-800 border-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-300 dark:border-emerald-800 font-medium gap-1">
+                        📍 {threadDetail.project.destination}
+                      </Badge>
+                    ) : threadDetail.project.type === "trip" ? (
+                      <span className="text-xs text-muted-foreground italic">destination TBD</span>
+                    ) : null}
                     <span className="text-xs text-muted-foreground">
                       {formatProjectDateRange(threadDetail.project.dateRangeStart, threadDetail.project.dateRangeEnd)}
                     </span>

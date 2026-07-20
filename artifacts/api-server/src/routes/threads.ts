@@ -224,6 +224,8 @@ async function getActiveProjectSummary(
     dateRangeStart: project.dateRangeStart,
     dateRangeEnd: project.dateRangeEnd,
     status: project.status,
+    destination: project.destination ?? null,
+    destinationPollId: project.destinationPollId ?? null,
     commitmentDeadline: project.commitmentDeadline ?? null,
     headcountTarget: project.headcountTarget ?? null,
     commitmentPollId: project.commitmentPollId ?? null,

@@ -82,6 +82,13 @@ import {
 } from "../../lib/agent/actionItems";
 import { createCommitmentPoll, isCommitmentPoll, COMMITMENT_IN_LABEL, COMMITMENT_OUT_LABEL } from "../../lib/agent/commitmentPoll";
 import {
+  suggestDestinations,
+  setProjectDestination,
+  setProjectDestinationPoll,
+  getProjectByDestinationPollId,
+  formatDateWindow,
+} from "../../lib/agent/destinationSuggestions";
+import {
   createProposal,
   getOldestPendingProposal,
   approveProposal,
@@ -526,6 +533,61 @@ async function processAgentTurn(threadId: number, senderUserId: number): Promise
       await instantiateTimeline(project);
     } else if (result.project.dateRangeStart || result.project.dateRangeEnd) {
       await recomputeDueDates(project);
+    }
+  }
+
+  // ── Destination shortlist request ──────────────────────────────────────────
+  // When the agent sets `destination_suggestion_request: true` for a trip
+  // project with no destination, run a web-search call to produce 3–5
+  // candidates and immediately send a destination choice poll to the group.
+  // Destination polls bypass the organizer approval gate — they are the
+  // framing question, not a downstream event choice.
+  if (result.destinationSuggestionRequest && isGroup) {
+    const tripProject = await getActiveProject(threadId);
+    if (tripProject && tripProject.type === "trip" && !tripProject.destination) {
+      // Gather context for the suggestion call.
+      const budgets = context.participants
+        .map((p) => p.profile?.budget)
+        .filter((b): b is string => typeof b === "string" && b.length > 0);
+      const budget = budgets.length > 0 ? budgets[0] : null;
+      const dateWindow = formatDateWindow(tripProject.dateRangeStart, tripProject.dateRangeEnd);
+      const originCity = context.thread.homeCity ?? null;
+      const groupSize = context.participants.length;
+
+      const shortlist = await suggestDestinations(budget, dateWindow, originCity, groupSize);
+      if (shortlist && shortlist.candidates.length >= 2) {
+        // Create the destination poll. No plan anchor — destination selection
+        // is a project-level decision, not tied to a specific child plan.
+        const pollQuestion = "Where are we going?";
+        const pollOptions = shortlist.candidates.map((c) => c.label);
+        const { poll, options } = await createPoll(threadId, pollQuestion, pollOptions, { kind: "choice" });
+
+        // Schedule the same non-voter nudge + tiebreak announce/lock pipeline used by
+        // all other choice polls — without this, a destination poll with partial votes
+        // stalls forever and the scheduler tiebreak-lock path is unreachable.
+        await scheduleNonVoterNudge(threadId, poll.id);
+
+        // Record which poll is the destination poll on the project.
+        await setProjectDestinationPoll(tripProject.id, poll.id);
+
+        // Announce with the intro line and each candidate + vibe note.
+        await sendToThread(threadId, shortlist.intro);
+        for (const [index, candidate] of shortlist.candidates.entries()) {
+          const option = options[index];
+          if (!option) continue;
+          await sendToThread(threadId, `${index + 1}. ${candidate.label} — ${candidate.vibeNote} (${candidate.roughCostContext})`);
+        }
+        await sendToThread(threadId, "Tap/reply with your pick. Everyone vote and I'll lock it in.");
+        void options; // options already used above
+        logger.info(
+          { projectId: tripProject.id, pollId: poll.id, candidateCount: shortlist.candidates.length },
+          "Destination shortlist poll sent",
+        );
+      } else {
+        logger.warn({ projectId: tripProject.id }, "Destination suggestion returned no usable candidates; sending fallback reply");
+        await sendToThread(threadId, result.reply);
+      }
+      return;
     }
   }
 
@@ -1117,13 +1179,24 @@ router.post("/webhooks/sendblue/:secret", async (req, res): Promise<void> => {
                   await setPlanVenue(openPoll.poll.planId, matched.label);
                 }
               }
+              // If this was a destination poll, stamp the project destination.
+              const destProject = await getProjectByDestinationPollId(openPoll.poll.id);
+              if (destProject) {
+                await setProjectDestination(destProject.id, matched.label);
+                logger.info(
+                  { projectId: destProject.id, destination: matched.label },
+                  "Destination locked from organizer tiebreak override",
+                );
+              }
               await sendToThread(
                 organizerProject.threadId,
-                `Decision made -- going with "${matched.label}".`,
+                destProject
+                  ? `Destination locked -- going with ${matched.label}.`
+                  : `Decision made -- going with "${matched.label}".`,
                 undefined,
                 "celebration",
               );
-              await sendToThread(threadId, `Done -- locked in "${matched.label}" for the group.`);
+              await sendToThread(threadId, destProject ? `${matched.label} it is -- destination locked!` : `Done -- locked in "${matched.label}" for the group.`);
               res.status(200).json({ received: true });
               return;
             }
@@ -1239,9 +1312,20 @@ router.post("/webhooks/sendblue/:secret", async (req, res): Promise<void> => {
               if (openPoll.poll.planId) {
                 await setPlanVenue(openPoll.poll.planId, winnerTally.option.label);
               }
+              // If this was a destination poll, stamp the project destination.
+              const destProject = await getProjectByDestinationPollId(openPoll.poll.id);
+              if (destProject) {
+                await setProjectDestination(destProject.id, winnerTally.option.label);
+                logger.info(
+                  { projectId: destProject.id, destination: winnerTally.option.label },
+                  "Destination locked from poll auto-close",
+                );
+              }
               await sendToThread(
                 threadId,
-                `Everyone's voted! We're going with "${winnerTally.option.label}" (${tallyLine}).`,
+                destProject
+                  ? `${winnerTally.option.label} it is! Destination locked.`
+                  : `Everyone's voted! We're going with "${winnerTally.option.label}" (${tallyLine}).`,
                 undefined,
                 "confetti",
               );

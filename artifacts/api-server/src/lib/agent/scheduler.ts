@@ -50,6 +50,10 @@ import {
 } from "./ledger";
 import { findDueActionItems, markActionItemNotified } from "./actionItems";
 import {
+  getProjectByDestinationPollId,
+  setProjectDestination,
+} from "./destinationSuggestions";
+import {
   getProjectsDueForPreDeadlineNudge,
   getProjectsDueForLock,
   getCommitmentStatus,
@@ -288,12 +292,24 @@ async function handlePollTiebreakLock({ data }: { data: PollTiebreakJobData }): 
     }
   }
 
+  // If this was a destination poll, stamp the project destination.
+  const destProject = await getProjectByDestinationPollId(data.pollId);
+  if (destProject && option) {
+    await setProjectDestination(destProject.id, option.label);
+    logger.info(
+      { projectId: destProject.id, destination: option.label },
+      "Destination locked from scheduler tiebreak auto-lock",
+    );
+  }
+
   // Opted-out participants must not receive the lock-in announcement.
   if (await threadHasOptedOutParticipant(data.threadId)) return;
 
   await sendToThread(
     data.threadId,
-    `Locking in ${option?.label ?? "that pick"} since nobody objected. Moving forward with it.`,
+    destProject && option
+      ? `${option.label} it is — destination locked since nobody objected.`
+      : `Locking in ${option?.label ?? "that pick"} since nobody objected. Moving forward with it.`,
   );
 }
 
