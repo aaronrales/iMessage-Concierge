@@ -5,7 +5,7 @@ import { format } from "date-fns";
 import {
   Check, X, Clock, CalendarClock, Building2, MapPin, ChevronRight,
   AlertTriangle, Ban, RefreshCw, CheckSquare, TrendingUp, Users, MessageCircle,
-  Signal, ShieldAlert, DollarSign,
+  Signal, ShieldAlert, DollarSign, Wrench,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -247,6 +247,148 @@ function DeliveryHealthCard() {
             <p className="text-xs text-muted-foreground text-center py-3">No outbound messages in the last 24h.</p>
           )}
         </>
+      )}
+    </div>
+  );
+}
+
+// ── Tool Health card ───────────────────────────────────────────────────────
+
+type ToolOutcome = "success" | "empty" | "api_error" | "not_configured";
+
+interface ToolHealthRow {
+  toolName: string;
+  calls: number;
+  successCalls: number;
+  successRate: number | null;
+  outcomeCounts: Record<string, number>;
+  lastOutcome: string | null;
+  sparkline: { day: string; successRate: number | null; calls: number }[];
+}
+
+interface ToolHealthResponse {
+  windowHours: number;
+  byTool: ToolHealthRow[];
+}
+
+async function fetchToolHealth(): Promise<ToolHealthResponse> {
+  const res = await fetch("/api/operations/tool-health");
+  if (!res.ok) throw new Error("Failed to fetch tool health");
+  return res.json() as Promise<ToolHealthResponse>;
+}
+
+const OUTCOME_COLORS: Record<string, string> = {
+  success: "bg-emerald-500/15 text-emerald-700 border-emerald-500/20",
+  empty: "bg-amber-500/15 text-amber-700 border-amber-500/20",
+  api_error: "bg-destructive/10 text-destructive border-destructive/20",
+  not_configured: "bg-muted text-muted-foreground border-border",
+};
+
+function OutcomeBadge({ outcome }: { outcome: string }) {
+  const cls = OUTCOME_COLORS[outcome] ?? "bg-muted text-muted-foreground border-border";
+  return (
+    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium border ${cls}`}>
+      {outcome}
+    </span>
+  );
+}
+
+/** Tiny inline sparkline rendered as an SVG path over 7 day buckets. */
+function Sparkline({ data }: { data: { successRate: number | null; calls: number }[] }) {
+  if (data.length === 0) return <span className="text-xs text-muted-foreground">—</span>;
+  const points = data.map((d) => d.successRate ?? 0);
+  const w = 80;
+  const h = 24;
+  const max = 100;
+  const step = w / Math.max(points.length - 1, 1);
+  const coords = points.map((v, i) => `${i * step},${h - (v / max) * h}`).join(" L ");
+  const pathD = `M ${coords}`;
+  const lastRate = points[points.length - 1] ?? 0;
+  const strokeColor = lastRate >= 80 ? "#10b981" : lastRate >= 50 ? "#f59e0b" : "#ef4444";
+  return (
+    <svg width={w} height={h} className="overflow-visible">
+      <polyline
+        points={points.map((v, i) => `${i * step},${h - (v / max) * h}`).join(" ")}
+        fill="none"
+        stroke={strokeColor}
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function ToolHealthCard() {
+  const { data, isLoading } = useQuery({
+    queryKey: ["tool-health"],
+    queryFn: fetchToolHealth,
+    refetchInterval: 60_000,
+  });
+
+  const hasAlert = data?.byTool.some(
+    (t) => t.successRate !== null && t.successRate < 80,
+  );
+
+  return (
+    <div className="rounded-xl border border-border bg-card p-4 mb-4 shrink-0">
+      <div className="flex items-center gap-2 mb-3">
+        <Wrench className="h-4 w-4 text-primary" />
+        <h2 className="text-sm font-semibold">Tool Health — last 24h</h2>
+        {!isLoading && hasAlert && (
+          <span className="flex items-center gap-1 text-[10px] font-semibold text-orange-600 bg-orange-500/10 px-2 py-0.5 rounded-full border border-orange-400/30">
+            <ShieldAlert className="h-3 w-3" /> Degraded tools
+          </span>
+        )}
+      </div>
+
+      {isLoading ? (
+        <div className="space-y-2">
+          {[...Array(3)].map((_, i) => (
+            <div key={i} className="h-10 rounded-lg bg-muted/50 animate-pulse" />
+          ))}
+        </div>
+      ) : !data || data.byTool.length === 0 ? (
+        <p className="text-xs text-muted-foreground">No tool calls recorded yet in the last 24h.</p>
+      ) : (
+        <div className="rounded-lg border border-border overflow-hidden">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-border bg-muted/30">
+                {["Tool", "Calls", "Success rate", "Last outcome", "7-day trend"].map((h) => (
+                  <th
+                    key={h}
+                    className="px-3 py-2 text-left text-[10px] font-medium text-muted-foreground uppercase tracking-wide"
+                  >
+                    {h}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {data.byTool
+                .sort((a, b) => (a.successRate ?? 101) - (b.successRate ?? 101))
+                .map((row, i) => (
+                  <tr
+                    key={row.toolName}
+                    className={`${i < data.byTool.length - 1 ? "border-b border-border/50" : ""} hover:bg-muted/20 transition-colors ${rowFlagClass(row.successRate)}`}
+                  >
+                    <td className="px-3 py-2.5 text-xs font-mono font-medium">{row.toolName}</td>
+                    <td className="px-3 py-2.5 text-xs tabular-nums text-muted-foreground">{row.calls}</td>
+                    <td className={`px-3 py-2.5 text-xs tabular-nums ${rateClass(row.successRate)}`}>
+                      {row.successRate !== null ? `${row.successRate}%` : "—"}
+                    </td>
+                    <td className="px-3 py-2.5">
+                      {row.lastOutcome ? <OutcomeBadge outcome={row.lastOutcome} /> : <span className="text-xs text-muted-foreground">—</span>}
+                    </td>
+                    <td className="px-3 py-2.5">
+                      <Sparkline data={row.sparkline} />
+                    </td>
+                  </tr>
+                ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );
@@ -635,6 +777,7 @@ export function OperationsPage() {
         <ActivationCard />
         <LlmCostCard />
         <DeliveryHealthCard />
+        <ToolHealthCard />
         <div className="flex items-center gap-1 border-b border-border mb-6 shrink-0">
           <button
             onClick={() => setActiveTab("bookings")}

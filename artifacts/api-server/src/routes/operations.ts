@@ -1,6 +1,6 @@
 import { Router, type IRouter } from "express";
 import { and, desc, gte, inArray, isNotNull, sql } from "drizzle-orm";
-import { db, llmCostLogTable, messageDeliveryLogTable, threadsTable } from "@workspace/db";
+import { db, llmCostLogTable, messageDeliveryLogTable, threadsTable, toolCallLogTable } from "@workspace/db";
 import { GetDeliveryHealthResponse } from "@workspace/api-zod";
 
 const router: IRouter = Router();
@@ -169,6 +169,117 @@ router.get("/api/cost-summary", async (_req, res): Promise<void> => {
   }));
 
   res.json({ totalCents7d, costPerDay, topThreads });
+});
+
+/**
+ * GET /operations/tool-health
+ * Per-tool outcome summary for the last 24 h, plus a 7-day daily series
+ * for sparkline rendering in the dashboard.
+ */
+router.get("/operations/tool-health", async (req, res): Promise<void> => {
+  const rawHours = Number(req.query["windowHours"] ?? 24);
+  const windowHours =
+    Number.isFinite(rawHours) && rawHours >= 1 && rawHours <= 168
+      ? Math.floor(rawHours)
+      : 24;
+
+  const since24h = new Date(Date.now() - windowHours * 60 * 60 * 1000);
+  const since7d = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+
+  // Per-tool aggregates over the window.
+  const aggRows = await db
+    .select({
+      toolName: toolCallLogTable.toolName,
+      outcome: toolCallLogTable.outcome,
+      count: sql<number>`count(*)::int`,
+    })
+    .from(toolCallLogTable)
+    .where(gte(toolCallLogTable.createdAt, since24h))
+    .groupBy(toolCallLogTable.toolName, toolCallLogTable.outcome);
+
+  // Last-seen outcome per tool.
+  const lastRows = await db
+    .select({
+      toolName: toolCallLogTable.toolName,
+      outcome: toolCallLogTable.outcome,
+      createdAt: toolCallLogTable.createdAt,
+    })
+    .from(toolCallLogTable)
+    .where(gte(toolCallLogTable.createdAt, since24h))
+    .orderBy(desc(toolCallLogTable.createdAt))
+    .limit(200); // enough to cover all tools; we pick the first per tool below
+
+  // 7-day daily series per tool.
+  const sparkRows = await db
+    .select({
+      toolName: toolCallLogTable.toolName,
+      day: sql<string>`date_trunc('day', ${toolCallLogTable.createdAt})::text`,
+      outcome: toolCallLogTable.outcome,
+      count: sql<number>`count(*)::int`,
+    })
+    .from(toolCallLogTable)
+    .where(gte(toolCallLogTable.createdAt, since7d))
+    .groupBy(
+      toolCallLogTable.toolName,
+      sql`date_trunc('day', ${toolCallLogTable.createdAt})`,
+      toolCallLogTable.outcome,
+    )
+    .orderBy(sql`date_trunc('day', ${toolCallLogTable.createdAt})`);
+
+  // --- Aggregate into per-tool summaries ---
+  const SUCCESS_OUTCOMES = new Set(["success"]);
+
+  // Map: toolName → { totalCalls, successCalls, outcomeCounts }
+  const toolMap = new Map<string, { total: number; success: number; outcomeCounts: Record<string, number> }>();
+  for (const row of aggRows) {
+    const entry = toolMap.get(row.toolName) ?? { total: 0, success: 0, outcomeCounts: {} };
+    entry.total += Number(row.count);
+    if (SUCCESS_OUTCOMES.has(row.outcome)) entry.success += Number(row.count);
+    entry.outcomeCounts[row.outcome] = (entry.outcomeCounts[row.outcome] ?? 0) + Number(row.count);
+    toolMap.set(row.toolName, entry);
+  }
+
+  // Map: toolName → lastOutcome
+  const lastOutcomeMap = new Map<string, string>();
+  for (const row of lastRows) {
+    if (!lastOutcomeMap.has(row.toolName)) lastOutcomeMap.set(row.toolName, row.outcome);
+  }
+
+  // Map: toolName → day → { success, total }
+  type DayEntry = { success: number; total: number };
+  const sparkMap = new Map<string, Map<string, DayEntry>>();
+  for (const row of sparkRows) {
+    if (!sparkMap.has(row.toolName)) sparkMap.set(row.toolName, new Map());
+    const dayMap = sparkMap.get(row.toolName)!;
+    const entry = dayMap.get(row.day) ?? { success: 0, total: 0 };
+    entry.total += Number(row.count);
+    if (SUCCESS_OUTCOMES.has(row.outcome)) entry.success += Number(row.count);
+    dayMap.set(row.day, entry);
+  }
+
+  const byTool = [...toolMap.entries()].map(([toolName, { total, success, outcomeCounts }]) => {
+    const rate = total === 0 ? null : Math.round((success / total) * 1000) / 10;
+    const dayMap = sparkMap.get(toolName) ?? new Map();
+    const sparkline = [...dayMap.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([day, { success: s, total: t }]) => ({
+        day,
+        successRate: t === 0 ? null : Math.round((s / t) * 1000) / 10,
+        calls: t,
+      }));
+
+    return {
+      toolName,
+      calls: total,
+      successCalls: success,
+      successRate: rate,
+      outcomeCounts,
+      lastOutcome: lastOutcomeMap.get(toolName) ?? null,
+      sparkline,
+    };
+  });
+
+  res.json({ windowHours, byTool });
 });
 
 export default router;

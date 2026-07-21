@@ -3,6 +3,7 @@ import { logger } from "../logger";
 import { lookupCorpusVenues } from "./venueCorpus/lookup";
 import { logRecommendationEvent } from "./venueCorpus/recommendationLog";
 import type { GroupConstraints } from "./tasteEngine";
+import { logToolOutcome, classifyOutcome, type ToolOutcome } from "./toolOutcomeLogger";
 
 /**
  * Metadata collected for each venue returned by `search_venues` or
@@ -453,24 +454,10 @@ async function searchLodgingViaGooglePlaces(args: {
 // ─── Tool executor ─────────────────────────────────────────────────────────────
 
 /**
- * Executes a tool call. `threadId` is optional context (not something the
- * model provides) used to log recommendation events for the venue corpus.
- * `groupConstraints` is also optional context -- when provided, corpus results
- * are filtered and boosted by the group's dietary needs, budget, and party
- * size before being returned to the model.
+ * Inner implementation of the tool executor. All tool logic lives here;
+ * `executeAgentTool` wraps it to add timing and outcome logging.
  */
-/**
- * Executes a tool call. `threadId` is optional context (not something the
- * model provides) used to log recommendation events for the venue corpus.
- * `groupConstraints` is also optional context -- when provided, corpus results
- * are filtered and boosted by the group's dietary needs, budget, and party
- * size before being returned to the model.
- *
- * `venueCarouselAccumulator`, when provided, is populated with venues returned
- * by `search_venues` (corpus hit or Google Places fallback) and `search_lodging`
- * so the delivery layer can follow up the text reply with per-venue photo carousels.
- */
-export async function executeAgentTool(
+async function _executeAgentToolImpl(
   name: string,
   rawArgs: string,
   threadId?: number,
@@ -603,5 +590,51 @@ export async function executeAgentTool(
     }
     default:
       return { error: `Unknown tool: ${name}` };
+  }
+}
+
+/**
+ * Executes a tool call and logs a structured outcome record to `tool_call_log`.
+ * Wraps `_executeAgentToolImpl` with timing and outcome classification so
+ * every call is observable without changing any tool's return value or
+ * error behaviour.
+ *
+ * Outcome tags:
+ *   success       — tool returned non-empty results
+ *   empty         — tool returned zero results (valid call, no data found)
+ *   api_error     — the external API returned a non-OK response or threw
+ *   not_configured — required env key was absent; call was not attempted
+ */
+export async function executeAgentTool(
+  name: string,
+  rawArgs: string,
+  threadId?: number,
+  groupConstraints?: GroupConstraints,
+  venueCarouselAccumulator?: VenueCarouselEntry[],
+): Promise<unknown> {
+  const start = Date.now();
+
+  // Detect a missing Google Places API key before the call so we can log
+  // "not_configured" rather than "empty" (which would look like a data gap).
+  const googleKeyMissing = !process.env["GOOGLE_PLACES_API_KEY"];
+  const usesGooglePlaces = name === "search_venues" || name === "search_lodging";
+
+  try {
+    const result = await _executeAgentToolImpl(
+      name,
+      rawArgs,
+      threadId,
+      groupConstraints,
+      venueCarouselAccumulator,
+    );
+
+    const outcome: ToolOutcome =
+      usesGooglePlaces && googleKeyMissing ? "not_configured" : classifyOutcome(result);
+
+    logToolOutcome(name, outcome, Date.now() - start, threadId);
+    return result;
+  } catch (err) {
+    logToolOutcome(name, "api_error", Date.now() - start, threadId);
+    throw err;
   }
 }

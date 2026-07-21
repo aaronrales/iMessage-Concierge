@@ -15,6 +15,13 @@
       "when": 1784558260742,
       "tag": "0001_fast_steve_rogers",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1784601103722,
+      "tag": "0002_uneven_rumiko_fujikawa",
+      "breakpoints": true
     }
   ]
 }
