@@ -17,6 +17,7 @@ import {
   extractName,
   extractPersonality,
   extractPractical,
+  generateOnboardingReply,
 } from "./onboarding";
 import { sendToThread } from "./delivery";
 import { applyProfileUpdates } from "./engine";
@@ -91,12 +92,18 @@ export async function handleDirectOnboardingStep(
   const messages = ONBOARDING[variant];
 
   if (step === 0) {
-    // First-ever message: send contact card then the structured intro.
+    // First-ever message: send contact card then the persona-aware intro.
     await sendContactCard(userId, phone);
-    // directDm.intro is a plain string; groupDm.intro is a function -- handle both.
-    const introText = typeof messages.intro === "function"
+    // Compute the template string as the LLM fallback.
+    const introFallback = typeof messages.intro === "function"
       ? (messages.intro as (ctx: string) => string)("the group")
       : (messages.intro as string);
+    const introText = await generateOnboardingReply({
+      step: 0,
+      variant,
+      incomingMessage: content,
+      fallback: introFallback,
+    });
     await sendToThread(threadId, introText);
     await db.update(usersTable).set({ onboardingStatus: "in_progress" }).where(eq(usersTable.id, userId));
     return;
@@ -107,10 +114,24 @@ export async function handleDirectOnboardingStep(
     const name = await extractName(content);
     if (name) {
       await db.update(usersTable).set({ displayName: name }).where(eq(usersTable.id, userId));
-      await sendToThread(threadId, messages.askPractical(name));
+      const reply = await generateOnboardingReply({
+        step: 1,
+        variant,
+        incomingMessage: content,
+        extractedName: name,
+        fallback: messages.askPractical(name),
+      });
+      await sendToThread(threadId, reply);
     } else {
       // Extraction failed (ambiguous reply) -- ask once more, gently.
-      await sendToThread(threadId, "Sorry, what should I call you?");
+      const reply = await generateOnboardingReply({
+        step: 1,
+        variant,
+        incomingMessage: content,
+        extractedName: null,
+        fallback: "Sorry, what should I call you?",
+      });
+      await sendToThread(threadId, reply);
     }
     return;
   }
@@ -125,7 +146,15 @@ export async function handleDirectOnboardingStep(
       });
     }
     const confirmation = buildPracticalConfirmation(budget, dietaryNeeds);
-    await sendToThread(threadId, messages.askPersonality(confirmation));
+    const reply = await generateOnboardingReply({
+      step: 2,
+      variant,
+      incomingMessage: content,
+      extractedBudget: budget,
+      extractedDietaryNeeds: dietaryNeeds,
+      fallback: messages.askPersonality(confirmation),
+    });
+    await sendToThread(threadId, reply);
     return;
   }
 
@@ -135,7 +164,14 @@ export async function handleDirectOnboardingStep(
     await applyProfileUpdates(userId, { preferences });
   }
   const confirmation = buildPersonalityConfirmation(preferences);
-  await sendToThread(threadId, messages.complete(confirmation));
+  const reply = await generateOnboardingReply({
+    step: 3,
+    variant,
+    incomingMessage: content,
+    extractedPreferences: preferences,
+    fallback: messages.complete(confirmation),
+  });
+  await sendToThread(threadId, reply);
   await db.update(usersTable).set({ onboardingStatus: "completed" }).where(eq(usersTable.id, userId));
   void recordActivationEvent(userId, "onboarding_complete");
   // Fire group kickoff recap in case completing this person finishes the roster.

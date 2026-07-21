@@ -108,6 +108,151 @@ export function buildPersonalityConfirmation(preferences: string[]): string {
 }
 
 // ---------------------------------------------------------------------------
+// Persona-aware reply generator
+// ---------------------------------------------------------------------------
+
+/**
+ * Generates an onboarding reply in the bot's persona voice (lowercase-casual,
+ * warm, conversational) using a short LLM completion.
+ *
+ * The generator:
+ *  - Briefly acknowledges any off-script content in `incomingMessage` before
+ *    confirming what was just learned and asking the next field question.
+ *  - Keeps replies to 1-2 short sentences (~40 tokens).
+ *  - Falls back to `fallback` (the existing template string) if the LLM call
+ *    fails, so onboarding never silently breaks.
+ */
+export async function generateOnboardingReply(params: {
+  step: 0 | 1 | 2 | 3;
+  variant: "directDm" | "groupDm";
+  incomingMessage: string;
+  /** Populated after step 1 succeeds (name was extracted). */
+  extractedName?: string | null;
+  /** Populated after step 2 (practical extraction). */
+  extractedBudget?: string | null;
+  extractedDietaryNeeds?: string | null;
+  /** Populated after step 3 (personality extraction). */
+  extractedPreferences?: string[];
+  /** Used by step 0 groupDm intro. */
+  groupContext?: string;
+  privacyUrl?: string | null;
+  /** Template fallback sent verbatim if the LLM call fails. */
+  fallback: string;
+}): Promise<string> {
+  const {
+    step, variant, incomingMessage,
+    extractedName, extractedBudget, extractedDietaryNeeds,
+    extractedPreferences, groupContext, privacyUrl, fallback,
+  } = params;
+
+  try {
+    const stepGuide = buildStepGuide(
+      step, variant,
+      { extractedName, extractedBudget, extractedDietaryNeeds, extractedPreferences, groupContext, privacyUrl },
+    );
+
+    const res = await openai.chat.completions.create({
+      model: CHAT_MODEL,
+      max_completion_tokens: 50,
+      messages: [
+        {
+          role: "system",
+          content:
+            `You are a warm, lowercase-casual AI concierge texting via iMessage. ` +
+            `Write like a real person: sentence fragments ok, minimal punctuation, no emoji unless it genuinely fits. ` +
+            `If the incoming message includes small talk, an off-topic remark, or anything beyond the expected answer, ` +
+            `briefly acknowledge it in a natural, friendly way before the question. ` +
+            `Keep your total reply to 1-2 short sentences.\n\n${stepGuide}`,
+        },
+        { role: "user", content: incomingMessage },
+      ],
+    });
+    logLlmCost("onboarding_reply", CHAT_MODEL, res.usage);
+    const reply = (res.choices[0]?.message?.content ?? "").trim();
+    return reply || fallback;
+  } catch (err) {
+    logger.warn({ err, step }, "onboarding: reply generation LLM call failed; using template fallback");
+    return fallback;
+  }
+}
+
+/**
+ * Returns a concise instruction block for the LLM describing what was just
+ * extracted and what to ask / say next.
+ */
+function buildStepGuide(
+  step: 0 | 1 | 2 | 3,
+  variant: "directDm" | "groupDm",
+  ctx: {
+    extractedName?: string | null;
+    extractedBudget?: string | null;
+    extractedDietaryNeeds?: string | null;
+    extractedPreferences?: string[];
+    groupContext?: string;
+    privacyUrl?: string | null;
+  },
+): string {
+  switch (step) {
+    case 0: {
+      if (variant === "groupDm") {
+        const gc = ctx.groupContext ?? "the group";
+        const privacyNote = ctx.privacyUrl
+          ? `They can also text "mute you" to go quiet or "forget me" to delete their data (details: ${ctx.privacyUrl}).`
+          : `They can also text "mute you" to go quiet or "forget me" to delete their data.`;
+        return (
+          `Task: introduce yourself as an AI concierge that helps coordinate plans for ${gc} ` +
+          `(dinners, hangouts, "where should we all go"). ${privacyNote} ` +
+          `End by asking: what should I call you?`
+        );
+      }
+      return (
+        `Task: introduce yourself as a personal AI concierge that helps plan everyday life ` +
+        `-- dinners, weekend plans, "where should we all go". ` +
+        `End by asking: what should I call you?`
+      );
+    }
+    case 1: {
+      if (ctx.extractedName) {
+        return (
+          `Task: you just learned their name is ${ctx.extractedName}. ` +
+          `Acknowledge it warmly (e.g. "nice, ${ctx.extractedName}"), then ask: ` +
+          `any dietary needs or rough budget range I should keep in mind for suggestions?`
+        );
+      }
+      // Name extraction failed — ask again.
+      return (
+        `Task: you couldn't catch their name from what they sent. ` +
+        `Gently ask again: what should I call you? Keep it light and friendly.`
+      );
+    }
+    case 2: {
+      const parts: string[] = [];
+      if (ctx.extractedBudget) parts.push(ctx.extractedBudget);
+      if (ctx.extractedDietaryNeeds) parts.push(ctx.extractedDietaryNeeds);
+      const learned = parts.length
+        ? `you just heard: ${parts.join(", ")}.`
+        : `they didn't share specific practical needs.`;
+      return (
+        `Task: ${learned} ` +
+        `Briefly confirm what you heard (or note "got it" if nothing specific), then ask: ` +
+        `what's your go-to cuisine or vibe when you want a good night out?`
+      );
+    }
+    case 3: {
+      const prefs = ctx.extractedPreferences ?? [];
+      const learned = prefs.length
+        ? `you just heard their vibe: ${prefs.join(", ")}.`
+        : `they shared some personality/vibe info.`;
+      return (
+        `Task: ${learned} ` +
+        `Briefly confirm what you heard, then tell them they're all set — ` +
+        `you'll factor that in whenever you're planning something. Warm but concise.`
+      );
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // LLM field extraction (small, cheap completions)
 // ---------------------------------------------------------------------------
 

@@ -1,0 +1,49 @@
+# Issues & Fixes: Durable Trip Data, Corrections, and Conversational Scope
+
+**Context:** Follow-up investigation into (a) which trip facts are actually persisted vs. only living in chat history, and (b) the three items confirmed as worth fixing from the prior pass (project field corrections, out-of-scope questions, advice-adjacent hedging).
+
+---
+
+## A. Durable storage gaps — the core of this pass
+
+**A1. Day-by-day itinerary items are never persisted as `Plan` rows. This is the highest-priority fix in this document.**
+*Confirmed:* `createPlanInProject()` in `plans.ts` is fully implemented and correct — and is never called anywhere in the codebase. The only two paths that ever create a `Plan` row are poll-creation and booking-draft-creation (`getOrCreateActivePlan`, called from exactly two sites in `sendblue.ts`). When the agent proposes a full day-by-day agenda, it's composed entirely as prose in the `reply` field — no structured event is ever written.
+*Why this matters more than it looks:* `itinerary.ts`'s renderer, `.ics`/Google Calendar output (`calendar.ts`), weather-contingent plan rescue (`getConfirmedPlansForWeatherCheck`), and the post-plan feedback loop (`getPlansNeedingFeedbackPrompt`) **all read from `Plan` rows with a venue and `scheduledFor` set**. None of that infrastructure can function for a trip's actual itinerary today — it silently does nothing, because there's nothing to act on.
+*Fix:* Add a new structured field to the engine's JSON response (e.g. `itinerary_events: [{ title, day_offset, venue, time_of_day }]`) that the model fills whenever it proposes a day-by-day agenda for an active project. Route it through the **same organizer-approval proposal gate** already used for polls and venue shortlists — an itinerary is exactly the kind of structural, group-visible decision that pipeline exists for, and treating it as a new unguarded path would just reintroduce the same "new proposal type bypasses the gate" issue found in an earlier pass. On approval: for each event, call `createPlanInProject`, compute `scheduledFor` from `project.dateRangeStart + day_offset`, and call `setPlanVenue` when a venue is named. This single change makes calendar output, weather rescue, feedback prompts, and itinerary rendering all functional for trips for the first time.
+
+**A2. Chosen lodging has no durable record beyond cost.**
+*Confirmed:* `projects.lodgingPerPersonCents` stores a number; there is no field for the property name, address, or check-in/check-out dates. Once a group picks "Pulitzer Amsterdam," that fact — arguably the single most-needed piece of information on the day of travel — lives only in chat.
+*Fix:* Add `lodgingPropertyName`, `lodgingAddress` (or a maps link), `lodgingCheckIn`, `lodgingCheckOut` to `projects`. Populate via the existing organizer-sidebar `lodging_action` mechanism — the organizer is typically already naming the property in the same message that gives the cost ("found an Airbnb for $2,400, 8 people"), so this is a parsing extension of an existing path, not a new one.
+
+**A3. `occasions` still has no link to `projects` — the previously-specified fix never shipped.**
+*Confirmed:* no `projectId` column exists on `occasionsTable`. Occasion-scan acceptance still doesn't create or link a project, and an active project doesn't suppress a duplicate occasion ping for the same honoree.
+*Fix:* as originally specified — add the FK, link on acceptance, suppress duplicate pings when an active project already covers the honoree. Flagging again since it's a real, still-open gap, not new scope.
+
+---
+
+## B. Corrections to durable facts once set
+
+**B1. Project dates and honoree can never be corrected via conversation once set.**
+*Confirmed:* `mergeIntoExistingProject()` is explicitly documented as "fills fields that are still null; never overwrites non-null values." No path anywhere — including the organizer sidebar — allows a date or honoree change after the fact.
+*Fix:* Add an explicit organizer-sidebar command for structural corrections (e.g. "change the dates to Aug 5-9," "actually the honoree is Sarah"), parsed the same way `commitment_action`/`task_action`/`ledger_action` already are in the sidebar prompt block. Deliberately restrict this to the organizer sidebar rather than opening it to any group member — a date change affects the whole group and shouldn't be silently overridable by one person in the main thread.
+
+---
+
+## C. Conversational scope — one-line, high-leverage additions
+
+**C1. Out-of-scope questions (trivia, small talk, "how's it going") have no defined behavior.**
+*Fix:* one addition to the persona doc: when asked something unrelated to planning, answer naturally like the friend the persona already describes, then let the conversation return to planning on its own — don't force a pivot back. No new architecture; this is a missing sentence in an existing document.
+
+**C2. Advice-adjacent questions (visas, entry requirements, safety, health) have no hedge.**
+*Fix:* extend the existing capability-boundary block in `tools.ts`/`SYSTEM_PROMPT` (the same ✅/❌ pattern already covering flights and bookings) with an "informational hedge" category: visa/entry requirements, health/safety claims, legal requirements → always caveat and point to an official source, never state as confident fact.
+
+---
+
+## Considered and deliberately left out of this pass
+- **Room/roommate assignment tracking** — a real trip need, but lower-confidence value at MVP scope; revisit if dogfooding surfaces it as a recurring ask rather than building for it speculatively.
+- **Structured parsing of arrival/flight text** (flight number, exact time as queryable fields) — the raw text is already durably stored per-person via `privateInputResponsesTable`, so no data is being lost; it's just not machine-sortable. Acceptable for MVP; the code already acknowledges this tradeoff in a comment.
+
+---
+
+## Suggested order
+A1 (itinerary → Plan rows) first — it's the highest-leverage fix in this document and unblocks four already-built features. Then A2/A3 (schema additions, cheap). Then B1 (organizer-sidebar correction command). C1/C2 last — genuinely trivial, but worth shipping in the same pass since they're one-line additions to documents already being touched.
