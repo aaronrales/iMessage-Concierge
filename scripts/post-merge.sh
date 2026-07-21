@@ -1,13 +1,12 @@
 #!/bin/bash
 set -e
 pnpm install --frozen-lockfile
-# Apply schema migrations idempotently. Targeted additive migrations (individual
-# ALTER TABLE statements) run first so the column exists before the push sync.
-psql "$DATABASE_URL" -f scripts/migrations/add-venue-google-place-id.sql
-psql "$DATABASE_URL" -f scripts/migrations/add-message-delivery-log.sql
-psql "$DATABASE_URL" -f scripts/migrations/add-turn-ratings.sql
-psql "$DATABASE_URL" -f scripts/migrations/add-agent-config.sql
-psql "$DATABASE_URL" -f scripts/migrations/add-thread-admin-notes-user-contact-card.sql
-psql "$DATABASE_URL" -f scripts/migrations/add-venue-population-runs.sql
+# Apply any targeted additive migrations, if present (idempotent .sql files).
+if compgen -G "scripts/migrations/*.sql" > /dev/null; then
+  for f in scripts/migrations/*.sql; do
+    psql "$DATABASE_URL" -f "$f"
+  done
+fi
+# Sync schema from drizzle definitions.
 pnpm --filter db push
 pnpm run typecheck:libs
