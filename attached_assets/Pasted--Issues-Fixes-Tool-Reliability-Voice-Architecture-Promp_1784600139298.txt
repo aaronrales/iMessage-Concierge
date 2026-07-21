@@ -1,0 +1,66 @@
+# Issues & Fixes: Tool Reliability, Voice Architecture, Prompt Precision
+
+**Context:** Follow-up to the Amsterdam trip-planning transcript review. Findings are code-verified against the current repo, not inferred from the transcript alone.
+
+**Guiding principle for this pass:** fix bugs in code where the bug is in code; make deliberate architecture calls where the problem is "which system owns this behavior"; edit/generalize existing prompt rules rather than stacking new ones; only add a genuinely new rule where no existing principle covers the gap.
+
+---
+
+## A. Tool reliability & observability
+
+**A1. Venue/lodging photo cards never appear outside the NYC corpus.**
+*Root cause:* In `tools.ts`, only the corpus-hit branch of `search_venues` pushes into `venueCarouselAccumulator`. The Google-Places-fallback branch of `search_venues` (which fires for every non-NYC destination) and all of `search_lodging` never do.
+*Fix:* Push carousel entries from both remaining paths. Note this is two parts, not one: `searchLodgingViaGooglePlaces`'s FieldMask doesn't request `places.photos` at all, so photo data isn't even being fetched today — add the field and a photo-resolution step (mirroring what the corpus path already does) before wiring the accumulator push.
+
+**A2. `search_lodging` likely has a real retrieval bug, not a coverage gap.**
+*Root cause:* `searchLodgingViaGooglePlaces` combines a free-text `textQuery` with a hard `includedTypes` filter (`hotel`, `lodging`, `extended_stay_hotel`, `bed_and_breakfast`). This can silently zero out results when place classifications don't cleanly match the filter — plausible explanation for "couldn't pull live hotel inventory" on a city (Amsterdam) with excellent underlying Places coverage.
+*Fix:* Test the exact query shape against a live key; if confirmed, loosen or drop `includedTypes` and rely on the text query. Do **not** add a prompt-level "fall back to general knowledge on tool failure" rule as a substitute — that would launder a fixable bug into permanent behavior.
+
+**A3. Tool failures, empty results, and missing config are indistinguishable from the outside.**
+*New addition.* Right now "API key missing," "Google returned a real error," and "Google returned zero results" all collapse into the same `null` → generic apology. Nobody would have noticed A2 without a founder manually testing a conversation.
+*Fix:* Extend the cost-logging wrapper already specified in the pre-pilot plan (Phase C1) — don't build a second tracking system. At the same chokepoint, log per-tool-call outcome (success / empty / error / not-configured) with the tool name, and surface a simple per-tool success-rate rollup on Operations. This turns "a bug we found by accident" into "a dashboard that would have shown red immediately."
+
+**A4. Investigate (don't yet fix): did `search_venues` actually fire for the Amsterdam dinner/activity suggestions?**
+*Why this is a separate item, not folded into A1/A2:* the dinner list had no disclosure language the way the hotel list did, and included a venue ("De Kas") listed twice under different descriptions — consistent with either sloppy paraphrasing of real tool results, or the model answering from general knowledge without calling the tool at all. I don't have confirmation either way.
+*Action:* Check turn logs / the `/turns` dashboard for those specific messages to see whether `search_venues` was invoked. If it wasn't, that's a prompt-level gap worth a targeted fix: strengthen the "call this whenever you're about to suggest a specific place" instruction to explicitly cover multi-item list requests ("give me some dinner options"), not just single-venue mentions. If it was invoked and results were simply paraphrased sloppily, that's a much smaller wording/dedup issue.
+
+---
+
+## B. Voice architecture — one underlying principle, two symptoms
+
+**Principle:** there should be exactly one persona source of truth. Every text-generating path either consumes it directly or explicitly delegates in a documented way — `groupIntro.ts` already does this correctly (its system prompt explicitly says "do NOT add the generic concierge pitch — that is handled separately"). The two items below are the same architectural gap showing up twice.
+
+**B1. Onboarding is a separate, voice-free templated system.**
+*Root cause:* `onboarding.ts`'s replies are hardcoded strings ("Message templates" per its own comment) with zero LLM or persona involvement — which is why onboarding reads as neutral, properly-capitalized English while everything downstream (routed through `engine.ts`) is in the lowercase-casual persona voice. It also explains why a stray "how's it going" got ignored: a template can't react to anything outside the fields it's built to extract.
+*Fix (recommendation, not just an open question):* keep the deterministic step/field-extraction state machine — it's reliable and cheap, and onboarding is the wrong place to introduce tool-loop variance. Replace only the fixed reply *text* with a short, cheap, persona-aware completion scoped to "acknowledge what was just learned, in voice, and ask for the next field" — same cost profile as the extraction calls already made at each step. This fixes the voice split and lets onboarding acknowledge small talk, without giving up the reliability of the state machine.
+
+**B2. The SYSTEM_PROMPT / persona-block contradiction (flagged previously) is still unmerged.**
+*Status:* confirmed still present — `engine.ts`'s hardcoded "warm, concise... never use emojis" sentence still sits alongside the richer, contradicting persona block from `agent-config.ts`. Carried forward from the prior audit, not new, but B1 makes it more urgent: fixing onboarding's voice while leaving this contradiction live just relocates the inconsistency rather than resolving it.
+*Fix:* as previously specified — delete the hardcoded sentence from `SYSTEM_PROMPT`, resolve the emoji/length disagreement in favor of the persona doc's adaptive framing, and fix the unresolved `[BOT NAME]` placeholder before anyone saves Settings again.
+
+---
+
+## C. Prompt-level refinements (edits to existing rules, not new ones)
+
+**C1. "Act on direct requests" doesn't recognize deferral language.**
+*Example:* "I'd love your suggestions" produced another clarifying question instead of action.
+*Fix:* broaden the existing rule's definition of "direct request" to explicitly include affirmative deferrals ("I'd love your suggestions," "you choose," "whatever works") as equivalent triggers. Edit the existing rule text — do not add a new numbered rule alongside it.
+
+**C2. Destination-question phrasing after the destination is already set.**
+*Example:* "want me to start with destination ideas for places to stay" — after Amsterdam was already given as the destination in message one.
+*Fix:* one-line copy correction in the trip-intake prompt block: never use the word "destination" once `project.destination` is set; ask about neighborhood/lodging preference directly.
+
+---
+
+## D. Regression prevention (so this class of bug surfaces automatically next time)
+
+**D1. Add a "non-NYC trip tool coverage" golden scenario.**
+Extends the Emulator scenario suite already specified in the pre-pilot plan (Phase D2). One scenario: create a trip project for a well-known non-NYC city, ask for hotels and dinner options, and assert (a) `search_lodging` and `search_venues` both return non-empty results, (b) both populate the carousel accumulator, (c) no venue name appears twice in one reply. This single scenario would have caught A1, A2, and (if applicable) A4 automatically, and keeps them caught as the code changes.
+
+**D2. Treat B1/B2 as one ticket, not two.**
+When this work is scheduled, don't split "fix onboarding voice" and "merge the persona contradiction" into separate, independently-timed tasks — they're the same underlying fix (single persona source of truth, consumed or explicitly delegated everywhere) and doing them together avoids re-introducing a second inconsistency while fixing the first.
+
+---
+
+## Suggested order
+A1 → A2 (isolated, high-confidence, high visual impact) → A3 (cheap, prevents next-time surprise) → B1+B2 together (the deeper architecture fix) → C1, C2 (trivial) → A4 (investigate whenever convenient) → D1 (write once B/A land, so it locks in the fixed state).
