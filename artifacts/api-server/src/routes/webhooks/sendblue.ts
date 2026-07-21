@@ -10,37 +10,24 @@ import {
   hasGroupBeenIntroduced,
   hasMessageWithHandle,
   isParticipantMuted,
-  loadThreadContext,
   markDisclosureSent,
   markGroupIntroduced,
   threadHasOptedOutParticipant,
   recordMessage,
-  resolveGroupParticipants,
   setParticipantMuted,
-  setThreadHomeCityIfUnset,
 } from "../../lib/agent/context";
 import { checkAndSendGroupKickoffRecap, handleDirectOnboardingStep } from "../../lib/agent/onboardingFlow";
-import { applyProfileUpdates, runAgentTurn } from "../../lib/agent/engine";
 import { scheduleAgentTurn } from "../../lib/agent/debounce";
-import { scrubPrivateProfileLeaks } from "../../lib/agent/privacy";
+import { processConversationTurn } from "../../lib/agent/turnOrchestrator";
 import { sendToThread } from "../../lib/agent/delivery";
 import { detectKnowledgeCommand, handleKnowledgeCommand } from "../../lib/agent/knowledge";
 import { checkPlanningIntentWithLLM, detectMuteCommand, detectSupportFlag, shouldRespondInGroup } from "../../lib/agent/etiquette";
-import {
-  buildPersonalityConfirmation,
-  buildPracticalConfirmation,
-  extractName,
-  extractPersonality,
-  extractPractical,
-  getOnboardingStep,
-  ONBOARDING,
-} from "../../lib/agent/onboarding";
+import { getOnboardingStep, ONBOARDING } from "../../lib/agent/onboarding";
 import {
   clearTiebreak,
   closePollWithWinner,
   computeDatePollWinner,
   countDistinctVoters,
-  createPoll,
   getOpenPoll,
   matchOption,
   matchOptions,
@@ -52,73 +39,35 @@ import {
 import {
   confirmBooking,
   detectApprovalIntent,
-  draftBooking,
   findPendingBookingForApprover,
   rejectBookingRecord,
 } from "../../lib/agent/bookings";
-import { confirmPlan, createPlanInProject, getActivePlan, getOrCreateActivePlan, setPlanScheduledFor, setPlanVenue, setPendingFeedback } from "../../lib/agent/plans";
+import { confirmPlan, getActivePlan, setPlanScheduledFor, setPlanVenue, setPendingFeedback } from "../../lib/agent/plans";
+import { getActiveProjectForOrganizer } from "../../lib/agent/projects";
+import { isCommitmentPoll } from "../../lib/agent/commitmentPoll";
 import {
-  createProjectForThread,
-  getActiveProject,
-  getActiveProjectForOrganizer,
-  getOrganizerForProject,
-} from "../../lib/agent/projects";
-import { instantiateTimeline, recomputeDueDates } from "../../lib/agent/projectTimeline";
-import {
-  recordEstimates,
-  recordPayment,
-  recordCommitment,
-  findThreadMemberByName,
-  getProjectMemberIds,
-  buildPaymentRequestMessage,
-  getLedgerBalances,
-  formatDollars,
-  markRequestSent,
-} from "../../lib/agent/ledger";
-import {
-  createActionItem,
-  closeActionItem,
-  findMemberByNameInThread,
-} from "../../lib/agent/actionItems";
-import { createCommitmentPoll, isCommitmentPoll, COMMITMENT_IN_LABEL, COMMITMENT_OUT_LABEL } from "../../lib/agent/commitmentPoll";
-import {
-  suggestDestinations,
   setProjectDestination,
-  setProjectDestinationPoll,
   getProjectByDestinationPollId,
-  formatDateWindow,
 } from "../../lib/agent/destinationSuggestions";
 import {
-  createProposal,
   getOldestPendingProposal,
-  approveProposal,
   rejectProposal,
-  releaseProposal,
-  buildOrganizerPreviewMessage,
   isApprovalReply,
   isRejectionReply,
   isTiebreakOverride,
-  type ProposalType,
-  type ProposalContent,
-  type PollProposalContent,
-  type VenueShortlistProposalContent,
-  type ItineraryProposalContent,
 } from "../../lib/agent/projectProposals";
-import type { Project } from "@workspace/db";
+import { releasePendingProposalToGroup } from "../../lib/agent/proposalRelease";
+import { sendContactCardIfNeeded } from "../../lib/agent/contactCard";
 import { buildGoogleCalendarLink, buildIcsUrl, describePlanSchedule } from "../../lib/agent/calendar";
-import { buildItinerary, renderItineraryAsText } from "../../lib/agent/itinerary";
-import { buildLodgingLinks, buildLodgingGroupMessage } from "../../lib/agent/lodgingLinks";
-import { startArrivalCollection, buildArrivalMatrix, formatArrivalMatrix } from "../../lib/agent/arrivalMatrix";
-import { scheduleDayBeforeReminder, scheduleNonVoterNudge, enqueueJITExtractionIfNeeded } from "../../lib/agent/scheduler";
+import { buildArrivalMatrix, formatArrivalMatrix } from "../../lib/agent/arrivalMatrix";
+import { scheduleDayBeforeReminder, enqueueJITExtractionIfNeeded } from "../../lib/agent/scheduler";
 import { buildReservationLinks, describeReservationLinks } from "../../lib/agent/bookingLinks";
 import { buildPlanCardMediaUrl } from "../../lib/agent/planCard";
-import { captureOccasion, linkOccasionsToProject } from "../../lib/agent/occasions";
 import { getNow } from "../../lib/agent/clock";
 import { recordPastChoice } from "../../lib/agent/tasteEngine";
 import { findVenueIdByName, logIgnoredVenuesForThread, markVenuePicked, recordVenueFeedback } from "../../lib/agent/venueCorpus/recommendationLog";
 import {
   aggregatePrivateInput,
-  createPrivateInputRequest,
   getOpenPrivateInputRequestForUser,
   isPrivateInputComplete,
   recordPrivateInputResponse,
@@ -126,955 +75,33 @@ import {
 } from "../../lib/agent/privateInput";
 import { feedbackTable, db, plansTable, profilesTable, projectsTable, threadParticipantsTable, threadsTable, usersTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
-import { createGroupWithNumbers, sendCarousel, sendDirectMessage, sendGroupMessage, sendReaction, uploadMediaToSendblue } from "../../lib/sendblue";
+import { sendReaction } from "../../lib/sendblue";
 import { generateGroupIntroMessage } from "../../lib/agent/groupIntro";
-import { fetchGooglePlacesPhotos, findGooglePlaceIdByName, type VenueCarouselEntry } from "../../lib/agent/tools";
 import { logger } from "../../lib/logger";
 import { recordActivationEvent } from "../../lib/agent/activation";
-import { buildPublicUrl, privacyPolicyUrl } from "../../lib/publicUrl";
+import { privacyPolicyUrl } from "../../lib/publicUrl";
 
 // ─── ARCHITECTURE NOTE ───────────────────────────────────────────────────────
 // Pipeline: parse → dedupe → deterministic commands → etiquette gate → agent turn
 //
-// STANDING RULE: Deterministic command handlers (mute, forget, approvals,
-// tiebreak replies, group-creation, arrival, tapbacks, close-it-out) should
-// migrate to lib/agent/commands/ as { matcher, handler } pairs as they are
-// touched. Target: this file ≤600 lines covering only parse → commands →
-// gates → agent turn. Full gate/turn extraction is post-pilot.
+// This file covers only: webhook parse/validation, idempotency claiming,
+// deterministic command handling (mute, support flags, votes, approvals,
+// tiebreak replies, feedback, private input), etiquette gates, and dispatch
+// into the debounced agent turn. Conversation orchestration lives in
+// lib/agent/turnOrchestrator.ts (single spine for group / 1:1 / sidebar
+// turns); structured sidebar actions in lib/agent/organizerActions.ts;
+// proposal release in lib/agent/proposalRelease.ts.
 //
+// STANDING RULE: Deterministic command handlers (mute, forget, approvals,
+// tiebreak replies, arrival, tapbacks, close-it-out) should migrate to
+// lib/agent/commands/ as { matcher, handler } pairs as they are touched.
 // Adding a new hardcoded command? Put it in lib/agent/commands/ instead.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** iMessage tapback text on this poll's own announcement bubbles counts as a vote (Phase 2 texting UX polish). */
 const OBJECTION_PATTERN = /\b(no|nope|wait|hold on|object|objection|don'?t lock|actually)\b/i;
 
-/**
- * Sends a photo carousel for each shortlisted venue after the text reply.
- * Best-effort: any failure for an individual venue is logged and skipped —
- * a broken photo fetch must never delay or block the main reply flow.
- *
- * The carousels are intentionally fire-and-forget (`void`) from the call
- * site: they arrive as a follow-on burst of photos, the way a person might
- * text "here are some pics" right after a recommendation.
- */
-/**
- * Sends contact card to a user on their very first outbound DM. This lets
- * them save the number as "Concierge" so future messages feel personal.
- * Marks-before-send so a crash fails toward under-sending, not double-sending.
- */
-async function sendContactCardIfNeeded(userId: number, phone: string): Promise<void> {
-  const [user] = await db.select({ contactCardSent: usersTable.contactCardSent }).from(usersTable).where(eq(usersTable.id, userId));
-  if (!user || user.contactCardSent) return;
-
-  const base =
-    process.env["PUBLIC_API_URL"] ??
-    (process.env["REPLIT_DEV_DOMAIN"] ? `https://${process.env["REPLIT_DEV_DOMAIN"]}/api-server` : null);
-
-  if (!base) return; // no public URL configured; skip silently
-
-  const vcfUrl = `${base.replace(/\/$/, "")}/concierge.vcf`;
-
-  await db.update(usersTable).set({ contactCardSent: true }).where(eq(usersTable.id, userId));
-  try {
-    await sendDirectMessage({ to: phone, content: "", mediaUrl: vcfUrl });
-  } catch (error) {
-    logger.warn({ error, userId }, "Failed to send contact card; resetting flag");
-    await db.update(usersTable).set({ contactCardSent: false }).where(eq(usersTable.id, userId));
-  }
-}
-
-async function sendVenueCarousels(threadId: number, entries: VenueCarouselEntry[]): Promise<void> {
-  try {
-    const [thread] = await db.select().from(threadsTable).where(eq(threadsTable.id, threadId));
-    if (!thread) return;
-
-    // Photo-first voting: when there is an active poll, send each venue as an
-    // individual photo bubble whose content is the venue name. A tapback
-    // ("Loved "Lilia"") on that bubble is then picked up by parseTapback →
-    // matchOption and registered as a vote — no separate voting UI needed.
-    // When there is no active poll, fall back to the original multi-image carousel.
-    const activePoll = await getOpenPoll(threadId);
-
-    for (const entry of entries) {
-      try {
-        // Prefer the stored Google Place ID; fall back to a text search when the
-        // venue was added to the corpus before the field was populated.
-        let placeId = entry.googlePlaceId;
-        if (!placeId) {
-          placeId = await findGooglePlaceIdByName(entry.venueName);
-          if (!placeId) {
-            logger.debug({ venueName: entry.venueName }, "No Google Place ID found; skipping photo for this venue");
-            continue;
-          }
-        }
-
-        // Voting mode only needs 1 photo; carousel mode needs ≥ 2.
-        const neededPhotos = activePoll ? 1 : 2;
-        const photoUrls = await fetchGooglePlacesPhotos(placeId, 4);
-
-        if (photoUrls.length < 1) {
-          logger.debug({ venueName: entry.venueName }, "No photos returned; skipping this venue");
-          continue;
-        }
-
-        // Google Places photo URIs are short-lived and Google-hosted. Sendblue
-        // requires its own CDN-hosted URLs, so we download and upload each.
-        // Stop uploading once we have enough for the chosen send mode.
-        const uploadedUrls: string[] = [];
-        for (const photoUrl of photoUrls) {
-          const imgResp = await fetch(photoUrl);
-          if (!imgResp.ok) continue;
-          const buffer = Buffer.from(await imgResp.arrayBuffer());
-          const contentType = imgResp.headers.get("content-type") ?? "image/jpeg";
-          const ext = contentType.includes("png") ? "png" : "jpg";
-          const safeName = entry.venueName.replace(/[^a-z0-9]/gi, "-").toLowerCase();
-          const uploaded = await uploadMediaToSendblue(buffer, `${safeName}-${uploadedUrls.length}.${ext}`, contentType);
-          if (uploaded) {
-            uploadedUrls.push(uploaded);
-            if (uploadedUrls.length >= neededPhotos) break;
-          }
-        }
-
-        if (uploadedUrls.length < 1) {
-          logger.debug({ venueName: entry.venueName }, "No photos uploaded; skipping this venue");
-          continue;
-        }
-
-        if (activePoll) {
-          // Individual bubble per venue: tapback on it = vote for that venue.
-          if (thread.isGroup && thread.sendblueGroupId) {
-            await sendGroupMessage({ groupId: thread.sendblueGroupId, content: entry.venueName, mediaUrl: uploadedUrls[0] });
-          } else if (thread.primaryPhoneNumber) {
-            await sendDirectMessage({ to: thread.primaryPhoneNumber, content: entry.venueName, mediaUrl: uploadedUrls[0] });
-          }
-        } else {
-          if (uploadedUrls.length < 2) {
-            logger.debug({ venueName: entry.venueName }, "Insufficient photos for carousel; skipping");
-            continue;
-          }
-          if (thread.isGroup && thread.sendblueGroupId) {
-            await sendCarousel({ groupId: thread.sendblueGroupId, mediaUrls: uploadedUrls });
-          } else if (thread.primaryPhoneNumber) {
-            await sendCarousel({ to: thread.primaryPhoneNumber, mediaUrls: uploadedUrls });
-          }
-        }
-      } catch (error) {
-        logger.warn({ error, venueName: entry.venueName }, "Failed to send venue photo; continuing with remaining venues");
-      }
-    }
-  } catch (error) {
-    // Outer guard: thread lookup or setup failure must never surface as an
-    // unhandled rejection since this function is always called fire-and-forget.
-    logger.warn({ error, threadId }, "sendVenueCarousels failed during setup; skipping all carousels for this turn");
-  }
-}
-
 const router: IRouter = Router();
-
-/**
- * Releases an organizer-approved proposal to the group thread. Mirrors the
- * normal `processAgentTurn` delivery logic for each proposal type.
- */
-async function releasePendingProposalToGroup(
-  proposal: import("@workspace/db").ProjectProposal,
-  groupThreadId: number,
-  organizerThreadId: number,
-): Promise<void> {
-  // Mark released before sending to fail toward under- not double-sending.
-  await releaseProposal(proposal.id);
-  const content = proposal.proposalContent as unknown;
-
-  if (proposal.proposalType === "poll") {
-    const { question, options, kind, optionDates, reply } = content as PollProposalContent;
-    await sendToThread(groupThreadId, reply);
-    const plan = await getOrCreateActivePlan(groupThreadId, question);
-    const { poll, options: pollOptions } = await createPoll(groupThreadId, question, options, {
-      kind,
-      planId: plan.id,
-      optionDates: (optionDates as (string | null)[]).map((d) => {
-        if (!d) return null;
-        const parsed = new Date(d);
-        return Number.isNaN(parsed.getTime()) ? null : parsed;
-      }),
-    });
-    await scheduleNonVoterNudge(groupThreadId, poll.id);
-    for (const [index, option] of pollOptions.entries()) {
-      await sendToThread(groupThreadId, `${index + 1}. ${option.label}`);
-    }
-  } else if (proposal.proposalType === "venue_shortlist") {
-    const { reply, venueCarousels: carousels } = content as unknown as VenueShortlistProposalContent;
-    await sendToThread(groupThreadId, reply);
-    if (Array.isArray(carousels) && carousels.length > 0) {
-      void sendVenueCarousels(groupThreadId, carousels);
-    }
-  } else if (proposal.proposalType === "itinerary") {
-    const { reply, events } = content as unknown as ItineraryProposalContent;
-    await sendToThread(groupThreadId, reply);
-    // Materialise each event as a child Plan of the project so itinerary
-    // rendering, calendar output, weather rescue, and feedback prompts all
-    // find structured rows to act on.
-    const project = await getActiveProject(groupThreadId);
-    for (const event of events) {
-      try {
-        const plan = await createPlanInProject(proposal.projectId, groupThreadId, event.title);
-        if (event.venue) {
-          await setPlanVenue(plan.id, event.venue);
-        }
-        if (project?.dateRangeStart) {
-          const scheduledFor = new Date(
-            project.dateRangeStart.getTime() + event.dayOffset * 24 * 60 * 60 * 1000,
-          );
-          await setPlanScheduledFor(plan.id, scheduledFor);
-        }
-      } catch (err) {
-        logger.error(
-          { err, proposalId: proposal.id, eventTitle: event.title },
-          "Failed to create plan from approved itinerary event; continuing with rest",
-        );
-      }
-    }
-  } else {
-    // message
-    const { reply } = content as { reply: string };
-    await sendToThread(groupThreadId, reply);
-  }
-
-  await sendToThread(organizerThreadId, "Sent to the group.");
-}
-
-/**
- * Agent turn for the organizer's private sidebar 1:1 DM. Injects the active
- * project as sidebar context so the engine is aware of its role. Does NOT
- * gate output through the proposal flow (sidebar replies go straight back to
- * the organizer, not to the group).
- */
-/**
- * Pattern that matches "itinerary" near a link/share intent in the same
- * message. Catches: "send me the itinerary link", "share the itinerary url",
- * "can you send the itinerary", "itinerary link please", etc.
- */
-const ITINERARY_LINK_PATTERN = /itinerary/i;
-const ITINERARY_LINK_INTENT = /\b(link|url|send|share|get|show|give)\b/i;
-
-/**
- * Matches organizer requests to collect arrival details from the group.
- * "collect arrival info", "ask everyone when they're arriving", "gather
- * flight details", "start arrival collection", etc.
- */
-const ARRIVAL_COLLECTION_PATTERN =
-  /\b(collect|gather|ask|start|send|get)\b.{0,40}\barriv|\barriv\w*\s+(info|detail|form|collection|round|survey|\bwhen\b)|\bflight\s+(info|detail|number)/i;
-
-async function processOrganizerSidebarTurn(
-  threadId: number,
-  senderUserId: number,
-  organizerProject: Project,
-): Promise<void> {
-  const context = await loadThreadContext(threadId);
-
-  // ── Itinerary link shortcut ────────────────────────────────────────────────
-  // Detect "send me the itinerary link" style requests without burning an LLM
-  // turn. Reply with the URL directly so the organizer can paste it anywhere.
-  const lastUserMsg = [...context.recentMessages].reverse().find((m) => m.role === "user");
-
-  // ── Arrival collection shortcut ────────────────────────────────────────────
-  // When the organizer asks to collect arrival info, skip the LLM and start
-  // the collection round directly so the intent is never mis-interpreted.
-  if (lastUserMsg && ARRIVAL_COLLECTION_PATTERN.test(lastUserMsg.content)) {
-    try {
-      const groupThreadId = organizerProject.threadId;
-      const requestId = await startArrivalCollection(organizerProject.id, groupThreadId);
-
-      // DM each group participant (excluding the organizer) asking for arrival details.
-      const participants = await db
-        .select({ userId: threadParticipantsTable.userId })
-        .from(threadParticipantsTable)
-        .where(eq(threadParticipantsTable.threadId, groupThreadId));
-
-      // DM every group participant — including the organizer, so that
-      // isPrivateInputComplete (which counts all thread participants) can
-      // reach 100 %. The organizer should share their own arrival info too.
-      let sentCount = 0;
-      for (const { userId } of participants) {
-        try {
-          const [member] = await db
-            .select({ phoneNumber: usersTable.phoneNumber })
-            .from(usersTable)
-            .where(eq(usersTable.id, userId));
-          if (!member?.phoneNumber) continue;
-          const { thread: dmThread } = await findOrCreateDirectThread(member.phoneNumber);
-          await sendToThread(
-            dmThread.id,
-            "Hey! Quick question about the trip: what are your arrival details? Share your flight number and arrival time if flying, or when you expect to arrive if driving.",
-          );
-          sentCount++;
-        } catch (err) {
-          logger.warn({ err, userId }, "Failed to DM participant for arrival collection; continuing");
-        }
-      }
-
-      await sendContactCardIfNeeded(senderUserId, context.thread.primaryPhoneNumber!);
-      await sendToThread(
-        threadId,
-        `On it — I've sent a private message to ${sentCount} group ${sentCount === 1 ? "member" : "members"} asking for their arrival details (request #${requestId}). I'll let you know when everyone responds.`,
-      );
-    } catch (err) {
-      logger.error({ err, projectId: organizerProject.id }, "Failed to start arrival collection");
-      await sendToThread(threadId, "Sorry, something went wrong starting the arrival collection. Try again in a moment.");
-    }
-    return;
-  }
-
-  if (
-    lastUserMsg &&
-    ITINERARY_LINK_PATTERN.test(lastUserMsg.content) &&
-    ITINERARY_LINK_INTENT.test(lastUserMsg.content)
-  ) {
-    const url = buildPublicUrl(`projects/${organizerProject.id}/itinerary`);
-    await sendContactCardIfNeeded(senderUserId, context.thread.primaryPhoneNumber!);
-    if (url) {
-      // Also inline a text preview so the organizer can see there's content.
-      try {
-        const itinerary = await buildItinerary(organizerProject.id);
-        const preview = itinerary ? renderItineraryAsText(itinerary) : null;
-        if (preview) {
-          await sendToThread(threadId, preview);
-        }
-      } catch (err) {
-        logger.warn({ err }, "Failed to render itinerary preview for sidebar link reply");
-      }
-      await sendToThread(threadId, `Here's the itinerary link: ${url}`);
-    } else {
-      await sendToThread(threadId, "I don't have a public URL configured yet. Your ops team can access it at /api/projects/${organizerProject.id}/itinerary on the dashboard server.");
-    }
-    return;
-  }
-
-  const result = await runAgentTurn(context, senderUserId, { sidebarProject: organizerProject });
-
-  if (result.profileUpdates) {
-    await applyProfileUpdates(senderUserId, result.profileUpdates);
-  }
-  if (result.displayName) {
-    await db.update(usersTable).set({ displayName: result.displayName }).where(eq(usersTable.id, senderUserId));
-  }
-
-  // ── Ledger action handling ─────────────────────────────────────────────────
-  if (result.ledgerAction) {
-    const action = result.ledgerAction;
-    const groupThreadId = organizerProject.threadId;
-
-    if (action.kind === "estimate") {
-      // Compute per-person amount.
-      let perPersonCents: number | null = action.perPersonCents;
-      if (!perPersonCents && action.totalCents && action.headcount && action.headcount > 0) {
-        perPersonCents = Math.round(action.totalCents / action.headcount);
-      }
-
-      if (perPersonCents && perPersonCents > 0) {
-        // Create one estimate row per group member (excluding organizer).
-        const memberIds = await getProjectMemberIds(groupThreadId, senderUserId);
-        const entries = await recordEstimates(organizerProject.id, memberIds, perPersonCents, action.note);
-
-        // Load organizer info for payment request messages.
-        const [organizer] = await db
-          .select({ displayName: usersTable.displayName, phoneNumber: usersTable.phoneNumber })
-          .from(usersTable)
-          .where(eq(usersTable.id, senderUserId));
-
-        // Send payment-request DMs to each member 1:1.
-        for (const entry of entries) {
-          if (!entry.userId) continue;
-          try {
-            const [member] = await db
-              .select({ displayName: usersTable.displayName, phoneNumber: usersTable.phoneNumber })
-              .from(usersTable)
-              .where(eq(usersTable.id, entry.userId));
-            if (!member?.phoneNumber) continue;
-
-            const { thread: memberThread } = await findOrCreateDirectThread(member.phoneNumber);
-            const msg = buildPaymentRequestMessage(
-              member.displayName ?? member.phoneNumber,
-              perPersonCents,
-              action.note,
-              organizer?.displayName ?? "the organizer",
-              organizer?.phoneNumber ?? null,
-            );
-            await sendToThread(memberThread.id, msg);
-            await markRequestSent(entry.id);
-          } catch (err) {
-            logger.error({ err, userId: entry.userId }, "Failed to send payment request DM; continuing");
-          }
-        }
-      }
-    } else if (action.kind === "payment_recorded") {
-      if (action.memberName) {
-        const member = await findThreadMemberByName(groupThreadId, action.memberName);
-        if (member) {
-          // If no amount specified, use their full outstanding estimate balance.
-          let amountCents = action.amountCents;
-          if (!amountCents) {
-            const balances = await getLedgerBalances(organizerProject.id);
-            const b = balances.find((bl) => bl.userId === member.userId);
-            amountCents = b?.outstandingCents ?? 0;
-          }
-          if (amountCents > 0) {
-            await recordPayment(organizerProject.id, member.userId, amountCents, action.note);
-            logger.info(
-              { projectId: organizerProject.id, userId: member.userId, amountCents },
-              "Payment recorded via organizer sidebar",
-            );
-          }
-        } else {
-          logger.warn(
-            { projectId: organizerProject.id, memberName: action.memberName },
-            "Could not resolve member name for payment recording",
-          );
-        }
-      }
-    } else if (action.kind === "commitment") {
-      if (action.memberName) {
-        const member = await findThreadMemberByName(groupThreadId, action.memberName);
-        if (member) {
-          await recordCommitment(organizerProject.id, member.userId, action.note);
-        }
-      }
-    }
-  }
-
-  // ── Lodging action handling ───────────────────────────────────────────────
-  // When the organizer reports a lodging cost, build search deep links for
-  // Airbnb/VRBO/Hotels.com and send a per-person split message to the group.
-  // The ledger estimate is expected to be handled via the separate ledgerAction
-  // field the engine sets alongside this one.
-  if (result.lodgingAction) {
-    const action = result.lodgingAction;
-    const groupThreadId = organizerProject.threadId;
-
-    // Compute per-person amount.
-    let perPersonCents = action.perPersonCents;
-    if (!perPersonCents && action.totalCents && action.headcount && action.headcount > 0) {
-      perPersonCents = Math.round(action.totalCents / action.headcount);
-    }
-
-    // Persist per-person cost and property details on the project so the
-    // dashboard and context prompt can display them. Property name and dates
-    // are the most-needed facts on travel day, so they must survive beyond chat.
-    if (perPersonCents && perPersonCents > 0) {
-      try {
-        await db
-          .update(projectsTable)
-          .set({
-            lodgingPerPersonCents: perPersonCents,
-            ...(action.propertyName ? { lodgingPropertyName: action.propertyName } : {}),
-            ...(action.checkIn ? { lodgingCheckIn: new Date(action.checkIn) } : {}),
-            ...(action.checkOut ? { lodgingCheckOut: new Date(action.checkOut) } : {}),
-          })
-          .where(eq(projectsTable.id, organizerProject.id));
-      } catch (err) {
-        logger.warn({ err, projectId: organizerProject.id }, "Failed to store lodging fields; continuing");
-      }
-    }
-
-    // Build lodging search links using the project's destination + date range.
-    // If the organizer provided check-in/out dates in their message, prefer those.
-    const checkIn = action.checkIn ? new Date(action.checkIn) : organizerProject.dateRangeStart;
-    const checkOut = action.checkOut ? new Date(action.checkOut) : organizerProject.dateRangeEnd;
-    const destination = organizerProject.destination ?? "the destination";
-    const guests = action.headcount ?? 8; // fall back to a reasonable default
-
-    const links = buildLodgingLinks({ destination, checkIn, checkOut, guests });
-
-    // Build night count for display.
-    let nights = action.nights;
-    if (!nights && checkIn && checkOut) {
-      nights = Math.round((checkOut.getTime() - checkIn.getTime()) / (24 * 60 * 60 * 1000));
-    }
-
-    const groupMsg = buildLodgingGroupMessage({
-      links,
-      destination,
-      propertyName: action.propertyName,
-      perPersonCents,
-      totalCents: action.totalCents,
-      headcount: action.headcount,
-      nights,
-    });
-
-    try {
-      await sendToThread(groupThreadId, groupMsg);
-      logger.info({ projectId: organizerProject.id, perPersonCents, destination }, "Lodging group message sent");
-    } catch (err) {
-      logger.error({ err, projectId: organizerProject.id }, "Failed to send lodging group message");
-    }
-  }
-
-  // ── Task action handling ────────────────────────────────────────────────────
-  if (result.taskAction) {
-    const action = result.taskAction;
-    const groupThreadId = organizerProject.threadId;
-
-    if (action.kind === "create") {
-      // Resolve owner by name if provided.
-      let ownerUserId: number | null = null;
-      if (action.ownerName) {
-        const member = await findMemberByNameInThread(groupThreadId, action.ownerName);
-        ownerUserId = member?.userId ?? null;
-        if (!ownerUserId) {
-          logger.warn({ projectId: organizerProject.id, ownerName: action.ownerName }, "Could not resolve action item owner by name");
-        }
-      }
-      await createActionItem(organizerProject.id, action.title, ownerUserId, action.dueDate);
-    } else if (action.kind === "close") {
-      const closed = await closeActionItem(organizerProject.id, action.title);
-      if (!closed) {
-        logger.warn({ projectId: organizerProject.id, title: action.title }, "No matching open action item found to close");
-      }
-    }
-  }
-
-  // ── Commitment action handling ─────────────────────────────────────────────
-  if (result.commitmentAction) {
-    const action = result.commitmentAction;
-    const groupThreadId = organizerProject.threadId;
-    try {
-      const pollId = await createCommitmentPoll(
-        organizerProject.id,
-        groupThreadId,
-        action.deadline,
-        action.headcountTarget,
-      );
-
-      // Announce the commitment round to the group thread.
-      const deadlineStr = action.deadline.toLocaleDateString("en-US", {
-        weekday: "long",
-        month: "long",
-        day: "numeric",
-        timeZone: "America/New_York",
-      });
-      const targetLine = action.headcountTarget ? ` (target: ${action.headcountTarget} people)` : "";
-      await sendToThread(
-        groupThreadId,
-        `Are you in for the trip?${targetLine} Reply by ${deadlineStr}.\n1. ${COMMITMENT_IN_LABEL}\n2. ${COMMITMENT_OUT_LABEL}`,
-      );
-
-      logger.info({ projectId: organizerProject.id, pollId, deadline: action.deadline }, "Commitment round opened via organizer sidebar");
-    } catch (err) {
-      logger.error({ err, projectId: organizerProject.id }, "Failed to create commitment poll");
-    }
-  }
-
-  // ── Project correction handling (B1) ──────────────────────────────────────
-  // Deliberately restricted to the organizer sidebar so no single group member
-  // can silently change structural facts (dates, honoree) that affect everyone.
-  if (result.projectCorrectionAction) {
-    const action = result.projectCorrectionAction;
-    const patch: Partial<typeof projectsTable.$inferInsert> = {};
-    if (action.dateRangeStart) patch.dateRangeStart = action.dateRangeStart;
-    if (action.dateRangeEnd) patch.dateRangeEnd = action.dateRangeEnd;
-    if (action.honoree) patch.honoree = action.honoree;
-    if (Object.keys(patch).length > 0) {
-      try {
-        await db
-          .update(projectsTable)
-          .set(patch)
-          .where(eq(projectsTable.id, organizerProject.id));
-        // Recompute timeline due dates whenever dates change.
-        if (action.dateRangeStart || action.dateRangeEnd) {
-          const updated = await getActiveProject(organizerProject.threadId);
-          if (updated) await recomputeDueDates(updated);
-        }
-        logger.info(
-          { projectId: organizerProject.id, patch },
-          "Project structural facts corrected via organizer sidebar",
-        );
-      } catch (err) {
-        logger.error({ err, projectId: organizerProject.id }, "Failed to apply project correction; continuing");
-      }
-    }
-  }
-
-  await sendContactCardIfNeeded(senderUserId, context.thread.primaryPhoneNumber!);
-  await sendToThread(threadId, result.reply);
-}
-
-/**
- * Runs the main conversation engine for a thread and delivers the result.
- * Invoked from a debounced timer (see `scheduleAgentTurn`) rather than
- * inline in the webhook handler, so a burst of rapid-fire messages collapses
- * into a single agent turn instead of one per message. Because messages are
- * persisted before this runs, the batched turn sees the full burst via its
- * normal transcript load.
- */
-async function processAgentTurn(threadId: number, senderUserId: number): Promise<void> {
-  const context = await loadThreadContext(threadId);
-  const isGroup = context.thread.isGroup;
-
-  // ── In-thread itinerary request ────────────────────────────────────────────
-  // When an organizer (or group member) asks "make us an itinerary" in a group
-  // thread that has an active project, skip the LLM and send a structured text
-  // summary directly. This is faster, deterministic, and always up-to-date.
-  if (isGroup && ITINERARY_LINK_PATTERN.test(context.recentMessages.at(-1)?.content ?? "")) {
-    const activeProject = await getActiveProject(threadId);
-    if (activeProject) {
-      try {
-        const itinerary = await buildItinerary(activeProject.id);
-        if (itinerary && itinerary.days.length > 0) {
-          const text = renderItineraryAsText(itinerary);
-          await sendToThread(threadId, text);
-          const url = buildPublicUrl(`projects/${activeProject.id}/itinerary`);
-          if (url) {
-            await sendToThread(threadId, `Full itinerary: ${url}`);
-          }
-          return;
-        }
-        // Fall through to LLM if no scheduled events yet — it can respond naturally.
-      } catch (err) {
-        logger.warn({ err, threadId }, "Failed to build itinerary for in-thread request; falling through to LLM");
-      }
-    }
-  }
-
-  const result = await runAgentTurn(context, senderUserId);
-
-  if (result.profileUpdates) {
-    await applyProfileUpdates(senderUserId, result.profileUpdates);
-  }
-
-  if (result.displayName) {
-    await db.update(usersTable).set({ displayName: result.displayName }).where(eq(usersTable.id, senderUserId));
-  }
-
-  if (result.onboardingComplete !== null) {
-    await db
-      .update(usersTable)
-      .set({ onboardingStatus: result.onboardingComplete ? "completed" : "in_progress" })
-      .where(eq(usersTable.id, senderUserId));
-
-    if (result.onboardingComplete) {
-      void recordActivationEvent(senderUserId, "onboarding_complete");
-      await checkAndSendGroupKickoffRecap(senderUserId);
-    }
-  }
-
-  if (result.homeCity && isGroup && !context.thread.homeCity) {
-    // Scoped to the thread the mention actually happened in -- applying it
-    // to every group the sender belongs to risked mislabeling an unrelated
-    // group (e.g. a one-off trip-planning thread) with a city that only
-    // made sense in this conversation.
-    await setThreadHomeCityIfUnset(threadId, result.homeCity);
-  }
-
-  // Project creation must run before poll/booking handling so an event
-  // coordinated in the same turn hangs off a project child plan, not a
-  // standalone one.
-  if (result.project) {
-    const honoreeUser = result.project.honoree
-      ? context.participants.find(
-          (p) => p.user.displayName?.toLowerCase() === result.project?.honoree?.toLowerCase(),
-        )?.user
-      : undefined;
-    const { project, created } = await createProjectForThread({
-      threadId,
-      type: result.project.type,
-      honoree: result.project.honoree,
-      honoreeUserId: honoreeUser?.id ?? null,
-      dateRangeStart: result.project.dateRangeStart,
-      dateRangeEnd: result.project.dateRangeEnd,
-      // Sender becomes the default organizer; they can hand off via conversation later.
-      organizerUserId: senderUserId,
-    });
-    logger.info(
-      { threadId, projectId: project.id, type: project.type, created },
-      created ? "Project created from conversation" : "Project details merged into existing active project",
-    );
-
-    // Timeline: instantiate steps on first creation; recompute due dates when
-    // the date range is updated via a subsequent conversation turn.
-    if (created) {
-      await instantiateTimeline(project);
-    } else if (result.project.dateRangeStart || result.project.dateRangeEnd) {
-      await recomputeDueDates(project);
-    }
-
-    // A3: Link any unlinked occasions in this thread that match the project's
-    // honoree so the daily occasion-scan suppression works even for name-only
-    // matches (where honoreeUserId is null on both sides).
-    if (result.project.honoree || honoreeUser?.id) {
-      void linkOccasionsToProject(
-        project.id,
-        threadId,
-        honoreeUser?.id ?? null,
-        result.project.honoree,
-      ).catch((err) =>
-        logger.warn({ err, projectId: project.id }, "linkOccasionsToProject failed; continuing"),
-      );
-    }
-  }
-
-  // ── Destination shortlist request ──────────────────────────────────────────
-  // When the agent sets `destination_suggestion_request: true` for a trip
-  // project with no destination, run a web-search call to produce 3–5
-  // candidates and immediately send a destination choice poll to the group.
-  // Destination polls bypass the organizer approval gate — they are the
-  // framing question, not a downstream event choice.
-  if (result.destinationSuggestionRequest && isGroup) {
-    const tripProject = await getActiveProject(threadId);
-    if (tripProject && tripProject.type === "trip" && !tripProject.destination) {
-      // Gather context for the suggestion call.
-      const budgets = context.participants
-        .map((p) => p.profile?.budget)
-        .filter((b): b is string => typeof b === "string" && b.length > 0);
-      const budget = budgets.length > 0 ? budgets[0] : null;
-      const dateWindow = formatDateWindow(tripProject.dateRangeStart, tripProject.dateRangeEnd);
-      const originCity = context.thread.homeCity ?? null;
-      const groupSize = context.participants.length;
-
-      const shortlist = await suggestDestinations(budget, dateWindow, originCity, groupSize);
-      if (shortlist && shortlist.candidates.length >= 2) {
-        // Create the destination poll. No plan anchor — destination selection
-        // is a project-level decision, not tied to a specific child plan.
-        const pollQuestion = "Where are we going?";
-        const pollOptions = shortlist.candidates.map((c) => c.label);
-        const { poll, options } = await createPoll(threadId, pollQuestion, pollOptions, { kind: "choice" });
-
-        // Schedule the same non-voter nudge + tiebreak announce/lock pipeline used by
-        // all other choice polls — without this, a destination poll with partial votes
-        // stalls forever and the scheduler tiebreak-lock path is unreachable.
-        await scheduleNonVoterNudge(threadId, poll.id);
-
-        // Record which poll is the destination poll on the project.
-        await setProjectDestinationPoll(tripProject.id, poll.id);
-
-        // Announce with the intro line and each candidate + vibe note.
-        await sendToThread(threadId, shortlist.intro);
-        for (const [index, candidate] of shortlist.candidates.entries()) {
-          const option = options[index];
-          if (!option) continue;
-          await sendToThread(threadId, `${index + 1}. ${candidate.label} — ${candidate.vibeNote} (${candidate.roughCostContext})`);
-        }
-        await sendToThread(threadId, "Tap/reply with your pick. Everyone vote and I'll lock it in.");
-        void options; // options already used above
-        logger.info(
-          { projectId: tripProject.id, pollId: poll.id, candidateCount: shortlist.candidates.length },
-          "Destination shortlist poll sent",
-        );
-      } else {
-        logger.warn({ projectId: tripProject.id }, "Destination suggestion returned no usable candidates; sending fallback reply");
-        await sendToThread(threadId, result.reply);
-      }
-      return;
-    }
-  }
-
-  // ── Organizer approval gate ─────────────────────────────────────────────────
-  // If this group thread has an active project with an organizer, hold polls
-  // and venue shortlists in the pending_project_proposals queue for organizer
-  // review before releasing them to the group. The organizer gets a DM preview
-  // and approves/rejects from their private sidebar.
-  if (isGroup) {
-    const gateProject = await getActiveProject(threadId);
-    if (gateProject?.organizerUserId && (result.poll || (result.venueCarousels?.length ?? 0) > 0 || (result.itineraryEvents?.length ?? 0) > 0)) {
-      const type: ProposalType = result.poll
-        ? "poll"
-        : (result.itineraryEvents?.length ?? 0) > 0
-          ? "itinerary"
-          : "venue_shortlist";
-      const scrubbed = scrubPrivateProfileLeaks(result.reply, context.participants);
-
-      let proposalContent: ProposalContent;
-      if (result.poll) {
-        proposalContent = {
-          question: result.poll.question,
-          options: result.poll.options,
-          kind: result.poll.kind,
-          optionDates: result.poll.optionDates.map((d) => d?.toISOString() ?? null),
-          reply: scrubbed,
-        } satisfies PollProposalContent;
-      } else if (result.itineraryEvents && result.itineraryEvents.length > 0) {
-        proposalContent = {
-          reply: scrubbed,
-          events: result.itineraryEvents,
-        } satisfies ItineraryProposalContent;
-      } else {
-        proposalContent = {
-          reply: scrubbed,
-          venueCarousels: result.venueCarousels ?? [],
-        } satisfies VenueShortlistProposalContent;
-      }
-
-      // Persist before sending DM (fail toward under-not double-sending).
-      await createProposal(gateProject.id, threadId, type, proposalContent);
-
-      const organizer = await getOrganizerForProject(gateProject);
-      if (organizer?.phoneNumber) {
-        const { thread: orgThread } = await findOrCreateDirectThread(organizer.phoneNumber);
-        await sendToThread(orgThread.id, buildOrganizerPreviewMessage(type, proposalContent));
-      }
-
-      // Acknowledge to the group without revealing the draft content.
-      await sendToThread(threadId, "On it — checking a few things, back shortly.");
-      return; // Skip normal poll creation, reply send, and carousels.
-    }
-  }
-  // ── End organizer gate ──────────────────────────────────────────────────────
-
-  if (result.poll && isGroup) {
-    const plan = await getOrCreateActivePlan(threadId, result.poll.question);
-    const { poll, options } = await createPoll(threadId, result.poll.question, result.poll.options, {
-      kind: result.poll.kind,
-      planId: plan.id,
-      optionDates: result.poll.optionDates,
-    });
-    // Tiebreaker persona (and reliable tapback voting) apply to any poll
-    // that can stall, not just date polls -- schedule the escalation path
-    // for both kinds.
-    await scheduleNonVoterNudge(threadId, poll.id);
-
-    // Each option gets its own bubble so a tapback on it is unambiguous
-    // (see `parseTapback` -- iMessage quotes the whole reacted message).
-    for (const [index, option] of options.entries()) {
-      await sendToThread(threadId, `${index + 1}. ${option.label}`);
-    }
-  }
-
-  if (result.occasion) {
-    const aboutUser = result.occasion.aboutName
-      ? context.participants.find(
-          (p) => p.user.displayName?.toLowerCase() === result.occasion?.aboutName?.toLowerCase(),
-        )?.user
-      : undefined;
-    await captureOccasion({
-      threadId,
-      aboutUserId: aboutUser?.id ?? null,
-      mentionedByUserId: senderUserId,
-      kind: result.occasion.kind,
-      label: result.occasion.label,
-      occasionDate: result.occasion.date,
-    });
-    // TODO: on acceptance, create project + link via occasions.projectId
-    // When the organizer replies "yes" to an occasion reminder, create a project
-    // and then: await db.update(occasionsTable).set({ projectId: newProject.id }).where(eq(occasionsTable.id, occasion.id));
-  }
-
-  if (result.privateQuestion && isGroup) {
-    const plan = await getActivePlan(threadId);
-    const request = await createPrivateInputRequest(threadId, plan?.id ?? null, result.privateQuestion);
-    for (const { user } of context.participants) {
-      if (!user.phoneNumber) continue;
-      const { thread: dmThread } = await findOrCreateDirectThread(user.phoneNumber);
-      await sendToThread(dmThread.id, result.privateQuestion);
-    }
-    // Track which request each DM thread is currently answering isn't
-    // needed explicitly -- `getOpenPrivateInputRequestForUser` resolves it
-    // by joining through thread_participants, since a request is keyed to
-    // the group thread and every participant is a member of it.
-    void request;
-  }
-
-  if (result.bookingDraft) {
-    const approverPhone = result.bookingDraft.approverPhoneNumber;
-    const approver = approverPhone ? (await findOrCreateUser(approverPhone)).user : { id: senderUserId };
-    const plan = await getOrCreateActivePlan(threadId, result.bookingDraft.title);
-    const booking = await draftBooking({
-      threadId,
-      planId: plan.id,
-      createdByUserId: senderUserId,
-      approverUserId: approver.id,
-      title: result.bookingDraft.title,
-      details: result.bookingDraft.details,
-    });
-
-    if (approver.id !== senderUserId) {
-      const { thread: approverThread } = await findOrCreateDirectThread(approverPhone as string);
-      await sendToThread(
-        approverThread.id,
-        `Heads up -- can you approve this booking: "${booking.title}"? Reply YES to confirm or NO to skip it.`,
-      );
-    }
-  }
-
-  // ── Instant group creation (1:1 only) ───────────────────────────────────────
-  // When the user asks the concierge to start a group with specific people,
-  // try to create it via Sendblue. Fall back to manual instructions if
-  // Sendblue doesn't support programmatic group creation (undocumented path).
-  if (result.groupCreationRequest && !isGroup) {
-    const gcr = result.groupCreationRequest;
-
-    // Safe, scoped resolution: explicit phones always flow through; name lookup
-    // is constrained to the sender's shared contacts and requires a unique match.
-    const { resolvedPhones, ambiguousNames, unknownNames } = await resolveGroupParticipants(
-      senderUserId,
-      gcr.participantNames,
-      gcr.participantPhones,
-    );
-
-    if (ambiguousNames.length > 0) {
-      // Multiple contacts share the same name — can't pick safely.
-      await sendToThread(
-        threadId,
-        `I found multiple contacts named ${ambiguousNames.join(" and ")} -- could you share their phone number(s) directly so I get the right person?`,
-      );
-    } else if (unknownNames.length > 0 && resolvedPhones.length === 0) {
-      // No phones at all — can't create any group.
-      await sendToThread(
-        threadId,
-        `I don't have contact info for ${unknownNames.join(" and ")} yet -- add me to a new iMessage thread with them and I'll take it from there.`,
-      );
-    } else if (resolvedPhones.length > 0) {
-      // Always include the requesting user so they're in the group they asked
-      // for -- omitting them would make the thread invisible to the person
-      // who triggered the creation.
-      const senderPhone = context.participants.find((p) => p.user.id === senderUserId)?.user.phoneNumber;
-      if (senderPhone && !resolvedPhones.includes(senderPhone)) {
-        resolvedPhones.push(senderPhone);
-      }
-
-      // Attempt Sendblue group creation with all phones we have.
-      const introMessage = `Hi all -- I'm an AI concierge${gcr.occasion ? ` helping plan ${gcr.occasion}` : ""}. I'll help coordinate things here (polls, bookings, reminders).`;
-      const newGroupId = await createGroupWithNumbers(resolvedPhones, introMessage);
-
-      if (newGroupId) {
-        // Sendblue created the group -- record it in our DB.
-        const { thread: newGroupThread } = await findOrCreateGroupThread(newGroupId, resolvedPhones);
-        await markGroupIntroduced(newGroupThread.id);
-        const missingNote = unknownNames.length > 0
-          ? ` (I couldn't add ${unknownNames.join(" and ")} -- you may need to add them manually.)`
-          : "";
-        await sendToThread(threadId, `Done -- I've started the group and introduced myself. Jump in there when you're ready!${missingNote}`);
-      } else {
-        // Sendblue doesn't support programmatic creation; give manual instructions.
-        const names = gcr.participantNames.join(" and ");
-        await sendToThread(
-          threadId,
-          `I can't create the group directly -- add me to a new iMessage thread with ${names || "them"} and I'll take it from there.`,
-        );
-      }
-    }
-    // Skip the LLM reply when a group creation was attempted -- the action
-    // messages above are the response.
-    return;
-  }
-
-  // Preference privacy enforcement: private profile fields may have silently
-  // shaped this reply, but they must never surface verbatim in group-visible
-  // text. 1:1 threads skip this -- there's nothing to leak the info to.
-  const outgoingReply = isGroup ? scrubPrivateProfileLeaks(result.reply, context.participants) : result.reply;
-
-  // Send the concierge contact card as a media attachment on the very first
-  // outbound 1:1 DM so the user can save the number. 1:1 only — group threads
-  // don't need it and Sendblue may reject contact cards on group sends.
-  if (!isGroup && context.thread.primaryPhoneNumber) {
-    await sendContactCardIfNeeded(senderUserId, context.thread.primaryPhoneNumber);
-  }
-
-  await sendToThread(threadId, outgoingReply);
-
-  // Photo carousels follow the text recommendation as a burst of swipeable
-  // images. Fire-and-forget: a photo hiccup must never delay the text reply.
-  if (result.venueCarousels?.length) {
-    void sendVenueCarousels(threadId, result.venueCarousels);
-  }
-}
 
 router.post("/webhooks/sendblue/:secret", async (req, res): Promise<void> => {
   const params = ReceiveSendblueWebhookParams.safeParse(req.params);
@@ -1544,10 +571,10 @@ router.post("/webhooks/sendblue/:secret", async (req, res): Promise<void> => {
         }
 
         // Fall through: organizer sidebar turn with project context injected.
-        // The sidebar turn function skips proposal gating (organizer replies are
-        // 1:1, not group-visible) and injects the project into the system prompt.
+        // The sidebar turn skips proposal gating (organizer replies are 1:1,
+        // not group-visible) and injects the project into the system prompt.
         scheduleAgentTurn(threadId, senderUserId, event.content, (tid, uid) =>
-          processOrganizerSidebarTurn(tid, uid, organizerProject),
+          processConversationTurn(tid, uid, { sidebarProject: organizerProject }),
         );
         res.status(200).json({ received: true });
         return;
@@ -1805,7 +832,7 @@ router.post("/webhooks/sendblue/:secret", async (req, res): Promise<void> => {
     // 6. Otherwise, hand off to the (debounced) main conversation engine and
     // ack immediately -- the reply is delivered asynchronously once the
     // debounce window closes, so a burst of messages only triggers one turn.
-    scheduleAgentTurn(threadId, senderUserId, event.content, processAgentTurn);
+    scheduleAgentTurn(threadId, senderUserId, event.content, (tid, uid) => processConversationTurn(tid, uid));
 
     res.status(200).json({ received: true });
   } catch (error) {
