@@ -1,5 +1,6 @@
 import { describe, it, beforeAll, afterAll, expect } from "vitest";
 import { runEmulatorTurn } from "../lib/agent/runEmulatorTurn";
+import type { VenueCarouselEntry } from "../lib/agent/tools";
 import { advanceClock, setTestClock } from "../lib/agent/clock";
 
 export interface ScenarioUser { id: number; phoneNumber: string; displayName: string; }
@@ -8,6 +9,8 @@ export interface TurnAssertion {
   contains?: string; notContains?: string; regex?: RegExp;
   sentToThread?: (primaryThread: number, users: Record<string, ScenarioUser>) => number;
   dbExpect?: (args: { threadId: number; users: Record<string, ScenarioUser> }) => Promise<void>;
+  /** Assert on the carousel accumulator produced by this turn's tool calls. */
+  carouselExpect?: (entries: VenueCarouselEntry[]) => void;
   advanceClockMs?: number;
 }
 export interface ScenarioTurn { from: string; text: string; expect?: TurnAssertion[]; }
@@ -31,6 +34,7 @@ export function scenario(fixture: ScenarioFixture): void {
           if (a.regex) expect(result.messages.map((m) => m.content).join("\n")).toMatch(a.regex);
           if (a.sentToThread) { const tid = a.sentToThread(seed.threadId, seed.users); expect(result.messages.some((m) => m.threadId === tid)).toBe(true); }
           if (a.dbExpect) await a.dbExpect({ threadId: seed.threadId, users: seed.users });
+          if (a.carouselExpect) a.carouselExpect(result.venueCarousels);
           if (a.advanceClockMs) advanceClock(a.advanceClockMs);
         }
       });
