@@ -72,6 +72,15 @@ export const projectsTable = pgTable("projects", {
    * dashboard to show the per-person cost without recomputing from the ledger.
    */
   lodgingPerPersonCents: integer("lodging_per_person_cents"),
+  /**
+   * Lodging property details set when the organizer reports a chosen property
+   * ("Found an Airbnb for $2,400, 4 nights, 8 people" / "we're staying at the
+   * Pulitzer Amsterdam"). The property name is the single most-needed piece of
+   * information on travel day, so it must survive beyond the chat transcript.
+   */
+  lodgingPropertyName: text("lodging_property_name"),
+  lodgingCheckIn: timestamp("lodging_check_in", { withTimezone: true }),
+  lodgingCheckOut: timestamp("lodging_check_out", { withTimezone: true }),
   closeoutPromptSentAt: timestamp("closeout_prompt_sent_at", { withTimezone: true }),
   closedAt: timestamp("closed_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

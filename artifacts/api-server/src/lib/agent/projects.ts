@@ -271,11 +271,20 @@ export async function buildProjectPromptSummary(project: Project, childPlans: Pl
         : "dates not settled yet";
 
   const destinationNote = project.destination ? ` Destination: ${project.destination}.` : " Destination: not yet decided.";
+  const lodgingNote = project.lodgingPropertyName
+    ? (() => {
+        const parts = [`Lodging: ${project.lodgingPropertyName}`];
+        if (project.lodgingCheckIn && project.lodgingCheckOut) {
+          parts.push(`(${fmt(project.lodgingCheckIn)} – ${fmt(project.lodgingCheckOut)})`);
+        }
+        return ` ${parts.join(" ")}.`;
+      })()
+    : "";
 
   const header = [
     `Active project in this thread: ${formatProjectType(project.type)}`,
     project.honoree ? `for ${project.honoree}` : null,
-    `(${range}, status: ${project.status}).${destinationNote}`,
+    `(${range}, status: ${project.status}).${destinationNote}${lodgingNote}`,
   ]
     .filter(Boolean)
     .join(" ");

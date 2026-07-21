@@ -1,4 +1,4 @@
-import { and, eq, isNull, lte } from "drizzle-orm";
+import { and, eq, ilike, isNull, lte } from "drizzle-orm";
 import { db, occasionsTable, type Occasion } from "@workspace/db";
 
 export type OccasionKind = "birthday" | "anniversary" | "visit" | "other";
@@ -47,4 +47,49 @@ export async function getOccasionsDueForReminder(windowMs: number): Promise<Occa
 
 export async function markOccasionReminded(occasionId: number): Promise<void> {
   await db.update(occasionsTable).set({ remindedAt: new Date() }).where(eq(occasionsTable.id, occasionId));
+}
+
+/**
+ * Links any unlinked occasions in this thread that match the project's honoree
+ * to the project. This is what makes the occasion-scan skip logic work for
+ * name-only matches (where honoreeUserId is null on both sides): once linked,
+ * `occasion.projectId !== null` suppresses duplicate reminders.
+ *
+ * Runs two passes: exact user-ID match (precise), then honoree-name substring
+ * match against the occasion label (fuzzy, catches "Sarah's birthday" when
+ * honoreeName is "Sarah"). Both are restricted to the project's thread so
+ * occasions from unrelated threads are never touched.
+ */
+export async function linkOccasionsToProject(
+  projectId: number,
+  threadId: number,
+  honoreeUserId: number | null,
+  honoreeName: string | null,
+): Promise<void> {
+  // Pass 1: exact user-ID match.
+  if (honoreeUserId !== null) {
+    await db
+      .update(occasionsTable)
+      .set({ projectId })
+      .where(
+        and(
+          eq(occasionsTable.threadId, threadId),
+          isNull(occasionsTable.projectId),
+          eq(occasionsTable.aboutUserId, honoreeUserId),
+        ),
+      );
+  }
+  // Pass 2: honoree name substring match against the occasion label.
+  if (honoreeName) {
+    await db
+      .update(occasionsTable)
+      .set({ projectId })
+      .where(
+        and(
+          eq(occasionsTable.threadId, threadId),
+          isNull(occasionsTable.projectId),
+          ilike(occasionsTable.label, `%${honoreeName}%`),
+        ),
+      );
+  }
 }

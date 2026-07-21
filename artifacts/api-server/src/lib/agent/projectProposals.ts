@@ -15,7 +15,7 @@ import { db, projectProposalsTable, type ProjectProposal } from "@workspace/db";
  *   message:         { reply }
  */
 
-export type ProposalType = "poll" | "venue_shortlist" | "message";
+export type ProposalType = "poll" | "venue_shortlist" | "message" | "itinerary";
 
 export interface PollProposalContent {
   question: string;
@@ -35,7 +35,13 @@ export interface MessageProposalContent {
   reply: string;
 }
 
-export type ProposalContent = PollProposalContent | VenueShortlistProposalContent | MessageProposalContent;
+export interface ItineraryProposalContent {
+  reply: string;
+  /** Events the agent is proposing, in day_offset order. */
+  events: { title: string; dayOffset: number; venue: string | null; timeOfDay: string | null }[];
+}
+
+export type ProposalContent = PollProposalContent | VenueShortlistProposalContent | MessageProposalContent | ItineraryProposalContent;
 
 /** Stores a new pending proposal. Must be called before sending the organizer DM. */
 export async function createProposal(
@@ -118,6 +124,21 @@ export function buildOrganizerPreviewMessage(type: ProposalType, content: Propos
     return (
       `Here's what I'd send to the group -- approve or give me feedback:\n\n` +
       `"${v.reply}"${names ? `\n\n(Venues: ${names})` : ""}`
+    );
+  }
+  if (type === "itinerary") {
+    const it = content as ItineraryProposalContent;
+    const eventLines = it.events
+      .map((e) => {
+        const parts: string[] = [`  Day ${e.dayOffset + 1}: ${e.title}`];
+        if (e.venue) parts.push(`at ${e.venue}`);
+        if (e.timeOfDay) parts.push(`(${e.timeOfDay})`);
+        return parts.join(" ");
+      })
+      .join("\n");
+    return (
+      `Here's the itinerary I'd propose to the group — approve (reply "yes") or give me feedback:\n\n` +
+      `"${it.reply}"\n\nEvents:\n${eventLines}`
     );
   }
   // message

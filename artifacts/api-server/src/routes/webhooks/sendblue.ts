@@ -56,7 +56,7 @@ import {
   findPendingBookingForApprover,
   rejectBookingRecord,
 } from "../../lib/agent/bookings";
-import { confirmPlan, getActivePlan, getOrCreateActivePlan, setPlanScheduledFor, setPlanVenue, setPendingFeedback } from "../../lib/agent/plans";
+import { confirmPlan, createPlanInProject, getActivePlan, getOrCreateActivePlan, setPlanScheduledFor, setPlanVenue, setPendingFeedback } from "../../lib/agent/plans";
 import {
   createProjectForThread,
   getActiveProject,
@@ -102,6 +102,7 @@ import {
   type ProposalContent,
   type PollProposalContent,
   type VenueShortlistProposalContent,
+  type ItineraryProposalContent,
 } from "../../lib/agent/projectProposals";
 import type { Project } from "@workspace/db";
 import { buildGoogleCalendarLink, buildIcsUrl, describePlanSchedule } from "../../lib/agent/calendar";
@@ -111,7 +112,7 @@ import { startArrivalCollection, buildArrivalMatrix, formatArrivalMatrix } from 
 import { scheduleDayBeforeReminder, scheduleNonVoterNudge, enqueueJITExtractionIfNeeded } from "../../lib/agent/scheduler";
 import { buildReservationLinks, describeReservationLinks } from "../../lib/agent/bookingLinks";
 import { buildPlanCardMediaUrl } from "../../lib/agent/planCard";
-import { captureOccasion } from "../../lib/agent/occasions";
+import { captureOccasion, linkOccasionsToProject } from "../../lib/agent/occasions";
 import { getNow } from "../../lib/agent/clock";
 import { recordPastChoice } from "../../lib/agent/tasteEngine";
 import { findVenueIdByName, logIgnoredVenuesForThread, markVenuePicked, recordVenueFeedback } from "../../lib/agent/venueCorpus/recommendationLog";
@@ -305,6 +306,32 @@ async function releasePendingProposalToGroup(
     await sendToThread(groupThreadId, reply);
     if (Array.isArray(carousels) && carousels.length > 0) {
       void sendVenueCarousels(groupThreadId, carousels);
+    }
+  } else if (proposal.proposalType === "itinerary") {
+    const { reply, events } = content as unknown as ItineraryProposalContent;
+    await sendToThread(groupThreadId, reply);
+    // Materialise each event as a child Plan of the project so itinerary
+    // rendering, calendar output, weather rescue, and feedback prompts all
+    // find structured rows to act on.
+    const project = await getActiveProject(groupThreadId);
+    for (const event of events) {
+      try {
+        const plan = await createPlanInProject(proposal.projectId, groupThreadId, event.title);
+        if (event.venue) {
+          await setPlanVenue(plan.id, event.venue);
+        }
+        if (project?.dateRangeStart) {
+          const scheduledFor = new Date(
+            project.dateRangeStart.getTime() + event.dayOffset * 24 * 60 * 60 * 1000,
+          );
+          await setPlanScheduledFor(plan.id, scheduledFor);
+        }
+      } catch (err) {
+        logger.error(
+          { err, proposalId: proposal.id, eventTitle: event.title },
+          "Failed to create plan from approved itinerary event; continuing with rest",
+        );
+      }
     }
   } else {
     // message
@@ -529,12 +556,22 @@ async function processOrganizerSidebarTurn(
       perPersonCents = Math.round(action.totalCents / action.headcount);
     }
 
-    // Persist per-person cost on the project so the dashboard can display it.
+    // Persist per-person cost and property details on the project so the
+    // dashboard and context prompt can display them. Property name and dates
+    // are the most-needed facts on travel day, so they must survive beyond chat.
     if (perPersonCents && perPersonCents > 0) {
       try {
-        await db.update(projectsTable).set({ lodgingPerPersonCents: perPersonCents }).where(eq(projectsTable.id, organizerProject.id));
+        await db
+          .update(projectsTable)
+          .set({
+            lodgingPerPersonCents: perPersonCents,
+            ...(action.propertyName ? { lodgingPropertyName: action.propertyName } : {}),
+            ...(action.checkIn ? { lodgingCheckIn: new Date(action.checkIn) } : {}),
+            ...(action.checkOut ? { lodgingCheckOut: new Date(action.checkOut) } : {}),
+          })
+          .where(eq(projectsTable.id, organizerProject.id));
       } catch (err) {
-        logger.warn({ err, projectId: organizerProject.id }, "Failed to store lodgingPerPersonCents; continuing");
+        logger.warn({ err, projectId: organizerProject.id }, "Failed to store lodging fields; continuing");
       }
     }
 
@@ -623,6 +660,36 @@ async function processOrganizerSidebarTurn(
       logger.info({ projectId: organizerProject.id, pollId, deadline: action.deadline }, "Commitment round opened via organizer sidebar");
     } catch (err) {
       logger.error({ err, projectId: organizerProject.id }, "Failed to create commitment poll");
+    }
+  }
+
+  // ── Project correction handling (B1) ──────────────────────────────────────
+  // Deliberately restricted to the organizer sidebar so no single group member
+  // can silently change structural facts (dates, honoree) that affect everyone.
+  if (result.projectCorrectionAction) {
+    const action = result.projectCorrectionAction;
+    const patch: Partial<typeof projectsTable.$inferInsert> = {};
+    if (action.dateRangeStart) patch.dateRangeStart = action.dateRangeStart;
+    if (action.dateRangeEnd) patch.dateRangeEnd = action.dateRangeEnd;
+    if (action.honoree) patch.honoree = action.honoree;
+    if (Object.keys(patch).length > 0) {
+      try {
+        await db
+          .update(projectsTable)
+          .set(patch)
+          .where(eq(projectsTable.id, organizerProject.id));
+        // Recompute timeline due dates whenever dates change.
+        if (action.dateRangeStart || action.dateRangeEnd) {
+          const updated = await getActiveProject(organizerProject.threadId);
+          if (updated) await recomputeDueDates(updated);
+        }
+        logger.info(
+          { projectId: organizerProject.id, patch },
+          "Project structural facts corrected via organizer sidebar",
+        );
+      } catch (err) {
+        logger.error({ err, projectId: organizerProject.id }, "Failed to apply project correction; continuing");
+      }
     }
   }
 
@@ -728,6 +795,20 @@ async function processAgentTurn(threadId: number, senderUserId: number): Promise
     } else if (result.project.dateRangeStart || result.project.dateRangeEnd) {
       await recomputeDueDates(project);
     }
+
+    // A3: Link any unlinked occasions in this thread that match the project's
+    // honoree so the daily occasion-scan suppression works even for name-only
+    // matches (where honoreeUserId is null on both sides).
+    if (result.project.honoree || honoreeUser?.id) {
+      void linkOccasionsToProject(
+        project.id,
+        threadId,
+        honoreeUser?.id ?? null,
+        result.project.honoree,
+      ).catch((err) =>
+        logger.warn({ err, projectId: project.id }, "linkOccasionsToProject failed; continuing"),
+      );
+    }
   }
 
   // ── Destination shortlist request ──────────────────────────────────────────
@@ -792,8 +873,12 @@ async function processAgentTurn(threadId: number, senderUserId: number): Promise
   // and approves/rejects from their private sidebar.
   if (isGroup) {
     const gateProject = await getActiveProject(threadId);
-    if (gateProject?.organizerUserId && (result.poll || (result.venueCarousels?.length ?? 0) > 0)) {
-      const type: ProposalType = result.poll ? "poll" : "venue_shortlist";
+    if (gateProject?.organizerUserId && (result.poll || (result.venueCarousels?.length ?? 0) > 0 || (result.itineraryEvents?.length ?? 0) > 0)) {
+      const type: ProposalType = result.poll
+        ? "poll"
+        : (result.itineraryEvents?.length ?? 0) > 0
+          ? "itinerary"
+          : "venue_shortlist";
       const scrubbed = scrubPrivateProfileLeaks(result.reply, context.participants);
 
       let proposalContent: ProposalContent;
@@ -805,6 +890,11 @@ async function processAgentTurn(threadId: number, senderUserId: number): Promise
           optionDates: result.poll.optionDates.map((d) => d?.toISOString() ?? null),
           reply: scrubbed,
         } satisfies PollProposalContent;
+      } else if (result.itineraryEvents && result.itineraryEvents.length > 0) {
+        proposalContent = {
+          reply: scrubbed,
+          events: result.itineraryEvents,
+        } satisfies ItineraryProposalContent;
       } else {
         proposalContent = {
           reply: scrubbed,

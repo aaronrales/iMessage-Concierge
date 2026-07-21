@@ -277,6 +277,25 @@ export interface AgentTurnResult {
    * destination locked in.
    */
   destinationSuggestionRequest: boolean | null;
+  /**
+   * Set in group turns when the agent proposes a day-by-day itinerary for an
+   * active project (trip, bachelorette, reunion, etc.). Routed through the
+   * organizer-approval gate before any Plan rows are created — never bypasses
+   * it. Null for one-off event suggestions that don't constitute a full agenda.
+   */
+  itineraryEvents: { title: string; dayOffset: number; venue: string | null; timeOfDay: string | null }[] | null;
+  /**
+   * Set only in organizer sidebar turns when the organizer explicitly corrects
+   * a structural project fact (dates, honoree). Unlike mergeIntoExistingProject,
+   * this overwrites non-null values — it is a deliberate correction, not a fill.
+   * Null in all other contexts; restricted to the organizer sidebar so a single
+   * group member cannot silently change shared facts.
+   */
+  projectCorrectionAction: {
+    dateRangeStart: Date | null;
+    dateRangeEnd: Date | null;
+    honoree: string | null;
+  } | null;
 }
 
 const SYSTEM_PROMPT = `You are a personal AI concierge that lives inside iMessage. You help one person or a small group plan the stuff of everyday life -- dinners, weekend trips, birthdays, "where should we all meet".
@@ -292,6 +311,9 @@ You have these capabilities, which you can trigger by filling in the matching fi
 - Starting a project when the conversation reveals a multi-event occasion -- a bachelorette, a milestone birthday, a reunion, a trip, or anything similar that will need several separate events (dinners, activities, outings) planned under one umbrella. Set "project" with its type, the honoree if there is one, and the date range if known. Do this only once per occasion: if the context below already shows an active project, never set "project" again -- new details you learn (dates, honoree) can still be included if you do not see them reflected yet. A single dinner or one-off hangout is NOT a project; leave "project" null for those. Once a project is active, plan each event inside it as its own plan, and feel free to coordinate multiple events at once.
 - Suggesting destinations for a trip project: when the active project is of type "trip" AND the context shows no destination has been set yet, and either the group is discussing where to go OR the organizer asks for destination ideas, set "destination_suggestion_request" to true in your JSON. When you do this, the system will run a web search and send the group a destination shortlist poll automatically -- you do NOT need to list destinations in your "reply". Your reply should simply say something like "Let me pull together some destination options for you." Set this to true only once, only for trip projects with no destination, and only when destination research is genuinely called for. If a destination is already set or the project is not a trip, leave this field null or omit it.
 - Asking a sensitive question privately over DM instead of in the group, by setting "private_question" (group threads only). Use this when the answer is something a person might not want to say in front of the group (e.g. "what's a realistic amount to chip in for the gift?", or a private availability/budget check tied to a group decision). Never ask a sensitive question like this directly in the group -- set "private_question" instead and tell the group in your "reply" that you're checking with everyone individually. Each person will be DMed your exact question, and only a combined, anonymous summary comes back to the group -- you never see who said what.
+- Proposing a day-by-day itinerary for an active project (trips, bachelorettes, reunions, etc.): when you recommend a full or partial agenda (e.g. "Day 1: brunch at X, dinner at Y; Day 2: ..."), fill in "itinerary_events" with each event — its title, how many days after the project start date it falls (day_offset: 0 = first day), the venue name if known, and a rough time of day ("morning", "afternoon", "evening", etc.). Only fill this when you are concretely proposing a structured itinerary, not for casual suggestions or one-off events. Each event will be routed through the organizer-approval gate before any Plan rows are created, so do NOT also create booking drafts or separate polls for these events in the same turn.
+
+For any question touching visa or entry requirements, vaccination or health recommendations, safety advisories, or destination-specific legal or regulatory requirements — always caveat clearly and point the group to an authoritative source (their government's travel advisory site, the destination country's official entry rules, or the relevant embassy). Never state these as confident facts; your training data may be out of date, and the stakes for travelers are real.
 
 Always respond with ONLY a JSON object matching this shape, no prose outside the JSON:
 {
@@ -306,7 +328,8 @@ Always respond with ONLY a JSON object matching this shape, no prose outside the
   "private_question": string | null,
   "group_creation_request": { "participant_names": string[], "participant_phones": string[], "occasion": string | null } | null,
   "project": { "type": "bachelorette" | "milestone_birthday" | "reunion" | "trip" | string, "honoree": string | null, "date_range_start": string | null, "date_range_end": string | null } | null,
-  "destination_suggestion_request": true | null
+  "destination_suggestion_request": true | null,
+  "itinerary_events": [{ "title": string, "day_offset": number, "venue": string | null, "time_of_day": string | null }] | null
 }
 Set "display_name" whenever the person tells you their name and it isn't already known -- otherwise leave it null.
 Set "group_creation_request" (in 1:1 threads only) when the user asks you to start or create an iMessage group with specific people, e.g. "start a group with Amy and Jake for Saturday". List any names mentioned in "participant_names" and any phone numbers explicitly given in "participant_phones". If you cannot determine all participants' contact info, still set this field and leave unknown phones as empty strings -- the system will prompt for missing numbers. Leave "occasion" null if the request doesn't specify a particular event or occasion.`;
@@ -372,6 +395,12 @@ interface RawAgentResponse {
     headcount_target?: unknown;
   } | null;
   destination_suggestion_request?: unknown;
+  itinerary_events?: { title?: unknown; day_offset?: unknown; venue?: unknown; time_of_day?: unknown }[] | null;
+  project_correction_action?: {
+    date_range_start?: unknown;
+    date_range_end?: unknown;
+    honoree?: unknown;
+  } | null;
 }
 
 function buildTranscript(context: ThreadContext, currentUserId: number): { role: "user" | "assistant"; content: string }[] {
@@ -566,7 +595,14 @@ export async function runAgentTurn(context: ThreadContext, currentUserId: number
             `  → kind: "lodging_estimate", property_name: "Nashville Airbnb" (or null), total_cents: 240000, headcount: 8 (or null), per_person_cents: 30000 (alternative to total+headcount), check_in: "2026-08-01" (ISO date or null), check_out: "2026-08-05" (ISO date or null), nights: 4 (or null).\n` +
             `  Example: "Found an Airbnb for $2,400, 4 nights, 8 people" → total_cents: 240000, headcount: 8, nights: 4.\n` +
             `  The system will automatically generate Airbnb/VRBO/Hotels.com search links and send the group a cost-split message. Do NOT include lodging links in your "reply" — the system handles that. Your "reply" should just confirm you've noted it.\n` +
-            `  Always set "ledger_action" with kind: "estimate" alongside "lodging_action" so the amount is recorded in the ledger.`,
+            `  Always set "ledger_action" with kind: "estimate" alongside "lodging_action" so the amount is recorded in the ledger.\n\n` +
+            `PROJECT CORRECTIONS — when the organizer explicitly corrects a structural fact about the project (not answering questions, but actively changing something), set "project_correction_action" in your JSON:\n` +
+            `  → date_range_start: new ISO date string (e.g. "2026-08-05"), date_range_end: new ISO date string, honoree: corrected name.\n` +
+            `  Include only the fields actually being corrected — omit fields that are not changing. Valid examples:\n` +
+            `    "actually the dates are Aug 5-9" → date_range_start + date_range_end only.\n` +
+            `    "the honoree is Sarah not Sam" → honoree only.\n` +
+            `  Unlike normal project updates, corrections overwrite existing values — the organizer's word is final on their own project.\n` +
+            `  Do NOT set project_correction_action when answering questions about the current dates or honoree — only when explicitly correcting them.`,
         },
       ]
     : [];
@@ -763,6 +799,46 @@ export async function runAgentTurn(context: ThreadContext, currentUserId: number
 
   const destinationSuggestionRequest = parsed.destination_suggestion_request === true;
 
+  // Parse itinerary_events from group turns when the model proposes a day-by-day agenda.
+  const rawEvents = parsed.itinerary_events;
+  const itineraryEvents =
+    Array.isArray(rawEvents) && rawEvents.length > 0
+      ? (rawEvents as unknown[]).reduce<
+          { title: string; dayOffset: number; venue: string | null; timeOfDay: string | null }[]
+        >((acc, item) => {
+          if (!item || typeof item !== "object") return acc;
+          const e = item as { title?: unknown; day_offset?: unknown; venue?: unknown; time_of_day?: unknown };
+          if (typeof e.title !== "string" || !e.title.trim()) return acc;
+          if (typeof e.day_offset !== "number" || !Number.isFinite(e.day_offset)) return acc;
+          acc.push({
+            title: e.title.trim(),
+            dayOffset: Math.round(e.day_offset),
+            venue: typeof e.venue === "string" && e.venue.trim() ? e.venue.trim() : null,
+            timeOfDay: typeof e.time_of_day === "string" && e.time_of_day.trim() ? e.time_of_day.trim() : null,
+          });
+          return acc;
+        }, [])
+      : null;
+
+  // Parse project_correction_action from organizer sidebar turns.
+  const rawPca = parsed.project_correction_action;
+  const projectCorrectionAction =
+    rawPca && typeof rawPca === "object"
+      ? (() => {
+          const parseCorDate = (v: unknown): Date | null => {
+            if (typeof v !== "string" || !v.trim()) return null;
+            const d = new Date(v);
+            return Number.isNaN(d.getTime()) ? null : d;
+          };
+          const dateRangeStart = parseCorDate(rawPca.date_range_start);
+          const dateRangeEnd = parseCorDate(rawPca.date_range_end);
+          const honoree =
+            typeof rawPca.honoree === "string" && rawPca.honoree.trim() ? rawPca.honoree.trim() : null;
+          if (!dateRangeStart && !dateRangeEnd && !honoree) return null;
+          return { dateRangeStart, dateRangeEnd, honoree };
+        })()
+      : null;
+
   // Parse lodging_action from organizer sidebar turns.
   const rawLodging = parsed.lodging_action;
   const lodgingAction =
@@ -813,6 +889,8 @@ export async function runAgentTurn(context: ThreadContext, currentUserId: number
     taskAction,
     commitmentAction,
     destinationSuggestionRequest: destinationSuggestionRequest ? true : null,
+    itineraryEvents: itineraryEvents && itineraryEvents.length > 0 ? itineraryEvents : null,
+    projectCorrectionAction,
   };
 }
 
