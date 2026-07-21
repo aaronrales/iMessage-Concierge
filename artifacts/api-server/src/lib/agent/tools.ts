@@ -5,13 +5,16 @@ import { logRecommendationEvent } from "./venueCorpus/recommendationLog";
 import type { GroupConstraints } from "./tasteEngine";
 
 /**
- * Metadata collected for each corpus venue returned by `search_venues` so
- * the delivery layer can send photo carousels alongside the text reply.
+ * Metadata collected for each venue returned by `search_venues` or
+ * `search_lodging` so the delivery layer can send photo carousels alongside
+ * the text reply. Works for both corpus hits and Google Places fallback results.
  */
 export interface VenueCarouselEntry {
-  venueId: number;
+  /** DB venue ID for corpus hits; undefined for Google Places fallback results. */
+  venueId?: number;
   venueName: string;
-  /** Null when the venue has no stored Google Place ID; delivery falls back to a text-search lookup. */
+  /** Google Place ID used by the delivery layer to fetch photos. Null for corpus
+   * venues that pre-date Place ID storage — delivery falls back to a name search. */
   googlePlaceId: string | null;
 }
 
@@ -179,6 +182,12 @@ interface VenueResult {
   link: string;
 }
 
+/** Internal-only: VenueResult enriched with the Google Place ID for carousel use.
+ *  The placeId field is stripped before the result is returned to the model. */
+interface GoogleVenueResult extends VenueResult {
+  placeId: string;
+}
+
 // ─── Google Places New API ────────────────────────────────────────────────────
 
 const PLACES_TEXT_SEARCH_URL = "https://places.googleapis.com/v1/places:searchText";
@@ -229,7 +238,7 @@ interface GoogleTextSearchResponse {
  * throwing) whenever the key is missing, the request fails, or Places returns
  * zero results, so a lookup miss degrades gracefully.
  */
-async function searchVenuesViaGooglePlaces(args: { query: string; location?: string }): Promise<VenueResult[] | null> {
+async function searchVenuesViaGooglePlaces(args: { query: string; location?: string }): Promise<GoogleVenueResult[] | null> {
   const apiKey = process.env["GOOGLE_PLACES_API_KEY"];
   if (!apiKey) {
     logger.warn("GOOGLE_PLACES_API_KEY is not configured; venue lookups are unavailable");
@@ -261,13 +270,14 @@ async function searchVenuesViaGooglePlaces(args: { query: string; location?: str
     if (places.length === 0) return null;
 
     return places
-      .filter((p) => p.displayName?.text)
+      .filter((p) => p.displayName?.text && p.id)
       .map((place) => ({
         name: place.displayName!.text!,
         category: mapGoogleTypes(place.types),
         priceLevel: mapGooglePriceLevel(place.priceLevel),
         hours: place.regularOpeningHours?.openNow === true ? "open now" : "see link for hours",
         link: place.googleMapsUri ?? "",
+        placeId: place.id!,
       }));
   } catch (error) {
     logger.error({ error }, "Google Places API request threw an error");
@@ -342,6 +352,12 @@ interface LodgingResult {
   googleMapsLink: string;
 }
 
+/** Internal-only: LodgingResult enriched with the Google Place ID for carousel use.
+ *  The placeId field is stripped before the result is returned to the model. */
+interface LodgingResultWithPlaceId extends LodgingResult {
+  placeId: string;
+}
+
 /** Maps price level to rough nightly cost band for context. */
 function mapPriceLevelBand(level: string): string {
   switch (level) {
@@ -380,7 +396,7 @@ function buildHotelBookingUrl(
 async function searchLodgingViaGooglePlaces(args: {
   destination: string;
   priceBand: string | null;
-}): Promise<LodgingResult[] | null> {
+}): Promise<LodgingResultWithPlaceId[] | null> {
   const apiKey = process.env["GOOGLE_PLACES_API_KEY"];
   if (!apiKey) {
     logger.warn("GOOGLE_PLACES_API_KEY not configured; lodging search unavailable");
@@ -402,7 +418,9 @@ async function searchLodgingViaGooglePlaces(args: {
       body: JSON.stringify({
         textQuery,
         maxResultCount: 5,
-        includedTypes: ["hotel", "lodging", "extended_stay_hotel", "bed_and_breakfast"],
+        // No includedTypes: the text query is specific enough, and a hard type
+        // filter silently zeros out results in many well-covered markets (e.g.
+        // Amsterdam) when Google's place classifications don't cleanly match.
       }),
     });
 
@@ -416,7 +434,7 @@ async function searchLodgingViaGooglePlaces(args: {
     if (places.length === 0) return null;
 
     return places
-      .filter((p) => p.displayName?.text)
+      .filter((p) => p.displayName?.text && p.id)
       .slice(0, 3) // cap at 3 options so the message stays readable
       .map((place) => ({
         name: place.displayName!.text!,
@@ -424,6 +442,7 @@ async function searchLodgingViaGooglePlaces(args: {
         priceLevel: mapGooglePriceLevel(place.priceLevel),
         address: place.formattedAddress ?? "",
         googleMapsLink: place.googleMapsUri ?? "",
+        placeId: place.id!,
       }));
   } catch (error) {
     logger.error({ error, destination: args.destination }, "Google Places lodging search threw an error");
@@ -447,9 +466,9 @@ async function searchLodgingViaGooglePlaces(args: {
  * are filtered and boosted by the group's dietary needs, budget, and party
  * size before being returned to the model.
  *
- * `venueCarouselAccumulator`, when provided, is populated with corpus venues
- * returned by `search_venues` so the delivery layer can follow up the text
- * reply with per-venue photo carousels.
+ * `venueCarouselAccumulator`, when provided, is populated with venues returned
+ * by `search_venues` (corpus hit or Google Places fallback) and `search_lodging`
+ * so the delivery layer can follow up the text reply with per-venue photo carousels.
  */
 export async function executeAgentTool(
   name: string,
@@ -524,7 +543,18 @@ export async function executeAgentTool(
           note: "No real venue data available for this query (curated corpus has nothing here, and the Google Places fallback returned nothing or is not configured). Do not invent a specific venue -- speak generally instead, or ask the person for more detail.",
         };
       }
-      return { results, note: "These come from a general lookup, not our curated corpus -- speak about them slightly more tentatively than a vetted recommendation." };
+      // Populate the carousel accumulator for Google Places fallback results.
+      // The placeId comes directly from the Places API so no extra lookup is needed.
+      if (venueCarouselAccumulator) {
+        for (const r of results) {
+          venueCarouselAccumulator.push({ venueName: r.name, googlePlaceId: r.placeId });
+        }
+      }
+      // Strip the internal placeId before returning to the model.
+      return {
+        results: results.map(({ placeId: _placeId, ...rest }) => rest),
+        note: "These come from a general lookup, not our curated corpus -- speak about them slightly more tentatively than a vetted recommendation.",
+      };
     }
     case "search_lodging": {
       const destination = typeof args["destination"] === "string" ? args["destination"] : "";
@@ -541,6 +571,15 @@ export async function executeAgentTool(
         };
       }
 
+      // Populate the carousel accumulator so the delivery layer can send hotel
+      // photo carousels alongside the text reply. placeId comes directly from
+      // the Places API so no extra lookup is needed.
+      if (venueCarouselAccumulator) {
+        for (const r of results) {
+          venueCarouselAccumulator.push({ venueName: r.name, googlePlaceId: r.placeId });
+        }
+      }
+
       // Build a Booking.com search URL for the destination (deep link, not an API).
       const bookingBase = new URL("https://www.booking.com/searchresults.html");
       bookingBase.searchParams.set("ss", destination);
@@ -552,10 +591,11 @@ export async function executeAgentTool(
       }
       const bookingSearchUrl = bookingBase.toString();
 
+      // Strip the internal placeId before returning to the model.
       return {
-        results: results.map((r) => ({
-          ...r,
-          bookingSearchUrl: buildHotelBookingUrl(r.name, destination, checkin, checkout, guests),
+        results: results.map(({ placeId: _placeId, ...rest }) => ({
+          ...rest,
+          bookingSearchUrl: buildHotelBookingUrl(rest.name, destination, checkin, checkout, guests),
         })),
         searchUrl: bookingSearchUrl,
         note: "From Google Places — speak tentatively (e.g. 'Here are a few options I found') and note that prices/availability should be confirmed on the booking site.",

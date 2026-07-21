@@ -27,7 +27,8 @@ export interface PollProposalContent {
 
 export interface VenueShortlistProposalContent {
   reply: string;
-  venueCarousels: { venueId: number; venueName: string; googlePlaceId: string | null }[];
+  /** venueId is optional: present for corpus hits, absent for Google Places fallback results. */
+  venueCarousels: { venueId?: number; venueName: string; googlePlaceId: string | null }[];
 }
 
 export interface MessageProposalContent {

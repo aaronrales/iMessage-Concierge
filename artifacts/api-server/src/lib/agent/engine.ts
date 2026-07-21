@@ -418,11 +418,13 @@ async function runTurnWithTools(
   threadId: number,
   groupConstraints?: GroupConstraints,
 ): Promise<{ raw: string; venueCarousels: VenueCarouselEntry[] }> {
-  // Accumulates venue metadata from every search_venues tool call this turn.
-  // De-duplicated by venueId so multiple searches for the same venue don't
-  // queue up two identical carousels.
+  // Accumulates venue metadata from every search_venues / search_lodging tool
+  // call this turn. De-duplicated by a stable key (Place ID when available,
+  // otherwise venue name) so the same venue never queues two carousels.
+  // Uses a string key so it works for both corpus hits (numeric venueId) and
+  // Google Places fallback results (no venueId, but always has a placeId or name).
   const carouselAccumulator: VenueCarouselEntry[] = [];
-  const seenVenueIds = new Set<number>();
+  const seenVenueKeys = new Set<string>();
 
   for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
     const completion = await openai.chat.completions.create({
@@ -460,8 +462,9 @@ async function runTurnWithTools(
       }
       // Merge deduplicated entries into the turn-level accumulator.
       for (const entry of iterAccumulator) {
-        if (!seenVenueIds.has(entry.venueId)) {
-          seenVenueIds.add(entry.venueId);
+        const key = entry.googlePlaceId ?? entry.venueName;
+        if (!seenVenueKeys.has(key)) {
+          seenVenueKeys.add(key);
           carouselAccumulator.push(entry);
         }
       }
