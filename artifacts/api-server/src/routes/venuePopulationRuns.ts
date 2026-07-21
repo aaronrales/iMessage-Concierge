@@ -1,5 +1,9 @@
 import { Router, type IRouter } from "express";
-import { z } from "zod";
+import {
+  CreateVenuePopulationRunBody,
+  CreateVenuePopulationRunResponse,
+  ListVenuePopulationRunsResponse,
+} from "@workspace/api-zod";
 import { db, venuePopulationRunsTable } from "@workspace/db";
 import { desc } from "drizzle-orm";
 import { eq } from "drizzle-orm";
@@ -8,18 +12,9 @@ import { logger } from "../lib/logger";
 
 const router: IRouter = Router();
 
-const CreateRunBodySchema = z.object({
-  neighborhood: z.string().min(1),
-  borough: z.string().optional(),
-  city: z.string().optional(),
-  venueType: z.enum(["restaurant", "bar"]).default("restaurant"),
-  customQuery: z.string().optional(),
-  limit: z.number().int().min(1).max(200).default(20),
-});
-
 /** POST /venue-population-runs — start a background population run */
 router.post("/venue-population-runs", async (req, res): Promise<void> => {
-  const body = CreateRunBodySchema.safeParse(req.body);
+  const body = CreateVenuePopulationRunBody.safeParse(req.body);
   if (!body.success) {
     res.status(400).json({ error: body.error.message });
     return;
@@ -106,7 +101,7 @@ router.post("/venue-population-runs", async (req, res): Promise<void> => {
       logger.error({ runId: run.id, error }, "Venue population run failed");
     });
 
-  res.status(201).json(run);
+  res.status(201).json(CreateVenuePopulationRunResponse.parse(run));
 });
 
 /** GET /venue-population-runs — list the 50 most recent runs */
@@ -117,7 +112,7 @@ router.get("/venue-population-runs", async (_req, res): Promise<void> => {
     .orderBy(desc(venuePopulationRunsTable.createdAt))
     .limit(50);
 
-  res.json(runs);
+  res.json(ListVenuePopulationRunsResponse.parse(runs));
 });
 
 export default router;

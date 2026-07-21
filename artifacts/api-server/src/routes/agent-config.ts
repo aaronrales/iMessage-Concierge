@@ -1,7 +1,7 @@
 import { Router, type IRouter } from "express";
 import { eq } from "drizzle-orm";
-import { z } from "zod/v4";
 import { db, agentConfigTable } from "@workspace/db";
+import { GetAgentConfigResponse, UpdateAgentConfigBody, UpdateAgentConfigResponse } from "@workspace/api-zod";
 
 /**
  * Admin-controlled agent configuration.
@@ -74,10 +74,8 @@ When you get something wrong — a bad call, a closed venue, a misread of the ro
 
 This is the one moment the usual personality steps back. If someone has a real complaint about you or the service — not banter, not teasing, an actual issue — drop the wit entirely for that exchange. Acknowledge the specific thing that went wrong, take it seriously, and give a straight answer about what happens next. Charm is not a substitute for actually listening here.`;
 
-const PutAgentConfigBody = z.object({
-  globalGuidance: z.string().optional(),
-  persona: z.string().optional(),
-});
+// Request/response validated against the generated OpenAPI zod schemas so
+// spec drift fails loudly here instead of surfacing in the dashboard.
 
 router.get("/agent-config", async (_req, res): Promise<void> => {
   const rows = await db.select().from(agentConfigTable);
@@ -85,16 +83,18 @@ router.get("/agent-config", async (_req, res): Promise<void> => {
   for (const row of rows) {
     config[row.key] = row.value;
   }
-  res.json({
-    globalGuidance: config["globalGuidance"] ?? "",
-    // Fall back to the default persona so the Settings page is pre-populated
-    // on first load. The user clicks Save to persist it to the DB.
-    persona: config["persona"] ?? DEFAULT_PERSONA,
-  });
+  res.json(
+    GetAgentConfigResponse.parse({
+      globalGuidance: config["globalGuidance"] ?? "",
+      // Fall back to the default persona so the Settings page is pre-populated
+      // on first load. The user clicks Save to persist it to the DB.
+      persona: config["persona"] ?? DEFAULT_PERSONA,
+    }),
+  );
 });
 
 router.put("/agent-config", async (req, res): Promise<void> => {
-  const body = PutAgentConfigBody.safeParse(req.body);
+  const body = UpdateAgentConfigBody.safeParse(req.body);
   if (!body.success) {
     res.status(400).json({ error: body.error.message });
     return;
@@ -127,7 +127,8 @@ router.put("/agent-config", async (req, res): Promise<void> => {
   }
 
   await Promise.all(upserts);
-  res.json({ ok: true });
+  // Spec says WebhookAck ({ received }) — previously returned { ok: true }.
+  res.json(UpdateAgentConfigResponse.parse({ received: true }));
 });
 
 export default router;

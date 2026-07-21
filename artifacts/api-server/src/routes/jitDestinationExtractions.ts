@@ -1,5 +1,9 @@
 import { Router, type IRouter } from "express";
-import { z } from "zod";
+import {
+  ListJITDestinationExtractionsResponse,
+  TriggerJITDestinationExtractionBody,
+  TriggerJITDestinationExtractionResponse,
+} from "@workspace/api-zod";
 import { db, destinationVenueExtractionsTable } from "@workspace/db";
 import { desc } from "drizzle-orm";
 import { isNYCDestination } from "../lib/agent/venueCorpus/jitExtraction";
@@ -16,16 +20,12 @@ router.get("/jit-destination-extractions", async (_req, res): Promise<void> => {
     .orderBy(desc(destinationVenueExtractionsTable.createdAt))
     .limit(100);
 
-  res.json(rows);
-});
-
-const TriggerBodySchema = z.object({
-  destination: z.string().min(1),
+  res.json(ListJITDestinationExtractionsResponse.parse(rows));
 });
 
 /** POST /jit-destination-extractions — manually trigger extraction for a destination */
 router.post("/jit-destination-extractions", async (req, res): Promise<void> => {
-  const body = TriggerBodySchema.safeParse(req.body);
+  const body = TriggerJITDestinationExtractionBody.safeParse(req.body);
   if (!body.success) {
     res.status(400).json({ error: body.error.message });
     return;
@@ -40,7 +40,7 @@ router.post("/jit-destination-extractions", async (req, res): Promise<void> => {
 
   try {
     await enqueueJITExtractionIfNeeded(destination);
-    res.status(202).json({ queued: true, destination });
+    res.status(202).json(TriggerJITDestinationExtractionResponse.parse({ queued: true, destination }));
   } catch (error) {
     logger.error({ error, destination }, "Failed to enqueue JIT extraction");
     res.status(500).json({ error: "Failed to enqueue extraction" });

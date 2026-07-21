@@ -1,7 +1,7 @@
 import { Router, type IRouter } from "express";
 import { and, desc, gte, inArray, isNotNull, sql } from "drizzle-orm";
 import { db, llmCostLogTable, messageDeliveryLogTable, threadsTable, toolCallLogTable } from "@workspace/db";
-import { GetDeliveryHealthResponse } from "@workspace/api-zod";
+import { GetDeliveryHealthQueryParams, GetDeliveryHealthResponse } from "@workspace/api-zod";
 
 const router: IRouter = Router();
 
@@ -22,11 +22,12 @@ function successRate(success: number, total: number): number | null {
  * BLOCKED (compliance) and QUEUED (in-flight) are excluded.
  */
 router.get("/operations/delivery-health", async (req, res): Promise<void> => {
-  const rawHours = Number(req.query["windowHours"] ?? 24);
-  const windowHours =
-    Number.isFinite(rawHours) && rawHours >= 1 && rawHours <= 168
-      ? Math.floor(rawHours)
-      : 24;
+  const query = GetDeliveryHealthQueryParams.safeParse(req.query);
+  if (!query.success) {
+    res.status(400).json({ error: query.error.message });
+    return;
+  }
+  const windowHours = Math.floor(query.data.windowHours);
 
   const since = new Date(Date.now() - windowHours * 60 * 60 * 1000);
 

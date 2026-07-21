@@ -17,7 +17,7 @@ import {
   type Message,
   type Project,
 } from "@workspace/db";
-import { GetThreadParams, GetThreadResponse, ListThreadsResponse } from "@workspace/api-zod";
+import { GetThreadParams, GetThreadResponse, ListThreadsResponse, ResolveThreadAttentionResponse } from "@workspace/api-zod";
 import { getTimelineSummary } from "../lib/agent/projectTimeline";
 import { getLedgerSummary } from "../lib/agent/ledger";
 import { countOpenActionItems } from "../lib/agent/actionItems";
@@ -315,7 +315,9 @@ router.post("/threads/:id/resolve-attention", async (req, res): Promise<void> =>
     return;
   }
 
-  res.json({ ok: true });
+  // Spec says WebhookAck ({ received }) — previously returned { ok: true },
+  // which silently drifted from the generated client's type.
+  res.json(ResolveThreadAttentionResponse.parse({ received: true }));
 });
 
 /**

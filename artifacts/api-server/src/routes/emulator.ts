@@ -1,5 +1,10 @@
 import { Router, type IRouter } from "express";
 import { z } from "zod";
+import {
+  ListEmulatorThreadsResponse,
+  SendEmulatorMessageBody,
+  SendEmulatorMessageResponse,
+} from "@workspace/api-zod";
 import { db, threadParticipantsTable, threadsTable, usersTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { runEmulatorTurn } from "../lib/agent/runEmulatorTurn";
@@ -7,7 +12,9 @@ import { logger } from "../lib/logger";
 
 const router: IRouter = Router();
 
-const SendMessageBody = z.object({
+// The generated body schema carries the spec's field types; keep the stricter
+// runtime constraints (positive int id, non-empty strings) layered on top.
+const SendMessageBody = SendEmulatorMessageBody.extend({
   threadId: z.number().int().positive(),
   senderPhone: z.string().min(1),
   content: z.string().min(1),
@@ -43,7 +50,7 @@ router.post("/emulator/message", async (req, res) => {
 
   try {
     const result = await runEmulatorTurn(threadId, senderPhone, content);
-    res.json({ messages: result.messages });
+    res.json(SendEmulatorMessageResponse.parse({ messages: result.messages }));
   } catch (error) {
     logger.error({ error, threadId }, "Emulator turn failed");
     res.status(500).json({ error: "Emulator turn failed" });
@@ -91,7 +98,7 @@ router.get("/emulator/threads", async (_req, res) => {
       participants: participantsByThread.get(t.id) ?? [],
     }));
 
-    res.json(result);
+    res.json(ListEmulatorThreadsResponse.parse(result));
   } catch (error) {
     logger.error({ error }, "Failed to list threads for emulator");
     res.status(500).json({ error: "Failed to list threads" });
